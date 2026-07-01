@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Walmart Orders</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🛒 Walmart Orders</h1>
+            <div class="stats-summary" id="statsSummary">
+                <div class="stat-card">
+                    <div class="stat-value" id="totalOrders">-</div>
+                    <div class="stat-label">Total Orders</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="totalSpent">$-</div>
+                    <div class="stat-label">Total Spent</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="avgOrder">$-</div>
+                    <div class="stat-label">Avg Order</div>
+                </div>
+            </div>
+        </header>
+
+        <div class="tabs">
+            <button class="tab-button active" data-tab="orders">Orders</button>
+            <button class="tab-button" data-tab="categories">Categories</button>
+            <button class="tab-button" data-tab="search">Search</button>
+        </div>
+
+        <!-- Orders Tab -->
+        <div class="tab-content active" id="ordersTab">
+            <div class="search-controls">
+                <button class="btn-refresh" onclick="loadOrders()">🔄 Refresh</button>
+            </div>
+            <div id="ordersContainer" class="orders-list">
+                <p class="loading">Loading orders...</p>
+            </div>
+        </div>
+
+        <!-- Categories Tab -->
+        <div class="tab-content" id="categoriesTab">
+            <div id="categoriesContainer" class="categories-list">
+                <p class="loading">Loading categories...</p>
+            </div>
+        </div>
+
+        <!-- Search Tab -->
+        <div class="tab-content" id="searchTab">
+            <div class="search-controls">
+                <input type="text" id="searchInput" placeholder="Search for items..." />
+                <button class="btn-search" onclick="searchItems()">🔍 Search</button>
+            </div>
+            <div id="searchResults" class="search-results">
+                <p class="empty-state">Enter a search term to find items</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,70 @@
+{
+  "name": "chatty-bridge",
+  "displayName": "Chatty Bridge",
+  "description": "Bridge between Chatty Telegram bot and VS Code Copilot agent. Receives code change requests from Telegram and sends them to Copilot.",
+  "version": "1.0.0",
+  "publisher": "chatty",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "chatty-bridge.checkNow",
+        "title": "Chatty Bridge: Check for Requests"
+      },
+      {
+        "command": "chatty-bridge.completeRequest",
+        "title": "Chatty Bridge: Mark Current Request Completed"
+      },
+      {
+        "command": "chatty-bridge.failRequest",
+        "title": "Chatty Bridge: Mark Current Request Failed"
+      },
+      {
+        "command": "chatty-bridge.togglePolling",
+        "title": "Chatty Bridge: Toggle Auto-Polling"
+      },
+      {
+        "command": "chatty-bridge.showQueue",
+        "title": "Chatty Bridge: Show Request Queue"
+      }
+    ],
+    "configuration": {
+      "title": "Chatty Bridge",
+      "properties": {
+        "chattyBridge.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:5001",
+          "description": "URL of the Chatty mini app server"
+        },
+        "chattyBridge.pollInterval": {
+          "type": "number",
+          "default": 10,
+          "description": "Polling interval in seconds"
+        },
+        "chattyBridge.autoSend": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically send requests to Copilot (true) or show confirmation first (false)"
+        },
+        "chattyBridge.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic polling for new requests"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0"
+  }
+}
