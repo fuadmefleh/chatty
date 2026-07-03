@@ -25,15 +25,19 @@ class FeatureRequest:
         files_changed: Optional[List[str]] = None,
         log: Optional[List[str]] = None,
         summary: str = "",
+        source: str = "user",
+        branch: Optional[str] = None,
     ):
         self.id = request_id
         self.prompt = prompt
-        self.status = status  # queued | running | completed | error
+        self.status = status  # queued | running | testing | completed | error
         self.created_at = created_at
         self.updated_at = updated_at
         self.files_changed = files_changed or []
         self.log = log or []
         self.summary = summary
+        self.source = source  # "user" (typed into the dashboard) or "self_upgrade" (heartbeat-generated)
+        self.branch = branch  # git branch used, for self_upgrade requests only
 
     def to_dict(self) -> Dict:
         return {
@@ -45,6 +49,8 @@ class FeatureRequest:
             "files_changed": self.files_changed,
             "log": self.log,
             "summary": self.summary,
+            "source": self.source,
+            "branch": self.branch,
         }
 
     @classmethod
@@ -58,6 +64,8 @@ class FeatureRequest:
             files_changed=data.get("files_changed", []),
             log=data.get("log", []),
             summary=data.get("summary", ""),
+            source=data.get("source", "user"),
+            branch=data.get("branch"),
         )
 
 
@@ -88,7 +96,7 @@ class FeatureRequestsManager:
             print(f"Error saving feature requests: {e}")
             raise
 
-    def create(self, prompt: str) -> FeatureRequest:
+    def create(self, prompt: str, source: str = "user") -> FeatureRequest:
         requests = self._load()
         now = datetime.now().isoformat()
         new_request = FeatureRequest(
@@ -97,6 +105,7 @@ class FeatureRequestsManager:
             status="queued",
             created_at=now,
             updated_at=now,
+            source=source,
         )
         requests.append(new_request)
         self._save(requests)
@@ -106,6 +115,10 @@ class FeatureRequestsManager:
         """All requests, newest first."""
         requests = self._load()
         return sorted(requests, key=lambda r: r.created_at, reverse=True)
+
+    def list_by_source(self, source: str) -> List[FeatureRequest]:
+        """All requests from a given source (e.g. 'self_upgrade'), newest first."""
+        return [r for r in self.list() if r.source == source]
 
     def get(self, request_id: str) -> Optional[FeatureRequest]:
         for r in self._load():

@@ -1,0 +1,18 @@
+# Minimal SearXNG settings override for Chatty's self-hosted web search.
+# Merges over SearXNG's baked-in defaults (use_default_settings: true).
+#
+# Regenerate the secret with `openssl rand -hex 32` before deploying if this
+# repo is ever made public with this file committed as-is.
+use_default_settings: true
+
+server:
+  secret_key: "768369f170499100c26653f8191f44936a8310e41718941c0104bba3e9a3ffb0"
+  # Single trusted local caller (chatty's backend) - the bot-limiter otherwise
+  # blocks format=json requests from an automated client with a 403.
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json

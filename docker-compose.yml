@@ -1,0 +1,16 @@
+# Optional: only needed if you don't already have a SearXNG instance running.
+# On this host, one is already running system-wide at http://localhost:8081
+# (see /home/edgeworks-server/searxng) - chatty's SEARXNG_BASE_URL points at
+# that by default, so you do NOT need to run `docker compose up` here.
+#
+# For a fresh deployment with no existing SearXNG instance, this brings one
+# up on port 8090 (chosen to avoid clashing with the common 8080 default).
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: chatty-searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8090:8080"
+    volumes:
+      - ./docker/searxng:/etc/searxng:rw

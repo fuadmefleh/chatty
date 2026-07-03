@@ -32,10 +32,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core import config
+from src.core.logging_config import get_api_logger
 from src.core.skills_manager import SkillsManager
 from skills.notes.notes_manager import NotesManager
+from skills.watchlist.watchlist_manager import WatchlistManager
+from src.managers.insights_manager import InsightsManager
 from skills.pi_agent.requests_manager import FeatureRequestsManager
 from skills.pi_agent.runner import run_pi_agent
+from skills.pi_agent import lock as pi_lock
+
+logger = get_api_logger()
 
 # ── Config ───────────────────────────────────────────────────────────────────
 API_KEY = os.getenv("CHATTY_WEB_API_KEY", "changeme")
@@ -57,6 +63,8 @@ app.add_middleware(
 
 # ── Shared state ─────────────────────────────────────────────────────────────
 notes_manager = NotesManager()
+watchlist_manager = WatchlistManager()
+insights_manager = InsightsManager()
 feature_requests_manager = FeatureRequestsManager()
 skills_manager: Optional[SkillsManager] = None
 _pi_worker_task: Optional[asyncio.Task] = None
@@ -124,6 +132,50 @@ async def delete_note(note_id: str):
     return {"deleted": True}
 
 
+# ── Watchlist ────────────────────────────────────────────────────────────────
+class WatchTopicCreate(BaseModel):
+    topic: str
+    kind: str = "news"
+
+
+@app.get("/api/chatty/watchlist", dependencies=[Depends(require_api_key)])
+async def get_watchlist():
+    return [t.to_dict() for t in watchlist_manager.get_topics(WEB_USER_ID)]
+
+
+@app.post("/api/chatty/watchlist", dependencies=[Depends(require_api_key)], status_code=201)
+async def create_watch_topic(body: WatchTopicCreate):
+    topic = body.topic.strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="Topic is required")
+    if body.kind not in ("news", "stock", "github"):
+        raise HTTPException(status_code=400, detail="kind must be one of: news, stock, github")
+    watch_topic = watchlist_manager.add_topic(WEB_USER_ID, topic, kind=body.kind)
+    return watch_topic.to_dict()
+
+
+@app.delete("/api/chatty/watchlist/{topic_id}", dependencies=[Depends(require_api_key)])
+async def delete_watch_topic(topic_id: str):
+    ok = watchlist_manager.remove_topic(WEB_USER_ID, topic_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    return {"deleted": True}
+
+
+# ── Insights ─────────────────────────────────────────────────────────────────
+@app.get("/api/chatty/insights", dependencies=[Depends(require_api_key)])
+async def get_insights(limit: int = Query(default=50, ge=1, le=200)):
+    return [i.to_dict() for i in insights_manager.get_insights(WEB_USER_ID, limit)]
+
+
+@app.delete("/api/chatty/insights/{insight_id}", dependencies=[Depends(require_api_key)])
+async def delete_insight(insight_id: str):
+    ok = insights_manager.delete_insight(WEB_USER_ID, insight_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Insight not found")
+    return {"deleted": True}
+
+
 # ── Reminders ────────────────────────────────────────────────────────────────
 def _load_reminders() -> List[dict]:
     reminders = []
@@ -171,6 +223,20 @@ async def _process_pi_queue():
                 break
 
             feature_requests_manager.update(req.id, status="running")
+
+            # Coordinate with the heartbeat's self-upgrade pipeline (a separate
+            # process) so two `pi` runs never touch the repo at once. Bounded
+            # wait so a stuck self-upgrade can't permanently wedge this queue.
+            waited = 0
+            while not pi_lock.acquire("web_queue"):
+                if waited >= 900:  # 15 min
+                    feature_requests_manager.append_log(
+                        req.id, "Proceeding despite an active self-upgrade lock (waited 15 min)."
+                    )
+                    break
+                await asyncio.sleep(5)
+                waited += 5
+
             try:
                 async for event in run_pi_agent(req.prompt):
                     etype = event.get("type")
@@ -189,6 +255,8 @@ async def _process_pi_queue():
                         feature_requests_manager.append_log(req.id, content)
             except Exception as e:
                 feature_requests_manager.update(req.id, status="error", summary=str(e))
+            finally:
+                pi_lock.release("web_queue")
 
             # Safety net: if the generator ended without an explicit terminal status
             latest = feature_requests_manager.get(req.id)
@@ -293,9 +361,38 @@ async def get_system():
     }
 
 
+# ── Chat Sessions ─────────────────────────────────────────────────────────────
+@app.get("/api/chatty/sessions", dependencies=[Depends(require_api_key)])
+async def get_sessions():
+    """List conversation sessions (newest first)."""
+    from src.core.memory import ConversationHistoryManager
+    mgr = ConversationHistoryManager(WEB_USER_ID)
+    sessions = await mgr.get_sessions()
+    # Return lightweight session info (no full message bodies)
+    result = []
+    for s in sessions:
+        result.append({
+            "id": s["id"],
+            "first_ts": s["first_ts"],
+            "last_ts": s["last_ts"],
+            "message_count": s["message_count"],
+            "summary": s["summary"],
+        })
+    return result
+
+
+@app.get("/api/chatty/sessions/{session_id}", dependencies=[Depends(require_api_key)])
+async def get_session_messages(session_id: int):
+    """Return messages for a specific session."""
+    from src.core.memory import ConversationHistoryManager
+    mgr = ConversationHistoryManager(WEB_USER_ID)
+    messages = await mgr.get_session(session_id)
+    return messages
+
+
 # ── WebSocket Chat ────────────────────────────────────────────────────────────
 @app.websocket("/api/chatty/chat")
-async def websocket_chat(websocket: WebSocket, api_key: str = Query(default="")):
+async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""), session_id: str = Query(default="")):
     if api_key != API_KEY:
         await websocket.close(code=4401)
         return
@@ -304,10 +401,32 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""))
 
     # Import here to avoid circular deps at module load
     from src.agents.web_chat_agent import WebChatAgent
-    from src.core.memory import MemoryManager
+    from src.core.memory import MemoryManager, ConversationHistoryManager
 
     memory_manager = MemoryManager(WEB_USER_ID)
     agent = WebChatAgent(skills_manager=skills_manager, memory_manager=memory_manager)
+
+    # Conversation history manager for persistent JSON history
+    history_mgr = ConversationHistoryManager(WEB_USER_ID)
+
+    # Load session context if a session_id is provided
+    active_session_id: Optional[int] = None
+    if session_id and session_id.isdigit():
+        active_session_id = int(session_id)
+        try:
+            session_msgs = await history_mgr.get_session(active_session_id)
+            if session_msgs:
+                # Pre-populate agent history with session messages
+                agent._history = session_msgs
+        except Exception as e:
+            logger.error(f"Failed to preload session {active_session_id} for user {WEB_USER_ID}: {e}")
+
+    # Notify client of active session
+    await websocket.send_text(json.dumps({
+        "type": "session_loaded",
+        "session_id": active_session_id,
+        "message_count": len(agent._history) if active_session_id is not None else 0,
+    }))
 
     try:
         while True:
@@ -322,11 +441,20 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""))
             if not user_message:
                 continue
 
-            # Stream agent response
+            # Stream agent response and collect full text
+            assistant_response = ""
             try:
                 async for chunk in agent.stream(user_message):
                     await websocket.send_text(json.dumps({"type": "chunk", "text": chunk}))
+                    assistant_response += chunk
                 await websocket.send_text(json.dumps({"type": "done"}))
+
+                # Persist to conversation history (JSON) so /sessions endpoint works
+                try:
+                    await history_mgr.append(user_message, assistant_response)
+                except Exception as e:
+                    # Don't break the chat if history save fails, but don't hide it either
+                    logger.error(f"Failed to save chat history for user {WEB_USER_ID}: {e}")
             except Exception as e:
                 await websocket.send_text(json.dumps({"type": "error", "text": str(e)}))
 

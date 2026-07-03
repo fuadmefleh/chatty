@@ -1,8 +1,8 @@
 """Heartbeat system for autonomous agent activities."""
 import asyncio
 from pathlib import Path
-from datetime import datetime
-from typing import Optional, Dict, Callable
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Callable, List
 import aiofiles
 import shutil
 
@@ -156,7 +156,30 @@ class HeartbeatManager:
                     result = await self._process_budget_analysis()
                     if result:
                         summary.append(result)
-                    
+
+                    # Search watched topics for notable updates and surface insights
+                    result = await self._process_world_watch()
+                    if result:
+                        summary.append(result)
+
+                    # Mine long-term memory for topics worth proactively watching
+                    result = await self._process_memory_watch_suggestions()
+                    if result:
+                        summary.append(result)
+
+                    # Send the once-daily briefing digest, if it's time
+                    result = await self._process_daily_briefing()
+                    if result:
+                        summary.append(result)
+
+                    # Think of (and, if worthwhile, implement) a self-upgrade idea.
+                    # Placed last: it's the slowest task and, on success, restarts
+                    # this very process - nothing after it in this cycle is
+                    # guaranteed to run.
+                    result = await self._process_self_upgrade_ideas()
+                    if result:
+                        summary.append(result)
+
                     # Create a prompt for autonomous actions
                     heartbeat_prompt = self._create_heartbeat_prompt(instructions)
                     
@@ -555,6 +578,466 @@ Otherwise, just think through the checks and conclude with your assessment.
             heartbeat_logger.error(f"Error in budget analysis: {e}", exc_info=True)
             return None
     
+    async def _process_world_watch(self) -> Optional[str]:
+        """Check watched topics for updates and surface notable insights.
+
+        Dispatches per-topic to src/managers/watch_sources.py based on
+        topic.kind ("news" -> SearXNG + LLM summary, "stock" -> Yahoo Finance
+        day-move check, "github" -> release/commit check), each on its own
+        configurable check interval (WORLD_WATCH_INTERVAL_HOURS /
+        STOCK_WATCH_INTERVAL_HOURS / GITHUB_WATCH_INTERVAL_HOURS).
+
+        IMPORTANT: iterates ONLY over src.main.authorized_users (the real,
+        logged-in user(s)) - never over discovered memory/* directories.
+        execute_heartbeat() falls back to scanning every memory/* folder
+        (including stray test dirs) when no one has an active in-memory
+        agent; the other hardcoded heartbeat methods (e.g. budget alerts)
+        deliberately avoid that trap by going straight to authorized_users,
+        and this method must do the same to avoid spamming messages for
+        users who never actually set up a watchlist.
+
+        Returns:
+            One-line summary string for the heartbeat digest, or None if
+            nothing was due to run or nothing notable was found.
+        """
+        try:
+            from skills.watchlist.watchlist_manager import WatchlistManager
+            from src.managers.insights_manager import InsightsManager
+            from src.managers import watch_sources
+            import src.main as main_module
+
+            if not getattr(main_module, "authorized_users", None):
+                return None
+
+            watchlist_mgr = WatchlistManager()
+            insights_mgr = InsightsManager()
+
+            interval_by_kind = {
+                "news": timedelta(hours=config.WORLD_WATCH_INTERVAL_HOURS),
+                "stock": timedelta(hours=config.STOCK_WATCH_INTERVAL_HOURS),
+                "github": timedelta(hours=config.GITHUB_WATCH_INTERVAL_HOURS),
+            }
+
+            surfaced = 0
+
+            for user_id in main_module.authorized_users.keys():
+                for topic in watchlist_mgr.get_topics(user_id):
+                    interval = interval_by_kind.get(topic.kind, interval_by_kind["news"])
+
+                    if topic.last_run_at:
+                        try:
+                            elapsed = datetime.now() - datetime.fromisoformat(topic.last_run_at)
+                            if elapsed < interval:
+                                continue  # Not due yet
+                        except ValueError:
+                            pass  # Malformed timestamp - treat as due
+
+                    try:
+                        insight_summary = None
+                        sources: List[Dict] = []
+
+                        if topic.kind == "stock":
+                            check = await watch_sources.check_stock(topic.topic, config.STOCK_WATCH_MOVE_THRESHOLD_PERCENT)
+                            if check is None:
+                                continue  # Lookup failed - retry next tick, don't advance last_run_at
+                            watchlist_mgr.mark_run(user_id, topic.id, [], datetime.now().isoformat())
+                            if not check.get("notable"):
+                                continue
+                            insight_summary = check["summary"]
+                            sources = check["sources"]
+
+                        elif topic.kind == "github":
+                            check = await watch_sources.check_github(topic.topic, topic.seen_urls)
+                            if check is None:
+                                continue
+                            watchlist_mgr.mark_run(user_id, topic.id, check["new_markers"], datetime.now().isoformat())
+                            if not check["new_items"]:
+                                continue
+                            insight_summary = "\n".join(f"• {item['title']}" for item in check["new_items"])
+                            sources = [{"title": item["title"], "url": item["url"]} for item in check["new_items"]]
+
+                        else:  # "news" (default)
+                            check = await watch_sources.check_news(topic.topic, topic.seen_urls)
+                            if check is None:
+                                continue
+                            watchlist_mgr.mark_run(user_id, topic.id, check["all_markers"], datetime.now().isoformat())
+                            if not check["new_items"]:
+                                continue
+                            insight_summary = await self._summarize_world_watch_results(topic.topic, check["new_items"])
+                            if not insight_summary:
+                                continue
+                            sources = [{"title": r["title"], "url": r["link"]} for r in check["new_items"][:5]]
+
+                        insights_mgr.add_insight(user_id, topic.topic, insight_summary, sources)
+
+                        if self._send_message_callback:
+                            icon = {"stock": "📈", "github": "🐙"}.get(topic.kind, "🔭")
+                            message = f"{icon} **World Watch: {topic.topic}**\n\n{insight_summary}\n\n"
+                            message += "\n".join(f"• {s['title']}: {s['url']}" for s in sources)
+                            await self._send_message_callback(user_id, message)
+
+                        surfaced += 1
+
+                    except Exception as e:
+                        heartbeat_logger.error(
+                            f"Error processing world watch topic '{topic.topic}' ({topic.kind}) for user {user_id}: {e}",
+                            exc_info=True
+                        )
+
+            if surfaced:
+                return f"🔭 World Watch: {surfaced} new insight(s) surfaced"
+            return None
+
+        except Exception as e:
+            heartbeat_logger.error(f"Error in world watch processing: {e}", exc_info=True)
+            return None
+
+    async def _summarize_world_watch_results(self, topic: str, results: List[Dict]) -> Optional[str]:
+        """Summarize new search results into a short, notable-or-nothing digest.
+
+        Returns None (rather than a summary) when the LLM judges the results
+        aren't genuinely worth surfacing - this is what keeps world watch from
+        notifying on recycled/low-value content every time it runs.
+        """
+        try:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(api_key=config.CHAT_API_KEY, base_url=config.CHAT_BASE_URL)
+
+            results_text = "\n".join(
+                f"- {r['title']}: {r['snippet']} ({r['link']})" for r in results
+            )
+            prompt = f"""Here are new search results about the watched topic "{topic}":
+
+{results_text}
+
+In 2-4 sentences, summarize what's new or notable here for someone following this topic.
+If none of this is genuinely noteworthy (e.g. it's just recycled/old content, spam, or irrelevant),
+reply with exactly: NOTHING_NOTABLE"""
+
+            response = await client.chat.completions.create(
+                model=config.CHAT_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+
+            summary = (response.choices[0].message.content or "").strip()
+            if not summary or summary == "NOTHING_NOTABLE":
+                return None
+            return summary
+
+        except Exception as e:
+            heartbeat_logger.error(f"Error summarizing world watch results for '{topic}': {e}", exc_info=True)
+            return None
+
+    async def _process_memory_watch_suggestions(self) -> Optional[str]:
+        """Mine long-term memory for topics worth proactively watching and suggest them.
+
+        Runs at most once per MEMORY_SUGGESTION_INTERVAL_HOURS (default
+        weekly). Never auto-adds a topic - only sends a Telegram suggestion;
+        the user accepts it the normal way ("watch X"), same as any other
+        topic. Tracks what's already been suggested via WatchlistManager's
+        suggestion state so it doesn't repeat itself every week.
+
+        IMPORTANT: like _process_world_watch, iterates only authorized_users.
+        """
+        try:
+            from skills.watchlist.watchlist_manager import WatchlistManager
+            from src.core.memory import MemoryManager
+            import src.main as main_module
+
+            if not getattr(main_module, "authorized_users", None):
+                return None
+
+            watchlist_mgr = WatchlistManager()
+            interval = timedelta(hours=config.MEMORY_SUGGESTION_INTERVAL_HOURS)
+
+            suggested_count = 0
+
+            for user_id in main_module.authorized_users.keys():
+                last_run = watchlist_mgr.get_last_suggestion_run(user_id)
+                if last_run:
+                    try:
+                        elapsed = datetime.now() - datetime.fromisoformat(last_run)
+                        if elapsed < interval:
+                            continue
+                    except ValueError:
+                        pass
+
+                memory_manager = MemoryManager(user_id)
+                long_term_memory = await memory_manager.get_long_term_memory()
+                if not long_term_memory or long_term_memory.strip() == "No long-term memories yet.":
+                    watchlist_mgr.record_suggestions(user_id, [], datetime.now().isoformat())
+                    continue
+
+                active_topics = [t.topic for t in watchlist_mgr.get_topics(user_id)]
+                already_suggested = watchlist_mgr.get_suggested_topics(user_id)
+                exclude = active_topics + already_suggested
+
+                candidates = await self._suggest_watch_topics_from_memory(long_term_memory, exclude)
+                if not candidates:
+                    watchlist_mgr.record_suggestions(user_id, [], datetime.now().isoformat())
+                    continue
+
+                if self._send_message_callback:
+                    message = "💡 **Watch Suggestion**\n\n"
+                    message += "Based on things you've mentioned, you might want me to keep an eye on:\n\n"
+                    message += "\n".join(f"• {c}" for c in candidates)
+                    message += "\n\nJust say \"watch <topic>\" if you'd like me to start."
+                    await self._send_message_callback(user_id, message)
+                    suggested_count += len(candidates)
+
+                watchlist_mgr.record_suggestions(user_id, candidates, datetime.now().isoformat())
+
+            if suggested_count:
+                return f"💡 Watch suggestions: proposed {suggested_count} new topic(s)"
+            return None
+
+        except Exception as e:
+            heartbeat_logger.error(f"Error in memory watch suggestions: {e}", exc_info=True)
+            return None
+
+    async def _suggest_watch_topics_from_memory(self, long_term_memory: str, exclude: List[str]) -> List[str]:
+        """Ask the LLM for up to 2 topics worth watching, given long-term memory content."""
+        try:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(api_key=config.CHAT_API_KEY, base_url=config.CHAT_BASE_URL)
+
+            exclude_text = ", ".join(exclude) if exclude else "(none)"
+            prompt = f"""Here is a user's long-term memory (facts, goals, recurring topics, preferences):
+
+{long_term_memory[:6000]}
+
+Topics already being watched or already suggested (do NOT suggest these again): {exclude_text}
+
+Suggest up to 2 SPECIFIC topics (a project, technology, event, team, etc.) that would genuinely be
+worth proactively monitoring for news/updates on this person's behalf. Only suggest something if it's
+clearly a recurring interest or active goal - don't force it.
+
+Reply with each suggestion on its own line as:
+TOPIC: <short topic text>
+
+If nothing is worth suggesting, reply with exactly: NONE"""
+
+            response = await client.chat.completions.create(
+                model=config.CHAT_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+
+            text = (response.choices[0].message.content or "").strip()
+            if not text or text == "NONE":
+                return []
+
+            candidates = []
+            for line in text.splitlines():
+                line = line.strip()
+                if line.upper().startswith("TOPIC:"):
+                    topic = line.split(":", 1)[1].strip()
+                    if topic and topic not in exclude:
+                        candidates.append(topic)
+            return candidates[:2]
+
+        except Exception as e:
+            heartbeat_logger.error(f"Error generating watch topic suggestions: {e}", exc_info=True)
+            return []
+
+    async def _process_daily_briefing(self) -> Optional[str]:
+        """Send a once-daily digest (weather, budget snapshot, today's
+        reminders, recent insights) at config.DAILY_BRIEFING_HOUR local time.
+
+        Additive, not a replacement for other real-time proactive messages
+        (world watch pings, budget alerts, heartbeat summaries) - this is a
+        single rollup for the start of the day, not a suppression of
+        time-sensitive alerts sent elsewhere.
+
+        IMPORTANT: like _process_world_watch, iterates only authorized_users.
+        """
+        try:
+            import src.main as main_module
+
+            if not getattr(main_module, "authorized_users", None):
+                return None
+            if not self._send_message_callback:
+                return None
+
+            now = datetime.now()
+            if now.hour != config.DAILY_BRIEFING_HOUR:
+                return None
+
+            today_str = now.strftime("%Y-%m-%d")
+            state = self._load_briefing_state()
+
+            sent_count = 0
+            for user_id in main_module.authorized_users.keys():
+                if state.get(user_id) == today_str:
+                    continue  # Already sent today
+
+                sections = await self._build_daily_briefing_sections(user_id, main_module)
+                message = f"🌅 **Daily Briefing** - {now.strftime('%A, %B %d')}\n\n" + "\n\n".join(sections)
+                await self._send_message_callback(user_id, message)
+                state[user_id] = today_str
+                sent_count += 1
+
+            if sent_count:
+                self._save_briefing_state(state)
+                return f"🌅 Daily briefing sent to {sent_count} user(s)"
+            return None
+
+        except Exception as e:
+            heartbeat_logger.error(f"Error in daily briefing: {e}", exc_info=True)
+            return None
+
+    async def _build_daily_briefing_sections(self, user_id: str, main_module) -> List[str]:
+        """Gather the individual lines that make up a daily briefing message."""
+        sections = []
+
+        if config.HOME_LOCATION:
+            try:
+                from skills.weather.weather_api import fetch_weather
+                weather = await fetch_weather(config.HOME_LOCATION)
+                if weather.get("success"):
+                    current = weather.get("current", {})
+                    sections.append(
+                        f"☀️ **Weather in {weather.get('location', config.HOME_LOCATION)}**: "
+                        f"{current.get('condition', 'Unknown')}, {current.get('temperature_f', '?')}°F"
+                    )
+            except Exception as e:
+                heartbeat_logger.warning(f"Daily briefing weather lookup failed: {e}")
+
+        try:
+            from skills.budget_analysis.budget_analyzer import BudgetAnalyzer
+            analysis = await BudgetAnalyzer().analyze_monthly_spending()
+            total = analysis.get("total_spending", 0) or 0
+            warnings = analysis.get("warnings", [])
+            line = f"💰 **Budget**: ${total:,.2f} spent this month"
+            if warnings:
+                line += f" ({len(warnings)} categor{'y' if len(warnings) == 1 else 'ies'} over budget)"
+            sections.append(line)
+        except Exception as e:
+            heartbeat_logger.warning(f"Daily briefing budget lookup failed: {e}")
+
+        try:
+            reminder_mgr = getattr(main_module, "reminder_manager", None)
+            if reminder_mgr:
+                today = datetime.now().date()
+                due_today = [
+                    r for r in await reminder_mgr.get_user_reminders(user_id, include_sent=False)
+                    if datetime.fromisoformat(r.scheduled_time).date() == today
+                ]
+                if due_today:
+                    sections.append(
+                        f"⏰ **{len(due_today)} reminder(s) today**: "
+                        + "; ".join(r.message for r in due_today[:5])
+                    )
+        except Exception as e:
+            heartbeat_logger.warning(f"Daily briefing reminders lookup failed: {e}")
+
+        try:
+            from src.managers.insights_manager import InsightsManager
+            insights = InsightsManager().get_insights(user_id, limit=20)
+            cutoff = datetime.now() - timedelta(hours=24)
+            recent = [i for i in insights if datetime.fromisoformat(i.created_at) >= cutoff]
+            if recent:
+                sections.append(f"🔭 **{len(recent)} new insight(s)**: " + "; ".join(i.topic for i in recent[:5]))
+        except Exception as e:
+            heartbeat_logger.warning(f"Daily briefing insights lookup failed: {e}")
+
+        if not sections:
+            sections.append("Nothing notable to report today.")
+
+        return sections
+
+    def _load_briefing_state(self) -> Dict[str, str]:
+        import json
+        path = config.BASE_DIR / "data" / "daily_briefing_state.json"
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return {}
+
+    def _save_briefing_state(self, state: Dict[str, str]) -> None:
+        import json
+        path = config.BASE_DIR / "data" / "daily_briefing_state.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2))
+
+    async def _process_self_upgrade_ideas(self) -> Optional[str]:
+        """Think of a self-upgrade idea and, if one seems worthwhile, implement
+        it end-to-end via src/managers/self_upgrade_manager.py: an isolated git
+        worktree/branch, the Pi coding agent, a test gate, and (only if tests
+        pass, main is clean, and main is checked out) an automatic merge +
+        restart of the affected pm2 services. Failed attempts never touch
+        main - the branch/worktree is left in place for manual review.
+
+        Runs at most once per SELF_UPGRADE_INTERVAL_HOURS, tracked globally
+        (not per-user) since this affects the whole system, not one user's
+        data. May take several minutes to complete - that's expected given
+        how rarely it runs.
+
+        IMPORTANT: like _process_world_watch, iterates only authorized_users
+        (just to confirm someone is actually using the bot before spending
+        the time/resources on this).
+        """
+        try:
+            from src.managers import self_upgrade_manager
+            from skills.pi_agent.requests_manager import FeatureRequestsManager
+            import src.main as main_module
+
+            if not getattr(main_module, "authorized_users", None):
+                return None
+
+            state = self._load_self_upgrade_state()
+            last_run = state.get("last_run_at")
+            if last_run:
+                try:
+                    elapsed = datetime.now() - datetime.fromisoformat(last_run)
+                    if elapsed < timedelta(hours=config.SELF_UPGRADE_INTERVAL_HOURS):
+                        return None
+                except ValueError:
+                    pass
+
+            state["last_run_at"] = datetime.now().isoformat()
+            self._save_self_upgrade_state(state)
+
+            user_id = next(iter(main_module.authorized_users.keys()))
+            feature_requests_manager = FeatureRequestsManager()
+            memory_manager = MemoryManager(user_id)
+
+            idea = await self_upgrade_manager.generate_self_upgrade_idea(
+                self.skills_manager, memory_manager, feature_requests_manager
+            )
+            if not idea:
+                return None
+
+            heartbeat_logger.info(f"Self-upgrade idea: {idea[:200]}")
+            return await self_upgrade_manager.run_self_upgrade(
+                idea, feature_requests_manager, self._send_message_callback, user_id
+            )
+
+        except Exception as e:
+            heartbeat_logger.error(f"Error in self-upgrade processing: {e}", exc_info=True)
+            return None
+
+    def _load_self_upgrade_state(self) -> Dict[str, str]:
+        import json
+        path = config.BASE_DIR / "data" / "self_upgrade_state.json"
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return {}
+
+    def _save_self_upgrade_state(self, state: Dict[str, str]) -> None:
+        import json
+        path = config.BASE_DIR / "data" / "self_upgrade_state.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2))
+
     async def _send_heartbeat_summary(self, summary: list, timestamp: str) -> None:
         """Send heartbeat summary to authorized users via Telegram.
         

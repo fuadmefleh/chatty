@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import { api } from '../api';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
 import type { PieLabelRenderProps } from 'recharts';
 import PageHeader from '../components/ui/PageHeader';
@@ -40,10 +40,10 @@ const Budget: React.FC = () => {
   const loadBudgetData = (limit?: number) => {
     setLoading(true);
     const url = limit
-      ? `http://localhost:8015/budget?monthly_limit=${limit}`
-      : 'http://localhost:8015/budget';
+      ? `/budget?monthly_limit=${limit}`
+      : '/budget';
 
-    axios.get<BudgetSummary>(url)
+    api.get<BudgetSummary>(url)
       .then(response => {
         setData(response.data);
         setLoading(false);

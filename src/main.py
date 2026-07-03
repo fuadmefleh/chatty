@@ -14,16 +14,18 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-from typing import Dict
+from typing import Dict, List
 
 from src.core import config
-from src.core.memory import MemoryManager
+from src.core.memory import MemoryManager, ConversationHistoryManager, MAX_SESSIONS_SHOWN
 from src.core.skills_manager import SkillsManager  # Use the new dynamic skills manager
 from src.agents.staged_react_agent import StagedReACTAgent  # Use staged ReACT agent
 from src.managers.reminder_manager import ReminderManager
 from skills.reminder.tools import set_reminder_manager
 from skills.notes.notes_manager import NotesManager
 from skills.notes.tools import set_notes_manager
+from skills.watchlist.watchlist_manager import WatchlistManager
+from skills.watchlist.tools import set_watchlist_manager
 from src.managers.heartbeat_manager import HeartbeatManager
 from src.core.logging_config import get_main_logger, get_interactions_logger, get_error_logger, get_api_logger
 from src.core.telegram_utils import safe_send_reply, safe_send_message
@@ -38,12 +40,13 @@ api_logger = get_api_logger()
 skills_manager = SkillsManager()
 reminder_manager = ReminderManager(config.BASE_DIR / "reminders")
 notes_manager = NotesManager()
+watchlist_manager = WatchlistManager()
 heartbeat_manager = HeartbeatManager(skills_manager)
 
 # Store user agents and memory managers
 user_agents: Dict[str, StagedReACTAgent] = {}
 user_memories: Dict[str, MemoryManager] = {}
-user_conversations: Dict[str, list] = {}
+user_history_managers: Dict[str, ConversationHistoryManager] = {}
 authorized_users: Dict[str, str] = {}  # user_id -> phone_number
 
 _AUTH_FILE = Path(__file__).parent.parent / "data" / "authorized_users.json"
@@ -77,10 +80,10 @@ _opencode_task = None  # Currently running opencode asyncio.Task
 
 def get_user_agent(user_id: str) -> StagedReACTAgent:
     """Get or create agent for a user.
-    
+
     Args:
         user_id: Telegram user ID
-        
+
     Returns:
         Staged ReACT agent for the user
     """
@@ -89,9 +92,10 @@ def get_user_agent(user_id: str) -> StagedReACTAgent:
         memory_manager = MemoryManager(user_id)
         user_memories[user_id] = memory_manager
         user_agents[user_id] = StagedReACTAgent(memory_manager, skills_manager)
-        user_conversations[user_id] = []
+        history_mgr = ConversationHistoryManager(user_id)
+        user_history_managers[user_id] = history_mgr
         logger.info(f"Agent created successfully for user {user_id}")
-    
+
     return user_agents[user_id]
 
 
@@ -163,12 +167,15 @@ Just send me a message and I'll do my best to help!
 
 Commands:
 /start - Show this welcome message
+/history - View your chat history (survives restarts!)
+/continue - Continue a previous conversation
+/sessions - List all past conversation sessions
 /memory - View your memory statistics
 /skills - List my available skills
 /stocks - Show today's top stock movers
 /reminders - View your active reminders
 /consolidate - Move old memories to long-term storage
-/clear - Clear conversation context (keeps memory files)
+/clear - Clear chat history
 /help - Show help information
 """
         await safe_send_reply(update.message, welcome_message)
@@ -504,13 +511,155 @@ async def walmart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /clear command."""
+    """Handle /clear command — clears both context window and persisted history."""
     user_id = str(update.effective_user.id)
-    
-    if user_id in user_conversations:
-        user_conversations[user_id] = []
-    
-    await safe_send_reply(update.message, "🗑️ Conversation context cleared! (Memory files are preserved)")
+    if user_id in user_history_managers:
+        await user_history_managers[user_id].clear()
+
+    await safe_send_reply(update.message, "🗑️ Conversation history cleared! (Memory files from /memory are preserved)")
+
+
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /history command — view persisted chat history with pagination."""
+    user_id = str(update.effective_user.id)
+
+    if not is_user_authorized(user_id):
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
+        return
+
+    get_user_agent(user_id)  # ensure manager exists
+    history_mgr = user_history_managers[user_id]
+
+    # Determine page
+    page = 0
+    if context.args:
+        try:
+            page = max(0, int(context.args[0]) - 1)  # 1-indexed
+        except ValueError:
+            page = 0
+
+    messages, total_pages, total_count = await history_mgr.get_page(page)
+
+    if total_count == 0:
+        await safe_send_reply(update.message, "📭 No chat history yet. Start a conversation!")
+        return
+
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    lines = [f"📜 **Chat History** (Page {page + 1}/{total_pages})\n"]
+
+    for msg in messages:
+        ts = msg.get("ts", "")
+        try:
+            dt = datetime.fromisoformat(ts)
+            time_str = dt.strftime("%b %d %H:%M")
+        except Exception:
+            time_str = ""
+
+        role_emoji = "👤" if msg["role"] == "user" else "🤖"
+        content = msg["content"]
+        # Truncate long messages for display
+        if len(content) > 200:
+            content = content[:197] + "..."
+
+        lines.append(f"{role_emoji} *[{time_str}]* {content}\n")
+
+    lines.append(f"\n💬 Total messages: {total_count}")
+    lines.append("\nUsage: `/history [page]` — e.g. `/history 2`")
+
+    # Pagination buttons
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"hist_{page - 1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"hist_{page + 1}"))
+
+    reply_markup = InlineKeyboardMarkup([nav_buttons]) if nav_buttons else None
+
+    await safe_send_reply(update.message, "\n".join(lines), parse_mode="Markdown", reply_markup=reply_markup)
+
+
+async def continue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /continue command — show recent sessions to pick from."""
+    user_id = str(update.effective_user.id)
+
+    if not is_user_authorized(user_id):
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
+        return
+
+    get_user_agent(user_id)  # ensure manager exists
+    history_mgr = user_history_managers[user_id]
+
+    sessions = await history_mgr.get_sessions()
+
+    if not sessions:
+        await safe_send_reply(update.message, "📭 No previous sessions found. Start a conversation!")
+        return
+
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    keyboard = []
+    for sess in sessions[:MAX_SESSIONS_SHOWN]:
+        try:
+            first_dt = datetime.fromisoformat(sess["first_ts"])
+            label = first_dt.strftime("%b %d %H:%M")
+        except Exception:
+            label = ""
+
+        summary = sess.get("summary", "(no summary)") or "(empty session)"
+        # Truncate label to fit button
+        display = f"🕐 {label} — {summary[:30]}…" if len(summary) > 30 else f"🕐 {label} — {summary}"
+        keyboard.append([InlineKeyboardButton(display, callback_data=f"cont_{sess['id']}")])
+
+    # Add sessions button for full list
+    keyboard.append([InlineKeyboardButton("📋 See all sessions", callback_data="sessions_list")])
+
+    await safe_send_reply(
+        update.message,
+        "🔄 *Continue a previous conversation*\n\n"
+        "Tap a session below to load its context and continue chatting:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /sessions command — list all past sessions."""
+    user_id = str(update.effective_user.id)
+
+    if not is_user_authorized(user_id):
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
+        return
+
+    get_user_agent(user_id)
+    history_mgr = user_history_managers[user_id]
+
+    sessions = await history_mgr.get_sessions()
+
+    if not sessions:
+        await safe_send_reply(update.message, "📭 No previous sessions found.")
+        return
+
+    lines = [f"📋 *Your Conversation Sessions* ({len(sessions)} total)\n"]
+    for sess in sessions:
+        try:
+            first_dt = datetime.fromisoformat(sess["first_ts"])
+            last_dt = datetime.fromisoformat(sess["last_ts"])
+            first_label = first_dt.strftime("%Y-%m-%d %H:%M")
+            last_label = last_dt.strftime("%H:%M")
+        except Exception:
+            first_label = sess.get("first_ts", "")
+            last_label = sess.get("last_ts", "")
+
+        summary = sess.get("summary", "") or "(empty)"
+        msg_count = sess.get("message_count", 0)
+        lines.append(f"*[{sess['id']}]* {first_label} – {last_label}")
+        lines.append(f"  {msg_count} messages")
+        lines.append(f"  _{summary}_\n")
+
+    lines.append("💡 Use `/continue` to pick a session to resume.")
+
+    await safe_send_reply(update.message, "\n".join(lines), parse_mode="Markdown")
 
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -524,6 +673,75 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     
     await query.answer()  # Acknowledge the callback
     
+    # -- Continue a previous session -----------------------------------------
+    if query.data.startswith("cont_"):
+        try:
+            session_id = int(query.data.split("_")[1])
+            get_user_agent(user_id)
+            history_mgr = user_history_managers[user_id]
+            messages = await history_mgr.get_session(session_id)
+            if messages:
+                # Save back into history so the window is updated
+                full_history = await history_mgr.load()
+                await history_mgr.save(full_history)  # no-op but keeps state consistent
+                # Store the active session ID so the next message loads this context
+                active_file = config.MEMORY_DIR / str(user_id) / "active_session.json"
+                import json as _json
+                import aiofiles as _aiofiles
+                async with _aiofiles.open(active_file, "w") as f:
+                    await f.write(_json.dumps({"session_id": session_id, "loaded": True}))
+
+                # Show confirmation with preview
+                preview = messages[-1]["content"][:100]
+                await query.edit_message_text(
+                    f"✅ *Session loaded!*\n\n" 
+                    f"I've loaded the conversation context. Continue chatting below.\n\n" 
+                    f"_Last message: {preview}..._",
+                    parse_mode="Markdown",
+                )
+            else:
+                await query.edit_message_text("Session not found.")
+        except Exception as e:
+            logger.error(f"Error loading session: {e}", exc_info=True)
+            await query.edit_message_text("An error occurred loading the session.")
+        return
+
+    # -- Sessions list (full) ------------------------------------------------
+    if query.data == "sessions_list":
+        try:
+            get_user_agent(user_id)
+            history_mgr = user_history_managers[user_id]
+            sessions = await history_mgr.get_sessions()
+            lines = [f"📋 *All Sessions* ({len(sessions)})\n"]
+            for sess in sessions:
+                try:
+                    first_dt = datetime.fromisoformat(sess["first_ts"])
+                    label = first_dt.strftime("%b %d %H:%M")
+                except Exception:
+                    label = ""
+                summary = sess.get("summary", "") or "(empty)"
+                msg_count = sess.get("message_count", 0)
+                lines.append(f"[{sess['id']}] {label} — {msg_count} msgs — _{summary[:40]}_")
+            lines.append("\nUse `/continue` to pick one to resume.")
+
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            # Add buttons for each session
+            btns = []
+            for sess in sessions[:MAX_SESSIONS_SHOWN]:
+                btns.append([InlineKeyboardButton(
+                    f"▶ {sess['id']}", callback_data=f"cont_{sess['id']}"
+                )])
+
+            await query.edit_message_text(
+                "\n".join(lines),
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(btns) if btns else None,
+            )
+        except Exception as e:
+            logger.error(f"Error listing sessions: {e}", exc_info=True)
+            await query.edit_message_text("An error occurred.")
+        return
+
     # Handle notes pagination
     if query.data.startswith("notes_page_"):
         try:
@@ -577,6 +795,55 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         except Exception as e:
             logger.error(f"Error in callback_query_handler for notes: {e}", exc_info=True)
             await query.edit_message_text("An error occurred retrieving your notes.")
+
+    # Handle history pagination
+    elif query.data.startswith("hist_"):
+        try:
+            page = int(query.data.split("_")[1])
+            get_user_agent(user_id)  # ensure manager exists
+            history_mgr = user_history_managers[user_id]
+            total = await history_mgr.count()
+            if total == 0:
+                await query.edit_message_text("No history found.")
+                return
+
+            messages, total_pages, total_count = await history_mgr.get_page(page)
+
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+            lines = [f"📜 **Chat History** (Page {page + 1}/{total_pages})\n"]
+
+            for msg in messages:
+                ts = msg.get("ts", "")
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    time_str = dt.strftime("%b %d %H:%M")
+                except Exception:
+                    time_str = ""
+
+                role_emoji = "👤" if msg["role"] == "user" else "🤖"
+                content = msg["content"]
+                if len(content) > 200:
+                    content = content[:197] + "..."
+
+                lines.append(f"{role_emoji} *[{time_str}]* {content}\n")
+
+            lines.append(f"\n💬 Total messages: {total_count}")
+
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"hist_{page - 1}"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"hist_{page + 1}"))
+
+            reply_markup = InlineKeyboardMarkup([nav_buttons]) if nav_buttons else None
+
+            await query.edit_message_text(
+                "\n".join(lines), parse_mode="Markdown", reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Error in callback_query_handler for history: {e}", exc_info=True)
+            await query.edit_message_text("An error occurred retrieving your history.")
 
 
 async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -756,6 +1023,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **Available Commands:**
 /start - Start the bot and verify your phone
+/history - View your chat history (paginated)
+/continue - Continue a previous conversation
+/sessions - List all past conversation sessions
 /memory - View your memory statistics
 /skills - List available skills
 /reminders - View your active reminders
@@ -764,7 +1034,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /stocks - Show today's top stock movers
 /consolidate - Manually consolidate memories to long-term storage
 /heartbeat - Manually trigger heartbeat cycle (for testing)
-/clear - Clear conversation context
+/clear - Clear chat history
 /help - Show this help
 
 **Features:**
@@ -1183,11 +1453,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Get user's agent
         agent = get_user_agent(user_id)
-        
-        # Get conversation history
-        conversation_history = user_conversations.get(user_id, [])
+
+        # Check if user loaded a session to continue from
+        import aiofiles as _aiofiles
+        active_file = config.MEMORY_DIR / user_id / "active_session.json"
+        conversation_history: List[Dict] = []
+        if active_file.exists():
+            try:
+                async with _aiofiles.open(active_file, "r") as f:
+                    data = json.loads(await f.read())
+                session_id = data.get("session_id")
+                if session_id is not None:
+                    history_mgr = user_history_managers[user_id]
+                    conversation_history = await history_mgr.get_session(session_id)
+                    logger.info(f"Loaded session {session_id} with {len(conversation_history)} messages for user {user_id}")
+            except Exception as e:
+                logger.warning(f"Failed to load active session for {user_id}: {e}")
+        if not conversation_history:
+            # Normal sliding window
+            history_mgr = user_history_managers[user_id]
+            conversation_history = await history_mgr.get_messages()
+
+        # Clear the active session marker so subsequent messages use normal window
+        if active_file.exists():
+            try:
+                active_file.unlink()
+            except Exception:
+                pass
+
         logger.debug(f"Conversation history length: {len(conversation_history)} messages")
-        
+
         # Create a progress callback to send status updates
         async def send_progress(status_text: str):
             """Send a progress update to the user."""
@@ -1201,14 +1496,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Process message through ReACT agent with progress callback
         response = await agent.think(message_text, conversation_history, progress_callback=send_progress)
         
-        # Update conversation history
-        conversation_history.append({"role": "user", "content": message_text})
-        conversation_history.append({"role": "assistant", "content": response})
-        
-        # Keep only recent history to avoid token limits
-        user_conversations[user_id] = conversation_history[-10:]
-        
-        # Save to memory
+        # Persist conversation history (survives restarts)
+        await history_mgr.append(message_text, response)
+
+        # Save to daily memory
         memory_manager = user_memories[user_id]
         await memory_manager.add_interaction(message_text, response)
         logger.info(f"Successfully responded to user {user_id}")
@@ -1261,7 +1552,10 @@ async def post_init(application: Application) -> None:
     
     # Inject notes manager into notes skill tools
     set_notes_manager(notes_manager)
-    
+
+    # Inject watchlist manager into watchlist skill tools
+    set_watchlist_manager(watchlist_manager)
+
     # Load skills
     await skills_manager.load_skills()
     logger.info(f"Loaded {len(skills_manager.get_all_skills())} skills")
@@ -1316,6 +1610,9 @@ def main():
     application.add_handler(CommandHandler("heartbeat", heartbeat_command))
     application.add_handler(CommandHandler("consolidate", consolidate_command))
     application.add_handler(CommandHandler("clear", clear_command))
+    application.add_handler(CommandHandler("history", history_command))
+    application.add_handler(CommandHandler("continue", continue_command))
+    application.add_handler(CommandHandler("sessions", sessions_command))
     application.add_handler(CommandHandler("code", code_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CallbackQueryHandler(callback_query_handler))

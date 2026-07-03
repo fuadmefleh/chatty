@@ -145,9 +145,6 @@ const ItemDetail: React.FC = () => {
     }
   }, [tempCategory, handleCancelEdit]);
 
-  if (loading) return <div style={{ padding: 24, color: 'var(--muted)' }}>Loading history…</div>;
-  if (!history.length) return <div style={{ padding: 24, color: 'var(--muted)' }}>No history found for {name}</div>;
-
   const { monthSpending, yearSpending, allTimeSpending, avgPrice, monthPurchasesCount, yearPurchasesCount } = useMemo(() => {
     const now = new Date();
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -379,6 +376,9 @@ const ItemDetail: React.FC = () => {
       }
     }
   };
+
+  if (loading) return <div style={{ padding: 24, color: 'var(--muted)' }}>Loading history…</div>;
+  if (!history.length) return <div style={{ padding: 24, color: 'var(--muted)' }}>No history found for {name}</div>;
 
   return (
     <div style={{ padding: '24px 24px 48px' }}>

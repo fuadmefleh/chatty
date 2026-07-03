@@ -1,18 +1,18 @@
-"""Web search skill tools using Google Custom Search API."""
+"""Web search skill tools using a self-hosted SearXNG instance."""
 import json
 import importlib.util
 from pathlib import Path
 from src.core.skill_tool import SkillTool
 
-# Load google_search module from this skill folder
+# Load searxng_client module from this skill folder
 _skill_dir = Path(__file__).parent
-_google_search_path = _skill_dir / "google_search.py"
-_spec = importlib.util.spec_from_file_location("google_search_module", _google_search_path)
-_google_search = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_google_search)
+_searxng_client_path = _skill_dir / "searxng_client.py"
+_spec = importlib.util.spec_from_file_location("searxng_client_module", _searxng_client_path)
+_searxng_client = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_searxng_client)
 
-GoogleSearchClient = _google_search.GoogleSearchClient
-get_search_client = _google_search.get_search_client
+SearxngClient = _searxng_client.SearxngClient
+get_search_client = _searxng_client.get_search_client
 
 
 class WebSearchTool(SkillTool):
@@ -38,15 +38,15 @@ class WebSearchTool(SkillTool):
     
     async def execute(self, query: str, num_results: int = 5) -> str:
         client = get_search_client()
-        
+
         if not client.is_configured():
             return json.dumps({
                 "success": False,
-                "error": "Web search not configured. Set GOOGLE_API_KEY and GOOGLE_CSE_ID in .env file."
+                "error": "Web search not configured. Set SEARXNG_BASE_URL in .env file and run `docker compose up -d searxng`."
             })
-        
+
         result = await client.search(query, num_results)
-        
+
         if result["success"]:
             # Format results in a more readable way
             formatted = {
@@ -93,13 +93,13 @@ class SearchNewsTool(SkillTool):
     
     async def execute(self, query: str, num_results: int = 5) -> str:
         client = get_search_client()
-        
+
         if not client.is_configured():
             return json.dumps({
                 "success": False,
-                "error": "Web search not configured. Set GOOGLE_API_KEY and GOOGLE_CSE_ID in .env file."
+                "error": "Web search not configured. Set SEARXNG_BASE_URL in .env file and run `docker compose up -d searxng`."
             })
-        
+
         result = await client.search_news(query, num_results)
         
         if result["success"]:
@@ -154,23 +154,15 @@ class SearchRecentTool(SkillTool):
     
     async def execute(self, query: str, time_period: str = "week", num_results: int = 5) -> str:
         client = get_search_client()
-        
+
         if not client.is_configured():
             return json.dumps({
                 "success": False,
-                "error": "Web search not configured. Set GOOGLE_API_KEY and GOOGLE_CSE_ID in .env file."
+                "error": "Web search not configured. Set SEARXNG_BASE_URL in .env file and run `docker compose up -d searxng`."
             })
-        
-        # Map time period to Google's dateRestrict format
-        period_map = {
-            "day": "d1",
-            "week": "w1", 
-            "month": "m1",
-            "year": "y1"
-        }
-        date_restrict = period_map.get(time_period, "w1")
-        
-        result = await client.search(query, num_results, date_restrict=date_restrict)
+
+        # SearXNG's time_range param already accepts these values directly
+        result = await client.search(query, num_results, time_range=time_period)
         
         if result["success"]:
             formatted = {

@@ -63,6 +63,57 @@ export const deleteChattyNote = async (id: string): Promise<void> => {
   await chattyApi.delete(`/api/chatty/notes/${id}`);
 };
 
+// ── Watchlist ────────────────────────────────────────────────────────────────
+export type WatchTopicKind = 'news' | 'stock' | 'github';
+
+export interface ChattyWatchTopic {
+  id: string;
+  topic: string;
+  kind: WatchTopicKind;
+  user_id: string;
+  created_at: string;
+  last_run_at: string | null;
+  seen_urls: string[];
+}
+
+export const fetchWatchlist = async (): Promise<ChattyWatchTopic[]> => {
+  const res = await chattyApi.get<ChattyWatchTopic[]>('/api/chatty/watchlist');
+  return res.data;
+};
+
+export const createWatchTopic = async (topic: string, kind: WatchTopicKind = 'news'): Promise<ChattyWatchTopic> => {
+  const res = await chattyApi.post<ChattyWatchTopic>('/api/chatty/watchlist', { topic, kind });
+  return res.data;
+};
+
+export const deleteWatchTopic = async (id: string): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/watchlist/${id}`);
+};
+
+// ── Insights ─────────────────────────────────────────────────────────────────
+export interface ChattyInsightSource {
+  title: string;
+  url: string;
+}
+
+export interface ChattyInsight {
+  id: string;
+  topic: string;
+  summary: string;
+  sources: ChattyInsightSource[];
+  created_at: string;
+  user_id: string;
+}
+
+export const fetchInsights = async (limit = 50): Promise<ChattyInsight[]> => {
+  const res = await chattyApi.get<ChattyInsight[]>('/api/chatty/insights', { params: { limit } });
+  return res.data;
+};
+
+export const deleteInsight = async (id: string): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/insights/${id}`);
+};
+
 // ── Reminders ─────────────────────────────────────────────────────────────────
 export interface ChattyReminder {
   _file: string;
@@ -124,8 +175,33 @@ export const fetchChattySystem = async (): Promise<SystemStatus> => {
   return res.data;
 };
 
+// ── Chat Sessions ──────────────────────────────────────────────────────────────
+export interface ChatSession {
+  id: number;
+  first_ts: string;
+  last_ts: string;
+  message_count: number;
+  summary: string;
+}
+
+export const fetchChatSessions = async (): Promise<ChatSession[]> => {
+  const res = await chattyApi.get<ChatSession[]>('/api/chatty/sessions');
+  return res.data;
+};
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export const fetchSessionMessages = async (sessionId: number): Promise<ChatMessage[]> => {
+  const res = await chattyApi.get<ChatMessage[]>(`/api/chatty/sessions/${sessionId}`);
+  return res.data;
+};
+
 // ── Feature Requests (Pi agent) ────────────────────────────────────────────────
-export type FeatureRequestStatus = 'queued' | 'running' | 'completed' | 'error';
+export type FeatureRequestStatus = 'queued' | 'running' | 'testing' | 'completed' | 'error';
+export type FeatureRequestSource = 'user' | 'self_upgrade';
 
 export interface FeatureRequest {
   id: string;
@@ -136,6 +212,8 @@ export interface FeatureRequest {
   files_changed: string[];
   log: string[];
   summary: string;
+  source: FeatureRequestSource;
+  branch: string | null;
 }
 
 export const fetchFeatureRequests = async (): Promise<FeatureRequest[]> => {

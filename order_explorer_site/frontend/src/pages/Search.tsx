@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import { api } from '../api';
 import { Link } from 'react-router-dom';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
@@ -31,7 +31,7 @@ const Search: React.FC = () => {
 
   // Load all items on mount to get categories and sources
   useEffect(() => {
-    axios.get<Item[]>('http://localhost:8015/items')
+    api.get<Item[]>('/items')
       .then(response => {
         const uniqueCategories = Array.from(new Set(response.data.map(i => i.category).filter(Boolean)));
         const uniqueSources = Array.from(new Set(response.data.map(i => i.source).filter(Boolean)));
@@ -52,7 +52,7 @@ const Search: React.FC = () => {
     if (minPrice) params.append('min_price', minPrice);
     if (maxPrice) params.append('max_price', maxPrice);
 
-    axios.get<Item[]>(`http://localhost:8015/search?${params.toString()}`)
+    api.get<Item[]>(`/search?${params.toString()}`)
       .then(response => {
         setResults(response.data);
         setLoading(false);

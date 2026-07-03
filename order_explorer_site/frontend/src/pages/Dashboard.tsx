@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import axios from 'axios';
+import { api } from '../api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LineChart, Line } from 'recharts';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
@@ -57,7 +57,7 @@ const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    axios.get<DashboardStats>('http://localhost:8015/dashboard')
+    api.get<DashboardStats>('/dashboard')
       .then(response => {
         setStats(response.data);
         setLoading(false);

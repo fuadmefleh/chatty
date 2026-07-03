@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import { api } from '../api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend, LineChart, Line } from 'recharts';
 import type { PieLabelRenderProps } from 'recharts';
 import { Link } from 'react-router-dom';
@@ -63,7 +63,7 @@ const Years: React.FC = () => {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
   useEffect(() => {
-    axios.get<YearlyData[]>('http://localhost:8015/years')
+    api.get<YearlyData[]>('/years')
       .then(response => {
         setYearlyData(response.data);
         setLoading(false);
@@ -87,8 +87,8 @@ const Years: React.FC = () => {
 
       try {
         const [itemsRes, ordersRes] = await Promise.all([
-          axios.get<Item[]>('http://localhost:8015/items'),
-          axios.get<Order[]>('http://localhost:8015/orders')
+          api.get<Item[]>('/items'),
+          api.get<Order[]>('/orders')
         ]);
 
         const filteredItems = itemsRes.data.filter(i => i.date?.startsWith(year));
