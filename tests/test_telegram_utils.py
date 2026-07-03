@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 # Add parent directory to path so we can import src.*
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -117,6 +119,7 @@ def test_content_integrity_across_chunks():
 # safe_send_reply (smoke test)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.asyncio
 async def test_safe_send_reply_short_message():
     """Short message: one reply_text call, no delay."""
     from src.core.telegram_utils import safe_send_reply
@@ -129,6 +132,7 @@ async def test_safe_send_reply_short_message():
     msg.reply_text.assert_called_once_with("Hello")
 
 
+@pytest.mark.asyncio
 async def test_safe_send_reply_long_message_splits():
     """Long message: multiple reply_text calls with correct chunks."""
     from src.core.telegram_utils import safe_send_reply
@@ -146,6 +150,7 @@ async def test_safe_send_reply_long_message_splits():
         assert call[0][0] == chunk
 
 
+@pytest.mark.asyncio
 async def test_safe_send_reply_per_chunk_error_handling():
     """If one chunk fails, remaining chunks are still sent."""
     from src.core.telegram_utils import safe_send_reply
@@ -171,6 +176,7 @@ async def test_safe_send_reply_per_chunk_error_handling():
     assert call_count == 3
 
 
+@pytest.mark.asyncio
 async def test_safe_send_reply_passes_kwargs():
     """Extra kwargs (e.g. parse_mode) are forwarded to reply_text."""
     from src.core.telegram_utils import safe_send_reply
@@ -186,6 +192,7 @@ async def test_safe_send_reply_passes_kwargs():
 # safe_send_message (smoke test)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.asyncio
 async def test_safe_send_message_long():
     """Bot.send_message is called once per chunk."""
     from src.core.telegram_utils import safe_send_message
