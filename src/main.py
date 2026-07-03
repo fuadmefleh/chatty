@@ -28,6 +28,7 @@ from skills.watchlist.watchlist_manager import WatchlistManager
 from skills.watchlist.tools import set_watchlist_manager
 from src.managers.heartbeat_manager import HeartbeatManager
 from src.core.logging_config import get_main_logger, get_interactions_logger, get_error_logger, get_api_logger
+from src.core.telegram_utils import safe_send_reply, safe_send_message
 
 # Get specialized loggers
 logger = get_main_logger()
@@ -120,9 +121,10 @@ async def send_reminder(user_id: str, message: str):
     try:
         from telegram import Bot
         bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
-        await bot.send_message(
+        await safe_send_message(
+            bot,
             chat_id=user_id,
-            text=f"⏰ **Reminder**\n\n{message}"
+            text=f"⏰ **Reminder**\n\n{message}",
         )
         logger.info(f"Sent reminder to user {user_id}")
     except Exception as e:
@@ -176,7 +178,7 @@ Commands:
 /clear - Clear chat history
 /help - Show help information
 """
-        await update.message.reply_text(welcome_message)
+        await safe_send_reply(update.message, welcome_message)
         
         # Initialize user's agent
         get_user_agent(user_id)
@@ -187,7 +189,8 @@ Commands:
         keyboard = [[KeyboardButton("Share Phone Number", request_contact=True)]]
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         
-        await update.message.reply_text(
+        await safe_send_reply(
+            update.message,
             "👋 Hello! To use this bot, please verify your phone number by clicking the button below.",
             reply_markup=reply_markup
         )
@@ -201,7 +204,7 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"User {user_id} requested memory stats")
         
         if not is_user_authorized(user_id):
-            await update.message.reply_text("🔒 Please verify your phone number first with /start")
+            await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
             return
         
         if user_id not in user_memories:
@@ -227,10 +230,10 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Short-term memories are your recent daily conversations. Every 7 days during heartbeat cycles, I consolidate older conversations into long-term memory categories (preferences, goals, important facts, etc.).
 """
         
-        await update.message.reply_text(response)
+        await safe_send_reply(update.message, response)
     except Exception as e:
         logger.error(f"Error in memory_command: {e}", exc_info=True)
-        await update.message.reply_text("An error occurred retrieving memory stats.")
+        await safe_send_reply(update.message, "An error occurred retrieving memory stats.")
 
 
 async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -238,7 +241,7 @@ async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     all_skills = skills_manager.get_all_skills()
     
     if not all_skills:
-        await update.message.reply_text("🔧 No skills loaded yet. Add skill folders with tools.py to the skills directory!")
+        await safe_send_reply(update.message, "🔧 No skills loaded yet. Add skill folders with tools.py to the skills directory!")
         return
     
     skills_list = ["🔧 *Available Skills:*\n"]
@@ -264,10 +267,10 @@ async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     skills_list.append(f"\n📊 Total: {len(all_skills)} skills, {total_tools} tools")
     
     try:
-        await update.message.reply_text("\n".join(skills_list), parse_mode="Markdown")
+        await safe_send_reply(update.message, "\n".join(skills_list), parse_mode="Markdown")
     except Exception:
         # Fallback to plain text if markdown still fails
-        await update.message.reply_text("\n".join(skills_list))
+        await safe_send_reply(update.message, "\n".join(skills_list))
 
 
 async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -275,14 +278,14 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Please verify your phone number first with /start")
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
         return
     
     try:
         reminders = await reminder_manager.get_user_reminders(user_id)
         
         if not reminders:
-            await update.message.reply_text("📭 You don't have any active reminders.")
+            await safe_send_reply(update.message, "📭 You don't have any active reminders.")
             return
         
         from datetime import datetime
@@ -294,10 +297,10 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response_lines.append(f"{i}. {reminder.message}")
             response_lines.append(f"   📅 {time_str}\n")
         
-        await update.message.reply_text("\n".join(response_lines))
+        await safe_send_reply(update.message, "\n".join(response_lines))
     except Exception as e:
         logger.error(f"Error in reminders_command: {e}", exc_info=True)
-        await update.message.reply_text("An error occurred retrieving your reminders.")
+        await safe_send_reply(update.message, "An error occurred retrieving your reminders.")
 
 
 async def notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -305,7 +308,7 @@ async def notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Please verify your phone number first with /start")
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
         return
     
     try:
@@ -322,7 +325,8 @@ async def notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]]
         
         if not notes:
-            await update.message.reply_text(
+            await safe_send_reply(
+                update.message,
                 "📝 You don't have any notes yet.\n\n"
                 "Tell me to 'take note' or 'write down' something to create your first note!\n\n"
                 "Or tap the button below to open the Notes app:",
@@ -386,14 +390,15 @@ async def notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
+        await safe_send_reply(
+            update.message,
             "\n".join(response_lines),
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
     except Exception as e:
         logger.error(f"Error in notes_command: {e}", exc_info=True)
-        await update.message.reply_text(f"Error displaying notes: {str(e)}")
+        await safe_send_reply(update.message, f"Error displaying notes: {str(e)}")
 
 
 async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -401,10 +406,10 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Please verify your phone number first with /start")
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
         return
     
-    await update.message.reply_text("📊 Fetching today's top stocks...")
+    await safe_send_reply(update.message, "📊 Fetching today's top stocks...")
     
     try:
         import json as _json
@@ -413,7 +418,8 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = await get_top_stocks()
         
         if not result.get("success"):
-            await update.message.reply_text(
+            await safe_send_reply(
+                update.message,
                 f"❌ Failed to fetch stock data: {result.get('error', 'Unknown error')}"
             )
             return
@@ -451,11 +457,11 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         lines.append("💡 Ask me about any specific ticker for more details!")
         
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await safe_send_reply(update.message, "\n".join(lines), parse_mode="Markdown")
         
     except Exception as e:
         logger.error(f"Error in stocks_command: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Error fetching stock data: {str(e)}")
+        await safe_send_reply(update.message, f"❌ Error fetching stock data: {str(e)}")
 
 
 async def walmart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -463,7 +469,7 @@ async def walmart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Please verify your phone number first with /start")
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
         return
     
     try:
@@ -476,7 +482,8 @@ async def walmart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         ]]
         
-        await update.message.reply_text(
+        await safe_send_reply(
+            update.message,
             "🛒 **Walmart Orders**\n\n"
             "View all your Walmart orders, spending by category, and search for specific items.\n\n"
             "Tap the button below to open the Walmart Orders app:",
@@ -485,31 +492,31 @@ async def walmart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Error in walmart_command: {e}", exc_info=True)
-        await update.message.reply_text(f"Error displaying Walmart orders: {str(e)}")
+        await safe_send_reply(update.message, f"Error displaying Walmart orders: {str(e)}")
         keyboard = [mini_app_row]
         if nav_row:
             keyboard.append(nav_row)
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
+        await safe_send_reply(
+            update.message,
             "\n".join(response_lines),
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
     except Exception as e:
         logger.error(f"Error in notes_command: {e}", exc_info=True)
-        await update.message.reply_text("An error occurred retrieving your notes.")
+        await safe_send_reply(update.message, "An error occurred retrieving your notes.")
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /clear command — clears both context window and persisted history."""
     user_id = str(update.effective_user.id)
-
     if user_id in user_history_managers:
         await user_history_managers[user_id].clear()
 
-    await update.message.reply_text("🗑️ Conversation history cleared! (Memory files from /memory are preserved)")
+    await safe_send_reply(update.message, "🗑️ Conversation history cleared! (Memory files from /memory are preserved)")
 
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -517,7 +524,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
 
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Please verify your phone number first with /start")
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
         return
 
     get_user_agent(user_id)  # ensure manager exists
@@ -534,7 +541,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages, total_pages, total_count = await history_mgr.get_page(page)
 
     if total_count == 0:
-        await update.message.reply_text("📭 No chat history yet. Start a conversation!")
+        await safe_send_reply(update.message, "📭 No chat history yet. Start a conversation!")
         return
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -569,7 +576,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup([nav_buttons]) if nav_buttons else None
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=reply_markup)
+    await safe_send_reply(update.message, "\n".join(lines), parse_mode="Markdown", reply_markup=reply_markup)
 
 
 async def continue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -577,7 +584,7 @@ async def continue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
 
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Please verify your phone number first with /start")
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
         return
 
     get_user_agent(user_id)  # ensure manager exists
@@ -586,7 +593,7 @@ async def continue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions = await history_mgr.get_sessions()
 
     if not sessions:
-        await update.message.reply_text("📭 No previous sessions found. Start a conversation!")
+        await safe_send_reply(update.message, "📭 No previous sessions found. Start a conversation!")
         return
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -607,8 +614,9 @@ async def continue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Add sessions button for full list
     keyboard.append([InlineKeyboardButton("📋 See all sessions", callback_data="sessions_list")])
 
-    await update.message.reply_text(
-        "🔄 *Continue a previous conversation*\n\n" 
+    await safe_send_reply(
+        update.message,
+        "🔄 *Continue a previous conversation*\n\n"
         "Tap a session below to load its context and continue chatting:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -620,7 +628,7 @@ async def sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
 
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Please verify your phone number first with /start")
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
         return
 
     get_user_agent(user_id)
@@ -629,7 +637,7 @@ async def sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions = await history_mgr.get_sessions()
 
     if not sessions:
-        await update.message.reply_text("📭 No previous sessions found.")
+        await safe_send_reply(update.message, "📭 No previous sessions found.")
         return
 
     lines = [f"📋 *Your Conversation Sessions* ({len(sessions)} total)\n"]
@@ -651,7 +659,7 @@ async def sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines.append("💡 Use `/continue` to pick a session to resume.")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await safe_send_reply(update.message, "\n".join(lines), parse_mode="Markdown")
 
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -844,14 +852,15 @@ async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
 
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Please verify your phone number first with /start")
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
         return
 
     # Get the message after /code
     message_text = ' '.join(context.args) if context.args else ''
 
     if not message_text:
-        await update.message.reply_text(
+        await safe_send_reply(
+            update.message,
             "💻 **OpenCode Agent**\n\n"
             "Run the AI coding agent to make changes to the codebase.\n\n"
             "Usage: `/code <your request>`\n\n"
@@ -863,7 +872,8 @@ async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from skills.opencode.runner import is_running, run_opencode
 
     if is_running():
-        await update.message.reply_text(
+        await safe_send_reply(
+            update.message,
             "⏳ OpenCode is already running a request. Please wait for it to finish."
         )
         return
@@ -1042,7 +1052,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - You can ask me about my skills at any time
 """
     
-    await update.message.reply_text(help_text)
+    await safe_send_reply(update.message, help_text)
 
 
 async def heartbeat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1050,18 +1060,18 @@ async def heartbeat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Please verify your phone number first with /start")
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
         return
     
     try:
-        await update.message.reply_text("💓 Triggering heartbeat cycle...\n\nI'll continue responding to you while the heartbeat runs in the background. You'll receive a summary when it completes.")
+        await safe_send_reply(update.message, "💓 Triggering heartbeat cycle...\n\nI'll continue responding to you while the heartbeat runs in the background. You'll receive a summary when it completes.")
         
         # Run heartbeat in background task so it doesn't block the bot
         asyncio.create_task(heartbeat_manager.execute_heartbeat())
         
     except Exception as e:
         logger.error(f"Error in heartbeat_command: {e}", exc_info=True)
-        await update.message.reply_text("An error occurred triggering the heartbeat.")
+        await safe_send_reply(update.message, "An error occurred triggering the heartbeat.")
 
 
 async def consolidate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1069,31 +1079,31 @@ async def consolidate_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = str(update.effective_user.id)
     
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Please verify your phone number first with /start")
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
         return
     
     try:
-        await update.message.reply_text("🧠 Starting memory consolidation...\nThis will move short-term memories (older than 7 days) to long-term memory.")
+        await safe_send_reply(update.message, "🧠 Starting memory consolidation...\nThis will move short-term memories (older than 7 days) to long-term memory.")
         
         # Get the user's memory manager and agent
         memory_manager = user_memories.get(user_id)
         agent = user_agents.get(user_id)
         
         if not memory_manager or not agent:
-            await update.message.reply_text("❌ Could not find your memory or agent. Try sending a message first.")
+            await safe_send_reply(update.message, "❌ Could not find your memory or agent. Try sending a message first.")
             return
         
         # Run consolidation
         result = await memory_manager.consolidate_memories(agent)
         
         if result:
-            await update.message.reply_text(f"✅ Memory consolidation completed!\n\n{result}")
+            await safe_send_reply(update.message, f"✅ Memory consolidation completed!\n\n{result}")
         else:
-            await update.message.reply_text("ℹ️ No memories needed consolidation (nothing older than 7 days found).")
+            await safe_send_reply(update.message, "ℹ️ No memories needed consolidation (nothing older than 7 days found).")
         
     except Exception as e:
         logger.error(f"Error in consolidate_command: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ An error occurred during consolidation: {str(e)}")
+        await safe_send_reply(update.message, f"❌ An error occurred during consolidation: {str(e)}")
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1103,7 +1113,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Only allow authorized users
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Sorry, this bot is private.")
+        await safe_send_reply(update.message, "🔒 Sorry, this bot is private.")
         return
 
     try:
@@ -1111,7 +1121,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Check if it's a PDF
         if not document.file_name.lower().endswith('.pdf'):
-            await update.message.reply_text("📄 I can only process PDF files. Please send a PDF document.")
+            await safe_send_reply(update.message, "📄 I can only process PDF files. Please send a PDF document.")
             return
         
         interactions_logger.info(f"USER {user_id} uploaded document: {document.file_name}")
@@ -1130,7 +1140,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = update.message.caption or ""
         
         # Notify user we're processing
-        await update.message.reply_text("📄 Processing PDF... Detecting order type...")
+        await safe_send_reply(update.message, "📄 Processing PDF... Detecting order type...")
         
         # Process the PDF
         from src.tools.pdf_tools import process_order_pdf
@@ -1150,7 +1160,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response += f"🛒 Items: {items_count}\n\n"
             response += f"Order has been added to the database!"
             
-            await update.message.reply_text(response)
+            await safe_send_reply(update.message, response)
             
             # Add to memory
             if user_id not in user_memories:
@@ -1169,7 +1179,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 response = f"❌ Could not process PDF:\n{error_msg}\n\nPlease make sure this is a Walmart or Amazon order PDF."
             
-            await update.message.reply_text(response)
+            await safe_send_reply(update.message, response)
         
         # Clean up temp file if it still exists
         if temp_path.exists():
@@ -1177,7 +1187,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"Error handling document from user {user_id}: {e}", exc_info=True)
-        await update.message.reply_text(
+        await safe_send_reply(
+            update.message,
             "I apologize, but I encountered an error processing your document. Please try again."
         )
 
@@ -1189,7 +1200,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Only allow authorized users
     if not is_user_authorized(user_id):
-        await update.message.reply_text("🔒 Sorry, this bot is private.")
+        await safe_send_reply(update.message, "🔒 Sorry, this bot is private.")
         return
 
     try:
@@ -1219,7 +1230,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = update.message.caption or ""
         
         # Step 1: Use facial recognition to detect and identify faces
-        await update.message.reply_text("🔍 Detecting faces...")
+        await safe_send_reply(update.message, "🔍 Detecting faces...")
         
         try:
             # Import the facial recognition skill
@@ -1291,7 +1302,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             face_info = "\n\n_Facial recognition not available, using vision analysis only._"
         
         # Step 2: Use OpenAI Vision for detailed analysis
-        await update.message.reply_text("📸 Analyzing image details...")
+        await safe_send_reply(update.message, "📸 Analyzing image details...")
         
         # Read and encode image
         with open(file_path, "rb") as image_file:
@@ -1359,11 +1370,12 @@ Provide a detailed but concise analysis."""
         
         # Send response
         response_text = f"📸 **Image Analysis**\n\n{analysis}{face_info}\n\n✅ Saved to memory!"
-        await update.message.reply_text(response_text)
+        await safe_send_reply(update.message, response_text)
         
     except Exception as e:
         logger.error(f"Error handling photo from user {user_id}: {e}", exc_info=True)
-        await update.message.reply_text(
+        await safe_send_reply(
+            update.message,
             "I apologize, but I encountered an error analyzing your photo. Please try again."
         )
 
@@ -1379,7 +1391,7 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Check if contact is user's own contact
         if contact.user_id != user.id:
-            await update.message.reply_text("❌ Please share your own contact information.")
+            await safe_send_reply(update.message, "❌ Please share your own contact information.")
             return
         
         # Get phone number and normalize (remove + and spaces)
@@ -1394,19 +1406,21 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _save_authorized_users()
             
             from telegram import ReplyKeyboardRemove
-            await update.message.reply_text(
+            await safe_send_reply(
+                update.message,
                 f"✅ Phone number verified! Welcome {user.first_name}!\n\nYou can now use all bot features. Send /start to begin.",
                 reply_markup=ReplyKeyboardRemove()
             )
             
             logger.info(f"User {user_id} authorized with phone {phone_number}")
         else:
-            await update.message.reply_text(
+            await safe_send_reply(
+                update.message,
                 "❌ Sorry, your phone number is not authorized to use this bot."
             )
     except Exception as e:
         logger.error(f"Error in handle_contact: {e}", exc_info=True)
-        await update.message.reply_text("An error occurred during verification. Please try again.")
+        await safe_send_reply(update.message, "An error occurred during verification. Please try again.")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1428,7 +1442,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Only allow authorized users
     if not is_user_authorized(user_id):
         interactions_logger.warning(f"Unauthorized user {user_id} attempted access")
-        await message.reply_text("🔒 Sorry, this bot is private.")
+        await safe_send_reply(message, "🔒 Sorry, this bot is private.")
         return
     
     # Show typing indicator
@@ -1474,7 +1488,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """Send a progress update to the user."""
             try:
                 await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-                await message.reply_text(f"_💭 {status_text}_", parse_mode="Markdown")
+                await safe_send_reply(message, f"_💭 {status_text}_", parse_mode="Markdown")
                 logger.debug(f"Sent progress update to {user_id}: {status_text}")
             except Exception as e:
                 logger.warning(f"Failed to send progress update: {e}")
@@ -1494,12 +1508,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         interactions_logger.info(f"ASSISTANT -> USER {user_id}: {response[:200]}{'...' if len(response) > 200 else ''}")
         
         # Send response
-        await message.reply_text(response)
+        await safe_send_reply(message, response)
         
     except Exception as e:
         error_logger.error(f"Error handling message from user {user_id if 'user_id' in locals() else 'unknown'}: {e}", exc_info=True)
         try:
-            await message.reply_text(
+            await safe_send_reply(
+                message,
                 "I apologize, but I encountered an error processing your message. Please try again."
             )
         except:
@@ -1513,7 +1528,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Try to notify user if possible
     try:
         if update and update.effective_message:
-            await update.effective_message.reply_text(
+            await safe_send_reply(
+                update.effective_message,
                 "An unexpected error occurred. The issue has been logged."
             )
     except:
