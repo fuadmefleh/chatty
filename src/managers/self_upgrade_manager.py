@@ -96,6 +96,34 @@ def _slugify(text: str, max_len: int = 40) -> str:
     return slug or "upgrade"
 
 
+# Repeated here (not just left for Pi to discover) because it's the single
+# most common way a self-upgrade's own new tests fail the gate: this repo's
+# pytest has no asyncio-mode config, so async tests silently fail to collect
+# without the marker.
+_TEST_CONVENTIONS = """This repo's pytest is NOT configured for asyncio auto-mode. Any test function
+defined as `async def test_...` MUST be decorated with `@pytest.mark.asyncio`, or it will fail with
+"async def functions are not natively supported" instead of actually running. See
+tests/test_world_watch.py for the convention used elsewhere in this repo. Before finishing, run
+`venv/bin/python -m pytest tests/` yourself and make sure it passes."""
+
+
+def _wrap_idea_prompt(idea_prompt: str) -> str:
+    return f"{idea_prompt}\n\n{_TEST_CONVENTIONS}"
+
+
+def _build_fix_prompt(idea_prompt: str, test_output: str) -> str:
+    return f"""You previously attempted this change:
+
+{idea_prompt}
+
+The test suite failed. Fix the underlying issue so `pytest tests/` passes - do not weaken or
+remove test assertions just to make them pass. Test output:
+
+{test_output[-3000:]}
+
+{_TEST_CONVENTIONS}"""
+
+
 def _affected_services(changed_files: List[str]) -> List[str]:
     """Map changed file paths to the pm2 services that need restarting."""
     services: List[str] = []
@@ -255,56 +283,73 @@ async def run_self_upgrade(
             return await fail(f"Could not create worktree: {out[:400]}", keep_worktree=False)
         feature_requests_manager.append_log(request.id, f"Created worktree at {worktree_dir} on branch {branch}")
 
-        # Run Pi entirely inside the isolated worktree - never the live checkout.
-        saw_completion = False
-        async for event in run_pi_agent(idea_prompt, cwd=worktree_dir):
-            etype = event.get("type")
-            content = event.get("content", "")
-            if etype == "file_change":
-                path = content.split(": ", 1)[-1] if ": " in content else content
-                feature_requests_manager.add_file_changed(request.id, path)
-                feature_requests_manager.append_log(request.id, content)
-            elif etype == "completed":
-                saw_completion = True
-                feature_requests_manager.append_log(request.id, content)
-            elif etype == "error":
-                feature_requests_manager.append_log(request.id, f"Error: {content}")
-                return await fail(f"Pi agent error: {content[:300]}")
-            elif content:
-                feature_requests_manager.append_log(request.id, content)
+        env = _subprocess_env()
+        venv_python = str(config.BASE_DIR / "venv" / "bin" / "python")
+        current_prompt = _wrap_idea_prompt(idea_prompt)
+        max_attempts = max(config.SELF_UPGRADE_MAX_TEST_ATTEMPTS, 1)
 
-        if not saw_completion:
-            return await fail("Pi agent did not report completion.")
+        for attempt in range(1, max_attempts + 1):
+            # Run Pi entirely inside the isolated worktree - never the live checkout.
+            saw_completion = False
+            async for event in run_pi_agent(current_prompt, cwd=worktree_dir):
+                etype = event.get("type")
+                content = event.get("content", "")
+                if etype == "file_change":
+                    path = content.split(": ", 1)[-1] if ": " in content else content
+                    feature_requests_manager.add_file_changed(request.id, path)
+                    feature_requests_manager.append_log(request.id, content)
+                elif etype == "completed":
+                    saw_completion = True
+                    feature_requests_manager.append_log(request.id, content)
+                elif etype == "error":
+                    feature_requests_manager.append_log(request.id, f"Error: {content}")
+                    return await fail(f"Pi agent error: {content[:300]}")
+                elif content:
+                    feature_requests_manager.append_log(request.id, content)
 
-        await _git(["add", "-A"], cwd=worktree_dir)
-        rc_diff, _ = await _git(["diff", "--cached", "--quiet"], cwd=worktree_dir)
-        if rc_diff == 0:
-            # Nothing actually changed - a no-op idea, not a failure.
-            feature_requests_manager.update(request.id, status="completed", summary="No changes were necessary.")
-            await _cleanup_worktree(worktree_dir, branch, delete_branch=True)
-            pi_lock.release("self_upgrade")
-            return None
+            if not saw_completion:
+                return await fail("Pi agent did not report completion.")
 
-        rc, out = await _git(["commit", "-m", f"Self-upgrade: {idea_prompt[:72]}"], cwd=worktree_dir)
-        if rc != 0:
-            return await fail(f"Commit failed: {out[:400]}")
+            await _git(["add", "-A"], cwd=worktree_dir)
+            rc_diff, _ = await _git(["diff", "--cached", "--quiet"], cwd=worktree_dir)
+            if rc_diff == 0:
+                if attempt == 1:
+                    # Nothing actually changed - a no-op idea, not a failure.
+                    feature_requests_manager.update(request.id, status="completed", summary="No changes were necessary.")
+                    await _cleanup_worktree(worktree_dir, branch, delete_branch=True)
+                    pi_lock.release("self_upgrade")
+                    return None
+                # A fix attempt that made no further changes can't be retried further.
+                return await fail(
+                    f"Test suite still failing after {attempt - 1} fix attempt(s), and the last "
+                    "attempt made no further changes."
+                )
 
-        feature_requests_manager.update(request.id, status="testing")
+            commit_msg = f"Self-upgrade: {idea_prompt[:72]}"
+            if attempt > 1:
+                commit_msg += f" (fix attempt {attempt})"
+            rc, out = await _git(["commit", "-m", commit_msg], cwd=worktree_dir)
+            if rc != 0:
+                return await fail(f"Commit failed: {out[:400]}")
+
+            feature_requests_manager.update(request.id, status="testing")
+
+            rc, out = await _run(
+                [venv_python, "-m", "pytest", "tests/"], cwd=worktree_dir,
+                timeout=config.SELF_UPGRADE_TEST_TIMEOUT_SECONDS, env=env,
+            )
+            feature_requests_manager.append_log(request.id, f"pytest (attempt {attempt}):\n{out[-2000:]}")
+            if rc == 0:
+                break  # test gate passed - fall through to frontend checks / merge below
+
+            if attempt >= max_attempts:
+                return await fail(f"Test suite failed after {attempt} attempt(s) (exit {rc}). Tail:\n{out[-500:]}")
+
+            feature_requests_manager.update(request.id, status="running")
+            current_prompt = _build_fix_prompt(idea_prompt, out)
 
         _, changed_files_out = await _git(["diff", "--name-only", "main", "HEAD"], cwd=worktree_dir)
         changed_files = [f.strip() for f in changed_files_out.splitlines() if f.strip()]
-
-        env = _subprocess_env()
-        venv_python = str(config.BASE_DIR / "venv" / "bin" / "python")
-
-        rc, out = await _run(
-            [venv_python, "-m", "pytest", "tests/"], cwd=worktree_dir,
-            timeout=config.SELF_UPGRADE_TEST_TIMEOUT_SECONDS, env=env,
-        )
-        feature_requests_manager.append_log(request.id, f"pytest:\n{out[-2000:]}")
-        if rc != 0:
-            return await fail(f"Test suite failed (exit {rc}). Tail:\n{out[-500:]}")
-
         touched_test_files = [f for f in changed_files if f.startswith("tests/")]
         frontend_touched = any(f.startswith("order_explorer_site/frontend/") for f in changed_files)
 

@@ -105,7 +105,8 @@ async def test_run_self_upgrade_test_failure_never_touches_main():
          patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git, \
          patch("src.managers.self_upgrade_manager._run", new_callable=AsyncMock) as mock_run, \
          patch("src.managers.self_upgrade_manager.run_pi_agent", fake_run_pi_agent), \
-         patch("src.managers.self_upgrade_manager._cleanup_worktree", new_callable=AsyncMock) as mock_cleanup:
+         patch("src.managers.self_upgrade_manager._cleanup_worktree", new_callable=AsyncMock) as mock_cleanup, \
+         patch("src.managers.self_upgrade_manager.config.SELF_UPGRADE_MAX_TEST_ATTEMPTS", 1):
 
         mock_git.side_effect = [
             (0, ""),           # worktree prune
@@ -115,7 +116,7 @@ async def test_run_self_upgrade_test_failure_never_touches_main():
             (0, ""),           # commit
             (0, "src/foo.py"),  # diff --name-only main HEAD
         ]
-        mock_run.return_value = (1, "FAILED test_something")  # pytest fails
+        mock_run.return_value = (1, "FAILED test_something")  # pytest fails, every attempt
 
         result = await sum_.run_self_upgrade("fix a bug", frm, send, "user1")
 
@@ -129,6 +130,96 @@ async def test_run_self_upgrade_test_failure_never_touches_main():
     assert last_update_kwargs.get("status") == "error"
     assert "test suite failed" in last_update_kwargs.get("summary", "").lower()
     mock_release.assert_called_once_with("self_upgrade")
+
+
+@pytest.mark.asyncio
+async def test_run_self_upgrade_retries_after_test_failure_then_succeeds():
+    """A failing test suite should get fed back to Pi for a fix attempt, not fail immediately."""
+    frm, request = make_feature_requests_manager()
+    send = AsyncMock()
+    pi_call_count = 0
+
+    async def fake_run_pi_agent(prompt, cwd=None):
+        nonlocal pi_call_count
+        pi_call_count += 1
+        if pi_call_count == 2:
+            # The retry prompt should include the previous failure's output.
+            assert "FAILED test_something" in prompt
+        yield {"type": "file_change", "content": "Editing: src/foo.py"}
+        yield {"type": "completed", "content": "done"}
+
+    with patch("src.managers.self_upgrade_manager.pi_lock.acquire", return_value=True), \
+         patch("src.managers.self_upgrade_manager.pi_lock.release"), \
+         patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git, \
+         patch("src.managers.self_upgrade_manager._run", new_callable=AsyncMock) as mock_run, \
+         patch("src.managers.self_upgrade_manager.run_pi_agent", fake_run_pi_agent), \
+         patch("src.managers.self_upgrade_manager._cleanup_worktree", new_callable=AsyncMock) as mock_cleanup, \
+         patch("src.managers.self_upgrade_manager._restart_services"), \
+         patch("src.managers.self_upgrade_manager.config.SELF_UPGRADE_MAX_TEST_ATTEMPTS", 2):
+
+        mock_git.side_effect = [
+            (0, ""),             # worktree prune
+            (0, ""),             # worktree add
+            (0, ""),             # attempt 1: add -A
+            (1, ""),             # attempt 1: diff --cached --quiet -> has a diff
+            (0, ""),             # attempt 1: commit
+            (0, ""),             # attempt 2: add -A
+            (1, ""),             # attempt 2: diff --cached --quiet -> has a diff
+            (0, ""),             # attempt 2: commit
+            (0, "src/foo.py"),   # diff --name-only main HEAD (after loop)
+            (0, "main"),         # rev-parse --abbrev-ref HEAD -> on main
+            (0, ""),             # status --porcelain -> clean
+            (0, ""),             # merge --no-ff
+        ]
+        mock_run.side_effect = [
+            (1, "FAILED test_something"),  # attempt 1: pytest fails
+            (0, "5 passed"),                # attempt 2: pytest passes
+        ]
+
+        result = await sum_.run_self_upgrade("fix a bug", frm, send, "user1")
+
+    assert pi_call_count == 2
+    assert result is not None and "merged" in result.lower()
+    completed_calls = [c for c in frm.update.call_args_list if c.kwargs.get("status") == "completed"]
+    assert len(completed_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_self_upgrade_gives_up_after_max_attempts():
+    frm, request = make_feature_requests_manager()
+    send = AsyncMock()
+
+    async def fake_run_pi_agent(prompt, cwd=None):
+        yield {"type": "file_change", "content": "Editing: src/foo.py"}
+        yield {"type": "completed", "content": "done"}
+
+    with patch("src.managers.self_upgrade_manager.pi_lock.acquire", return_value=True), \
+         patch("src.managers.self_upgrade_manager.pi_lock.release"), \
+         patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git, \
+         patch("src.managers.self_upgrade_manager._run", new_callable=AsyncMock) as mock_run, \
+         patch("src.managers.self_upgrade_manager.run_pi_agent", fake_run_pi_agent), \
+         patch("src.managers.self_upgrade_manager._cleanup_worktree", new_callable=AsyncMock) as mock_cleanup, \
+         patch("src.managers.self_upgrade_manager.config.SELF_UPGRADE_MAX_TEST_ATTEMPTS", 2):
+
+        mock_git.side_effect = [
+            (0, ""),   # worktree prune
+            (0, ""),   # worktree add
+            (0, ""),   # attempt 1: add -A
+            (1, ""),   # attempt 1: diff --cached --quiet -> has a diff
+            (0, ""),   # attempt 1: commit
+            (0, ""),   # attempt 2: add -A
+            (1, ""),   # attempt 2: diff --cached --quiet -> has a diff
+            (0, ""),   # attempt 2: commit
+        ]
+        mock_run.return_value = (1, "FAILED test_something")  # always fails
+
+        result = await sum_.run_self_upgrade("fix a bug", frm, send, "user1")
+
+    assert result is not None and "failed" in result.lower()
+    assert "after 2 attempt" in result.lower()
+    git_calls = [c.args[0] for c in mock_git.await_args_list]
+    assert not any(call[:1] == ["merge"] for call in git_calls)
+    mock_cleanup.assert_not_awaited()  # branch/worktree preserved for inspection
 
 
 @pytest.mark.asyncio

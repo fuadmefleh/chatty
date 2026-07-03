@@ -78,6 +78,9 @@ SELF_UPGRADE_WORKTREES_DIR = Path(os.getenv(
     "SELF_UPGRADE_WORKTREES_DIR", str(BASE_DIR.parent / "chatty_self_upgrade_worktrees")
 ))
 SELF_UPGRADE_TEST_TIMEOUT_SECONDS = int(os.getenv("SELF_UPGRADE_TEST_TIMEOUT_SECONDS", "300"))
+# How many total attempts (1 initial + N-1 fix retries) Pi gets to make its own
+# test suite pass before the branch is left for manual review.
+SELF_UPGRADE_MAX_TEST_ATTEMPTS = int(os.getenv("SELF_UPGRADE_MAX_TEST_ATTEMPTS", "3"))
 
 # System Prompt
 SYSTEM_PROMPT = """You are a helpful and friendly AI companion. You have access to your memory 

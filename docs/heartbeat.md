@@ -117,10 +117,14 @@ The heartbeat system allows the AI to perform periodic checks and autonomous act
   - Create an isolated git worktree on a new branch off `main` (never edits the live checkout)
   - Run the Pi coding agent inside that worktree
   - Commit, then run the full test suite (+ frontend typecheck/build if frontend files changed)
+  - If the tests fail, feed the failure output back to Pi for a fix attempt in the same
+    worktree and try again - up to `SELF_UPGRADE_MAX_TEST_ATTEMPTS` total attempts (default: 3)
+    - the retry prompt also reminds it of this repo's pytest-asyncio marker convention, since
+      that's the most common way a self-written test silently fails to even run
   - **Only if all of the following hold** does it merge and restart: tests pass, the live
     `main` checkout has no uncommitted changes, and `main` is actually checked out
-  - Any failure at any stage leaves the branch/worktree in place for manual review - `main`
-    is never touched unless the full gate passes
+  - Any failure at any stage (including running out of fix attempts) leaves the branch/worktree
+    in place for manual review - `main` is never touched unless the full gate passes
 - Every attempt (successful or not) shows up on the dashboard's Requests page tagged
   🤖 self-upgrade, alongside a Telegram notification
 - A cross-process file lock (`skills/pi_agent/lock.py`) prevents this from ever running
