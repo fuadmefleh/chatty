@@ -51,11 +51,14 @@ def is_running() -> bool:
     return _active_process is not None and _active_process.returncode is None
 
 
-async def run_pi_agent(prompt: str) -> AsyncGenerator[dict, None]:
+async def run_pi_agent(prompt: str, cwd: Optional[Path] = None) -> AsyncGenerator[dict, None]:
     """Spawn `pi ... --print --mode json` and yield parsed events.
 
     Args:
         prompt: The coding task to send to the Pi agent.
+        cwd: Directory to run Pi in - defaults to the live PROJECT_DIR. Pass an
+            isolated git worktree path here (see src/managers/self_upgrade_manager.py)
+            to let Pi edit a throwaway checkout instead of the live, running codebase.
 
     Yields:
         dict events with keys: type, content
@@ -67,11 +70,12 @@ async def run_pi_agent(prompt: str) -> AsyncGenerator[dict, None]:
         yield {"type": "error", "content": "Pi agent is already running a request. Please wait."}
         return
 
+    effective_cwd = cwd or PROJECT_DIR
     _active_prompt = prompt
 
     yield {"type": "started", "content": f"Launching Pi agent ({PI_AGENT_PROVIDER}/{PI_AGENT_MODEL})..."}
 
-    parser = _EventParser()
+    parser = _EventParser(base_dir=effective_cwd)
     saw_agent_end = False
 
     try:
@@ -86,7 +90,7 @@ async def run_pi_agent(prompt: str) -> AsyncGenerator[dict, None]:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,  # merge stderr into stdout
-            cwd=str(PROJECT_DIR),
+            cwd=str(effective_cwd),
             env=_PI_ENV,
             limit=10 * 1024 * 1024,  # Pi's message_update lines carry the full
             # growing partial message and can exceed asyncio's 64KB default.
@@ -200,8 +204,9 @@ class _EventParser:
     streamed assistant text into readable progress chunks.
     """
 
-    def __init__(self):
+    def __init__(self, base_dir: Path = PROJECT_DIR):
         self._pending_tool_args: dict[str, dict] = {}
+        self.base_dir = base_dir
 
     def feed(self, event: dict):
         """Yield zero or more simplified events for one raw Pi event."""
@@ -223,7 +228,7 @@ class _EventParser:
             tool_name = event.get("toolName", "unknown")
             args = event.get("args", {}) or {}
             self._pending_tool_args[event.get("toolCallId", "")] = args
-            content = _format_tool_call(tool_name, args)
+            content = _format_tool_call(tool_name, args, self.base_dir)
             if content:
                 yield {"type": "tool_call", "content": content}
             if tool_name in ("write", "edit"):
@@ -233,7 +238,7 @@ class _EventParser:
                 # the process crashes during its own shutdown right after.
                 path = args.get("path") or args.get("filePath") or args.get("file")
                 if path:
-                    yield {"type": "file_change", "content": f"{'Writing' if tool_name == 'write' else 'Editing'}: {_short_path(path)}"}
+                    yield {"type": "file_change", "content": f"{'Writing' if tool_name == 'write' else 'Editing'}: {_short_path(path, self.base_dir)}"}
             return
 
         if etype == "tool_execution_end":
@@ -253,7 +258,7 @@ class _EventParser:
 
             if tool_name in ("write", "edit"):
                 path = args.get("path") or args.get("filePath") or args.get("file") or "unknown"
-                yield {"type": "file_change", "content": f"{'Writing' if tool_name == 'write' else 'Editing'}: {_short_path(path)}"}
+                yield {"type": "file_change", "content": f"{'Writing' if tool_name == 'write' else 'Editing'}: {_short_path(path, self.base_dir)}"}
             elif tool_name == "bash":
                 result = event.get("result", {})
                 out = _result_text(result).strip()
@@ -272,25 +277,25 @@ class _EventParser:
         return
 
 
-def _format_tool_call(tool_name: str, args: dict) -> Optional[str]:
+def _format_tool_call(tool_name: str, args: dict, base_dir: Path = PROJECT_DIR) -> Optional[str]:
     if tool_name == "write":
         path = args.get("path") or args.get("filePath") or "unknown"
-        return f"Writing: {_short_path(path)}"
+        return f"Writing: {_short_path(path, base_dir)}"
     if tool_name == "edit":
         path = args.get("path") or args.get("filePath") or "unknown"
-        return f"Editing: {_short_path(path)}"
+        return f"Editing: {_short_path(path, base_dir)}"
     if tool_name == "bash":
         cmd = str(args.get("command", ""))[:100]
         return f"$ {cmd}"
     if tool_name == "read":
         path = args.get("path") or args.get("filePath") or "unknown"
-        return f"Reading: {_short_path(path)}"
+        return f"Reading: {_short_path(path, base_dir)}"
     if tool_name in ("grep", "find"):
         pattern = str(args.get("pattern", args.get("query", "")))[:60]
         return f"Searching: {pattern}"
     if tool_name == "ls":
         path = args.get("path", ".")
-        return f"Listing: {_short_path(path)}"
+        return f"Listing: {_short_path(path, base_dir)}"
     return f"Tool: {tool_name}"
 
 
@@ -300,13 +305,13 @@ def _result_text(result: dict) -> str:
     return "\n".join(parts)
 
 
-def _short_path(filepath: str) -> str:
-    """Shorten a file path for display, making it relative to project dir."""
+def _short_path(filepath: str, base_dir: Path = PROJECT_DIR) -> str:
+    """Shorten a file path for display, making it relative to base_dir."""
     try:
         p = Path(filepath)
         if not p.is_absolute():
             return filepath
-        return str(p.relative_to(PROJECT_DIR))
+        return str(p.relative_to(base_dir))
     except (ValueError, TypeError):
         return filepath
 

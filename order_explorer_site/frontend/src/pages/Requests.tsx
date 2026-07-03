@@ -13,6 +13,7 @@ const POLL_MS = 3000;
 const statusColor: Record<FeatureRequestStatus, string> = {
   queued: 'var(--muted)',
   running: 'var(--stamp-teal)',
+  testing: 'var(--stamp-gold)',
   completed: 'var(--success)',
   error: 'var(--danger)',
 };
@@ -62,7 +63,7 @@ const Requests: React.FC = () => {
 
   // Poll while anything is queued/running; stop once everything has settled.
   useEffect(() => {
-    const pending = requests.some((r) => r.status === 'queued' || r.status === 'running');
+    const pending = requests.some((r) => r.status === 'queued' || r.status === 'running' || r.status === 'testing');
 
     if (pending && !pollRef.current) {
       pollRef.current = setInterval(load, POLL_MS);
@@ -135,7 +136,9 @@ const Requests: React.FC = () => {
       <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: -18, marginBottom: 24 }}>
         Describe a feature or fix. It's routed to the local Pi coding agent (qwen3.6-27b),
         which edits the Chatty codebase directly. Restart the affected pm2 service yourself
-        once a request completes.
+        once a request completes. Entries marked 🤖 self-upgrade were proposed by Chatty's own
+        heartbeat - those run in an isolated branch, must pass the test suite, and only then
+        auto-merge and restart the affected services on their own.
       </p>
 
       {/* Submit */}
@@ -181,9 +184,20 @@ const Requests: React.FC = () => {
           {requests.map((r) => (
             <Card key={r.id}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
-                <p style={{ margin: 0, fontSize: 14.5, color: 'var(--paper)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-                  {r.prompt}
-                </p>
+                <div>
+                  {r.source === 'self_upgrade' && (
+                    <div style={{
+                      display: 'inline-block', marginBottom: 6, fontSize: 10.5, fontWeight: 700,
+                      textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--stamp-ember)',
+                      fontFamily: 'var(--font-mono)',
+                    }}>
+                      🤖 self-upgrade{r.branch ? ` · ${r.branch}` : ''}
+                    </div>
+                  )}
+                  <p style={{ margin: 0, fontSize: 14.5, color: 'var(--paper)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                    {r.prompt}
+                  </p>
+                </div>
                 <StatusBadge status={r.status} />
               </div>
 

@@ -43,9 +43,41 @@ TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))
 HEARTBEAT_INTERVAL_MINUTES = int(os.getenv("HEARTBEAT_INTERVAL_MINUTES", "15"))
 HEARTBEAT_FILE = BASE_DIR / "docs" / os.getenv("HEARTBEAT_FILE", "heartbeat.md")
 
-# Google Search Configuration
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")  # Custom Search Engine ID
+# World Watch Configuration (proactive topic monitoring, runs from the heartbeat).
+# Per-kind check intervals let fast-moving sources (stocks) be checked more
+# often than slow ones (news, github) without hammering their APIs.
+WORLD_WATCH_INTERVAL_HOURS = int(os.getenv("WORLD_WATCH_INTERVAL_HOURS", "24"))
+STOCK_WATCH_INTERVAL_HOURS = int(os.getenv("STOCK_WATCH_INTERVAL_HOURS", "4"))
+GITHUB_WATCH_INTERVAL_HOURS = int(os.getenv("GITHUB_WATCH_INTERVAL_HOURS", "12"))
+STOCK_WATCH_MOVE_THRESHOLD_PERCENT = float(os.getenv("STOCK_WATCH_MOVE_THRESHOLD_PERCENT", "5.0"))
+
+# Memory-driven watch suggestions: how often to mine long-term memory for
+# candidate topics worth proactively watching (default: weekly).
+MEMORY_SUGGESTION_INTERVAL_HOURS = int(os.getenv("MEMORY_SUGGESTION_INTERVAL_HOURS", "168"))
+
+# Daily Briefing Configuration: local hour (0-23) at which to send a single
+# digest combining weather, budget status, today's reminders, and recent
+# insights. HOME_LOCATION is required for the weather section; leave blank
+# to omit it from the briefing.
+DAILY_BRIEFING_HOUR = int(os.getenv("DAILY_BRIEFING_HOUR", "8"))
+HOME_LOCATION = os.getenv("HOME_LOCATION", "")
+
+# SearXNG Configuration (self-hosted web search). Defaults to the SearXNG
+# instance already running system-wide on this host; see docker-compose.yml
+# for standing up a dedicated instance if you don't have one.
+SEARXNG_BASE_URL = os.getenv("SEARXNG_BASE_URL", "http://localhost:8081")
+
+# Self-Upgrade Configuration: Chatty periodically thinks of improvements to
+# make to its own codebase (see src/managers/self_upgrade_manager.py). Each
+# idea is implemented in an isolated git worktree/branch, tested, and only
+# merged into main + auto-restarted if the test gate passes and main has no
+# uncommitted changes. Failed attempts leave the branch/worktree in place for
+# manual inspection rather than touching main.
+SELF_UPGRADE_INTERVAL_HOURS = int(os.getenv("SELF_UPGRADE_INTERVAL_HOURS", "168"))
+SELF_UPGRADE_WORKTREES_DIR = Path(os.getenv(
+    "SELF_UPGRADE_WORKTREES_DIR", str(BASE_DIR.parent / "chatty_self_upgrade_worktrees")
+))
+SELF_UPGRADE_TEST_TIMEOUT_SECONDS = int(os.getenv("SELF_UPGRADE_TEST_TIMEOUT_SECONDS", "300"))
 
 # System Prompt
 SYSTEM_PROMPT = """You are a helpful and friendly AI companion. You have access to your memory 

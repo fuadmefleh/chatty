@@ -9,11 +9,12 @@ This agent implements a structured reasoning process with explicit stages:
 6. REFLECT - Evaluate if the answer is complete and correct
 7. MEMORIZE - Store useful information for future use
 """
+import asyncio
 import json
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 import tiktoken
 from src.core import config
 from src.core.memory import MemoryManager
@@ -25,6 +26,11 @@ from src.core.logging_config import get_agent_logger, get_api_logger, get_tools_
 agent_logger = get_agent_logger()
 api_logger = get_api_logger()
 tools_logger = get_tools_logger()
+
+# Transient errors worth retrying with backoff before giving up
+RETRYABLE_ERRORS = (RateLimitError, APIConnectionError, APITimeoutError, InternalServerError)
+MAX_LLM_RETRIES = 2
+RETRY_BASE_DELAY = 1.0  # seconds; doubles each retry
 
 
 class ReACTStage(Enum):
@@ -93,6 +99,7 @@ class StagedReACTAgent:
     MAX_TOOL_RESULT_CHARS = 1500  # Max characters per tool result
     MAX_MEMORY_CONTEXT_CHARS = 3000  # Max memory context size
     MAX_SYNTHESIS_CONTEXT_CHARS = 8000  # Max context for synthesis
+    MAX_HISTORY_CONTEXT_CHARS = 2000  # Max conversation history included in prompts
     
     def __init__(self, memory_manager: MemoryManager, skills_manager: SkillsManager):
         """Initialize the staged ReACT agent.
@@ -107,6 +114,7 @@ class StagedReACTAgent:
         self.max_iterations = config.MAX_ITERATIONS
         self.memory_tools = MemoryTools(memory_manager.user_id)
         self.progress_callback = None  # Optional callback for progress updates
+        self._background_tasks: set = set()  # Keeps REFLECT/MEMORIZE tasks alive until done
         
         # Initialize token encoder
         try:
@@ -169,21 +177,38 @@ class StagedReACTAgent:
             # Stage 5: SYNTHESIZE
             state = await self._stage_synthesize(state, conversation_history)
             agent_logger.info(f"[SYNTHESIZE] Answer length: {len(state.synthesized_answer)}")
-            
-            # Stage 6: REFLECT
-            state = await self._stage_reflect(state)
-            agent_logger.info(f"[REFLECT] Confidence: {state.confidence_score}, Notes: {state.reflection_notes[:100]}")
-            
-            # Stage 7: MEMORIZE
-            state = await self._stage_memorize(state)
-            agent_logger.info(f"[MEMORIZE] Facts stored: {len(state.facts_to_remember)}")
-            
+
+            # Stages 6-7 (REFLECT, MEMORIZE) don't affect the reply, so run them
+            # in the background after we return the answer instead of blocking on
+            # two more LLM round-trips.
+            task = asyncio.create_task(self._finish_reasoning(state))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
             return state.synthesized_answer
-            
+
         except Exception as e:
             agent_logger.error(f"Error in ReACT process: {e}", exc_info=True)
             return f"I apologize, but I encountered an error while processing your request: {str(e)}"
-    
+
+    async def _finish_reasoning(self, state: ReACTState) -> None:
+        """Run REFLECT and MEMORIZE after the reply has already been sent.
+
+        Nothing awaits this task, so it must handle its own errors rather than
+        letting them propagate silently to the event loop.
+        """
+        try:
+            # Stage 6: REFLECT
+            state = await self._stage_reflect(state)
+            agent_logger.info(f"[REFLECT] Confidence: {state.confidence_score}, Notes: {state.reflection_notes[:100]}")
+
+            # Stage 7: MEMORIZE
+            state = await self._stage_memorize(state)
+            agent_logger.info(f"[MEMORIZE] Facts stored: {len(state.facts_to_remember)}")
+        except Exception as e:
+            agent_logger.error(f"Error in background REFLECT/MEMORIZE: {e}", exc_info=True)
+
+
     async def _stage_decompose(self, state: ReACTState, history: List[Dict]) -> ReACTState:
         """Stage 1: Decompose the user's query into sub-tasks.
         
@@ -193,12 +218,16 @@ class StagedReACTAgent:
         - What information is needed?
         """
         state.stage = ReACTStage.DECOMPOSE
-        
+
         # Get available skills for context
         skills_summary = self._get_skills_summary()
-        
-        prompt = f"""Analyze this user query and decompose it into actionable sub-tasks.
+        recent_history = self._format_history(history[-6:])
+        history_section = (
+            f"\nRecent Conversation:\n{recent_history}\n" if recent_history else ""
+        )
 
+        prompt = f"""Analyze this user query and decompose it into actionable sub-tasks.
+{history_section}
 User Query: "{state.user_query}"
 
 Available Skills:
@@ -384,7 +413,7 @@ If no tools needed, return empty arrays."""
                     agent_logger.warning(f"Token count too high: {estimated_tokens}, compressing context")
                     messages = self._compress_messages(messages)
                 
-                response = await self.client.chat.completions.create(
+                response = await self._create_completion(
                     model=config.CHAT_MODEL,
                     messages=messages,
                     tools=needed_tools if needed_tools else None,
@@ -440,10 +469,14 @@ If no tools needed, return empty arrays."""
         to generate a natural, helpful response.
         """
         state.stage = ReACTStage.SYNTHESIZE
-        
+
         # Build synthesis context
         context_parts = []
-        
+
+        recent_history = self._format_history(history[-6:])
+        if recent_history:
+            context_parts.append(f"Recent Conversation:\n{recent_history}")
+
         if state.memory_context:
             context_parts.append(f"Memory Context:\n{state.memory_context}")
         
@@ -474,6 +507,8 @@ Instructions:
 - Present information clearly and concisely
 - If data was retrieved, summarize it meaningfully
 - If it's a greeting, respond naturally
+- Use the Recent Conversation (if present) to resolve follow-ups, pronouns, and
+  references to earlier turns — don't repeat information already covered
 - Don't mention internal processes or tools used
 
 Respond directly to the user:"""
@@ -571,7 +606,32 @@ If nothing important to remember, return empty array."""
         
         state.stage = ReACTStage.COMPLETE
         return state
-    
+
+    async def _create_completion(self, **kwargs):
+        """Call chat.completions.create with bounded retries on transient errors.
+
+        Retries RateLimitError/APIConnectionError/APITimeoutError/InternalServerError
+        with exponential backoff before giving up. Callers keep their existing
+        fallback behavior (e.g. returning "{}"/"" or breaking a loop) once this
+        raises after exhausting retries.
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(MAX_LLM_RETRIES + 1):
+            try:
+                return await self.client.chat.completions.create(**kwargs)
+            except RETRYABLE_ERRORS as e:
+                last_exc = e
+                if attempt < MAX_LLM_RETRIES:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    api_logger.warning(
+                        f"Transient API error ({type(e).__name__}), retrying in "
+                        f"{delay}s (attempt {attempt + 1}/{MAX_LLM_RETRIES})"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    api_logger.error(f"Exhausted retries after {MAX_LLM_RETRIES} attempts: {e}")
+        raise last_exc
+
     async def _call_llm(self, prompt: str, response_format: str = "text") -> str:
         """Make an LLM call for internal reasoning.
         
@@ -597,10 +657,10 @@ If nothing important to remember, return empty array."""
             
             if response_format == "json":
                 kwargs["response_format"] = {"type": "json_object"}
-            
-            response = await self.client.chat.completions.create(**kwargs)
+
+            response = await self._create_completion(**kwargs)
             return response.choices[0].message.content or ""
-            
+
         except Exception as e:
             api_logger.error(f"LLM call failed: {e}")
             return "{}" if response_format == "json" else ""
@@ -656,12 +716,40 @@ If nothing important to remember, return empty array."""
         skills = self.skills_manager.get_all_skills()
         if not skills:
             return "No skills available."
-        
+
         return "\n".join([
             f"- {s.name}: {s.description[:100]}"
             for s in skills
         ])
-    
+
+    def _format_history(self, history: List[Dict], max_chars: int = None) -> str:
+        """Render recent conversation turns as a compact transcript for prompts.
+
+        Args:
+            history: List of {"role": ..., "content": ...} messages
+            max_chars: Truncation limit; defaults to MAX_HISTORY_CONTEXT_CHARS
+
+        Returns:
+            Formatted transcript, or empty string if no history
+        """
+        if not history:
+            return ""
+
+        max_chars = max_chars if max_chars is not None else self.MAX_HISTORY_CONTEXT_CHARS
+
+        lines = []
+        for msg in history:
+            role = "User" if msg.get("role") == "user" else "Assistant"
+            content = msg.get("content", "")
+            lines.append(f"{role}: {content}")
+
+        transcript = "\n".join(lines)
+        if len(transcript) > max_chars:
+            # Keep the most recent turns (tail) rather than the oldest
+            transcript = "[...earlier turns truncated...]\n" + transcript[-max_chars:]
+
+        return transcript
+
     def _get_memory_tools_definitions(self) -> List[Dict]:
         """Get memory tools in OpenAI format."""
         return [

@@ -8,6 +8,15 @@ The heartbeat system allows the AI to perform periodic checks and autonomous act
 
 **After each heartbeat cycle, the bot sends you a Telegram summary of all completed activities.**
 
+> **Note:** the sections below describe the autonomous behavior; they are not
+> re-parsed by the LLM on every tick. What actually executes is a set of
+> hardcoded methods in `src/managers/heartbeat_manager.py`
+> (`_process_gmail_cleanup`, `_process_walmart_orders`,
+> `_process_budget_analysis`, `_process_world_watch`,
+> `_process_memory_watch_suggestions`, `_process_daily_briefing`,
+> `_process_self_upgrade_ideas`, etc.), each computing its own results and
+> sending Telegram messages directly when warranted.
+
 ## Autonomous Tasks
 
 ### 1. Memory Consolidation (Priority: High)
@@ -53,21 +62,69 @@ The heartbeat system allows the AI to perform periodic checks and autonomous act
   - High-priority spending recommendations
 - Help user understand spending patterns and make better financial decisions
 
-### 6. Memory Maintenance
+### 6. World Watch (Priority: Medium)
+- For each topic on the user's watchlist (added via chat, e.g. "keep an eye on X"),
+  check its source at most once per its own interval:
+  - **news** topics: fresh web search via SearXNG, at most once per `WORLD_WATCH_INTERVAL_HOURS` (default: daily)
+  - **stock** topics: day-change % via Yahoo Finance, at most once per `STOCK_WATCH_INTERVAL_HOURS` (default: every 4h);
+    alerts when the move exceeds `STOCK_WATCH_MOVE_THRESHOLD_PERCENT` (default: 5%)
+  - **github** topics: new releases/commits via the GitHub API, at most once per `GITHUB_WATCH_INTERVAL_HOURS` (default: every 12h)
+- Skip topics that were already checked within their interval
+- Compare new results against previously-seen sources/markers to avoid repeating old news
+- Summarize genuinely notable updates; skip recycled or low-value results entirely
+- Send a Telegram message with the summary and source links for each notable update
+- Save every surfaced update as an Insight, viewable on the web dashboard's Insights page
+
+### 7. Memory-Driven Watch Suggestions (Priority: Low)
+- At most once per `MEMORY_SUGGESTION_INTERVAL_HOURS` (default: weekly), mine long-term
+  memory for recurring topics, goals, and projects worth proactively watching
+- Never auto-adds anything - just sends a Telegram suggestion the user can accept the normal
+  way ("watch X")
+- Tracks what's already been suggested so it doesn't repeat the same suggestion every week
+
+### 8. Daily Briefing (Priority: Low)
+- Once per day, at local hour `DAILY_BRIEFING_HOUR` (default: 8am), send a single digest combining:
+  - Weather (if `HOME_LOCATION` is configured)
+  - This month's spending snapshot
+  - Reminders due today
+  - Insights surfaced in the last 24 hours
+- Additive to the other real-time proactive messages above, not a replacement for them -
+  time-sensitive alerts (e.g. a stock move) still arrive immediately when they happen
+
+### 9. Memory Maintenance
 - Monitor memory file sizes (both short-term and long-term)
 - Ensure archived memories are properly stored
 - Check memory integrity
 - Optimize storage if needed
 
-### 7. System Health Checks
+### 10. System Health Checks
 - Verify all systems are operational
 - Check API connections (OpenAI, Telegram)
 - Log any issues detected
 
-### 8. Proactive User Engagement (Optional)
+### 11. Proactive User Engagement (Optional)
 - Check if any users have birthdays coming up (from memory)
 - Look for follow-up opportunities on previous conversations
 - Send gentle check-ins to users who haven't interacted in a while (be respectful, not intrusive)
+
+### 12. Self-Upgrade (Priority: Low, Safety-Gated)
+- At most once per `SELF_UPGRADE_INTERVAL_HOURS` (default: weekly), reflect on: current
+  skills/tool coverage, recent error logs, past self-upgrade attempts (to avoid repeating
+  ideas), and recent conversation history (to catch frustrations or unmet requests)
+- Propose ONE small, concrete improvement to Chatty's own codebase - or nothing, if there
+  isn't a genuinely good idea
+- Implement it end-to-end via `src/managers/self_upgrade_manager.py`:
+  - Create an isolated git worktree on a new branch off `main` (never edits the live checkout)
+  - Run the Pi coding agent inside that worktree
+  - Commit, then run the full test suite (+ frontend typecheck/build if frontend files changed)
+  - **Only if all of the following hold** does it merge and restart: tests pass, the live
+    `main` checkout has no uncommitted changes, and `main` is actually checked out
+  - Any failure at any stage leaves the branch/worktree in place for manual review - `main`
+    is never touched unless the full gate passes
+- Every attempt (successful or not) shows up on the dashboard's Requests page tagged
+  🤖 self-upgrade, alongside a Telegram notification
+- A cross-process file lock (`skills/pi_agent/lock.py`) prevents this from ever running
+  the Pi coding agent at the same time as a manually-submitted dashboard feature request
 
 ## Guidelines
 

@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { fetchChattyMemory } from '../chattyApi';
 import type { MemoryData, MemoryEntry } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
+import './MemoryViewer.css';
 
 const MemoryViewer: React.FC = () => {
   const [data, setData] = useState<MemoryData | null>(null);
@@ -108,14 +111,16 @@ const MemoryViewer: React.FC = () => {
               </button>
               {/* Content */}
               {openDates.has(entry.date) && (
-                <pre style={{
-                  margin: 0, padding: '16px', fontSize: 12.5, lineHeight: 1.65,
-                  background: 'var(--ink-900)', color: 'var(--paper-dim)', overflowX: 'auto',
-                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                  borderTop: '1px solid var(--ink-700)', fontFamily: 'var(--font-mono)',
+                <div className="memory-markdown" style={{
+                  margin: 0, padding: '16px 20px', fontSize: 13.5, lineHeight: 1.7,
+                  background: 'var(--ink-900)', color: 'var(--paper-dim)',
+                  borderTop: '1px solid var(--ink-700)',
+                  overflowX: 'auto',
                 }}>
-                  {entry.content}
-                </pre>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {entry.content}
+                  </ReactMarkdown>
+                </div>
               )}
             </div>
           ))}

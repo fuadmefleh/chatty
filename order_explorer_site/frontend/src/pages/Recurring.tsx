@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import { api } from '../api';
 import { Link } from 'react-router-dom';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
@@ -33,7 +33,7 @@ const Recurring: React.FC = () => {
   const [sortBy, setSortBy] = useState<'count' | 'frequency' | 'total'>('count');
 
   useEffect(() => {
-    axios.get<RecurringItem[]>('http://localhost:8015/recurring')
+    api.get<RecurringItem[]>('/recurring')
       .then(response => {
         setItems(response.data);
         setLoading(false);

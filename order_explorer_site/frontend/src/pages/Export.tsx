@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import axios from 'axios';
+import { api } from '../api';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
 
@@ -100,7 +100,7 @@ const Export: React.FC = () => {
   const exportOrders = async () => {
     setLoading(true);
     try {
-      const response = await axios.get('http://localhost:8015/orders');
+      const response = await api.get('/orders');
       const filtered = filterByDate(response.data);
       await downloadCSV(filtered, `orders_${dateRange}_${new Date().toISOString().split('T')[0]}.csv`);
     } catch (err) {
@@ -113,7 +113,7 @@ const Export: React.FC = () => {
   const exportItems = async () => {
     setLoading(true);
     try {
-      const response = await axios.get('http://localhost:8015/items');
+      const response = await api.get('/items');
       const filtered = filterByDate(response.data);
       await downloadCSV(filtered, `items_${dateRange}_${new Date().toISOString().split('T')[0]}.csv`);
     } catch (err) {
@@ -126,7 +126,7 @@ const Export: React.FC = () => {
   const exportCategories = async () => {
     setLoading(true);
     try {
-      const response = await axios.get('http://localhost:8015/categories');
+      const response = await api.get('/categories');
       await downloadCSV(response.data.categories, `categories_${new Date().toISOString().split('T')[0]}.csv`);
     } catch (err) {
       console.error('Export failed', err);
@@ -138,7 +138,7 @@ const Export: React.FC = () => {
   const exportMonthly = async () => {
     setLoading(true);
     try {
-      const response = await axios.get('http://localhost:8015/months');
+      const response = await api.get('/months');
       await downloadCSV(response.data, `monthly_summary_${new Date().toISOString().split('T')[0]}.csv`);
     } catch (err) {
       console.error('Export failed', err);

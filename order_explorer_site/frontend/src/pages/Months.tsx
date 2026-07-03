@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import { api } from '../api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell } from 'recharts';
 import type { PieLabelRenderProps } from 'recharts';
 import { Link } from 'react-router-dom';
@@ -61,7 +61,7 @@ const Months: React.FC = () => {
   const [orderItems, setOrderItems] = useState<Record<string, Item[]>>({});
 
   useEffect(() => {
-    axios.get<MonthlyData[]>('http://localhost:8015/months')
+    api.get<MonthlyData[]>('/months')
       .then(response => {
         setMonthlyData(response.data);
         setLoading(false);
@@ -85,8 +85,8 @@ const Months: React.FC = () => {
 
       try {
         const [ordersRes, itemsRes] = await Promise.all([
-          axios.get<Order[]>('http://localhost:8015/orders'),
-          axios.get<Item[]>('http://localhost:8015/items')
+          api.get<Order[]>('/orders'),
+          api.get<Item[]>('/items')
         ]);
 
         const filteredOrders = ordersRes.data.filter(o => o.date?.startsWith(month));

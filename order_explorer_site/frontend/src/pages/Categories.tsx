@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import { api } from '../api';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import type { PieLabelRenderProps } from 'recharts';
 import PageHeader from '../components/ui/PageHeader';
@@ -45,7 +45,7 @@ const Categories: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
   useEffect(() => {
-    axios.get<CategoryAnalysis>('http://localhost:8015/categories')
+    api.get<CategoryAnalysis>('/categories')
       .then(response => {
         setData(response.data);
         setLoading(false);

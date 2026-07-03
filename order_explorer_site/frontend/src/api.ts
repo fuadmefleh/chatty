@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { getStoredApiKey } from './chattyApi';
 
-const api = axios.create({
+export const api = axios.create({
   baseURL: '/api/explorer',
 });
 

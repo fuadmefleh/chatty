@@ -1,14 +1,183 @@
 """Memory management system using daily markdown files."""
+import json
 import os
 import aiofiles
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 from src.core import config
 from src.core.logging_config import get_memory_logger
 
 # Get memory logger
 memory_logger = get_memory_logger()
+
+# Max messages kept in the in-memory sliding window (used for LLM context)
+CONVERSATION_WINDOW = 10
+# Max messages per history page when viewing /history
+HISTORY_PAGE_SIZE = 10
+# Max seconds between messages before we consider it a new session
+SESSION_GAP_SECONDS = 3600  # 1 hour
+# Max sessions shown in /continue
+MAX_SESSIONS_SHOWN = 10
+
+
+class ConversationHistoryManager:
+    """Persistent conversation history stored as JSON per-user.
+
+    Keeps a full log of every user↔assistant exchange in
+    `memory/<user_id>/conversations/history.json` so chats survive
+    bot restarts.  Also maintains a sliding in-memory window that is
+    passed to the LLM as context.
+
+    Public API
+    ----------
+    load()          → List[Dict]   – read history from disk
+    append(user, assistant)         – save one exchange
+    get_messages(window) → List[Dict]  – most recent *window* entries
+    get_page(page)   → (messages, total_pages)
+    clear()         → None         – erase persisted history
+    count()         → int          – total message count
+    """
+
+    def __init__(self, user_id: str):
+        self.user_id = user_id
+        history_dir = config.MEMORY_DIR / str(user_id) / "conversations"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        self._path = history_dir / "history.json"
+
+    # -- I/O -----------------------------------------------------------------
+
+    async def load(self) -> List[Dict]:
+        """Load conversation history from disk."""
+        if not self._path.exists():
+            return []
+        try:
+            async with aiofiles.open(self._path, "r") as f:
+                data = await f.read()
+            msgs = json.loads(data)
+            memory_logger.info(
+                f"Loaded {len(msgs)} history messages for user {self.user_id}"
+            )
+            return msgs
+        except Exception as e:
+            memory_logger.error(f"Error loading history for {self.user_id}: {e}")
+            return []
+
+    async def save(self, messages: List[Dict]):
+        """Overwrite history file with the given messages."""
+        try:
+            async with aiofiles.open(self._path, "w") as f:
+                await f.write(json.dumps(messages, indent=2))
+        except Exception as e:
+            memory_logger.error(f"Error saving history for {self.user_id}: {e}")
+
+    # -- Mutations -----------------------------------------------------------
+
+    async def append(self, user_msg: str, assistant_msg: str):
+        """Append one user↔assistant exchange to persisted history."""
+        history = await self.load()
+        history.append({"role": "user", "content": user_msg, "ts": datetime.now().isoformat()})
+        history.append({"role": "assistant", "content": assistant_msg, "ts": datetime.now().isoformat()})
+        await self.save(history)
+
+    # -- Queries -------------------------------------------------------------
+
+    async def get_messages(self, window: int = CONVERSATION_WINDOW) -> List[Dict]:
+        """Return the most recent *window* messages (stripped of ``ts``)."""
+        history = await self.load()
+        tail = history[-window:] if window else history
+        return [{"role": m["role"], "content": m["content"]} for m in tail]
+
+    async def get_page(self, page: int = 0) -> tuple:
+        """Return a page of messages for display.
+
+        Returns (messages_with_timestamps, total_pages, total_count).
+        """
+        history = await self.load()
+        total = len(history)
+        total_pages = max(1, (total + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE)
+        page = max(0, min(page, total_pages - 1))
+        start = page * HISTORY_PAGE_SIZE
+        end = start + HISTORY_PAGE_SIZE
+        return history[start:end], total_pages, total
+
+    async def clear(self):
+        """Delete persisted history."""
+        if self._path.exists():
+            self._path.unlink()
+        memory_logger.info(f"Cleared conversation history for user {self.user_id}")
+
+    async def count(self) -> int:
+        """Total number of stored messages."""
+        history = await self.load()
+        return len(history)
+
+    # -- Sessions ------------------------------------------------------------
+
+    async def get_sessions(self) -> List[Dict]:
+        """Detect conversation sessions based on time gaps.
+
+        Groups consecutive messages into sessions when the gap between them
+        is less than SESSION_GAP_SECONDS.  Returns a list of session dicts
+        sorted newest-first:
+
+            [{
+                "id": int,           # 0-based index
+                "messages": List[Dict],  # full messages with ts
+                "first_ts": str,      # ISO timestamp of first message
+                "last_ts": str,       # ISO timestamp of last message
+                "summary": str,       # first user message (truncated)
+            }, ...]
+        """
+        history = await self.load()
+        if not history:
+            return []
+
+        sessions: List[List[Dict]] = []
+        current_session: List[Dict] = [history[0]]
+
+        for i in range(1, len(history)):
+            prev_ts = history[i - 1].get("ts", "")
+            curr_ts = history[i].get("ts", "")
+            try:
+                prev_dt = datetime.fromisoformat(prev_ts)
+                curr_dt = datetime.fromisoformat(curr_ts)
+                gap = (curr_dt - prev_dt).total_seconds()
+            except Exception:
+                gap = 0
+
+            if gap > SESSION_GAP_SECONDS:
+                sessions.append(current_session)
+                current_session = []
+            current_session.append(history[i])
+
+        if current_session:
+            sessions.append(current_session)
+
+        # Build session summary, newest first
+        result: List[Dict] = []
+        for idx, sess_msgs in enumerate(reversed(sessions)):
+            first_user_msg = next(
+                (m["content"] for m in sess_msgs if m["role"] == "user"),
+                "",
+            )
+            result.append({
+                "id": idx,
+                "messages": sess_msgs,
+                "first_ts": sess_msgs[0].get("ts", ""),
+                "last_ts": sess_msgs[-1].get("ts", ""),
+                "message_count": len(sess_msgs),
+                "summary": (first_user_msg[:100] + "...") if len(first_user_msg) > 100 else first_user_msg,
+            })
+        return result
+
+    async def get_session(self, session_id: int) -> List[Dict]:
+        """Return messages for a specific session (stripped of ts)."""
+        sessions = await self.get_sessions()
+        if 0 <= session_id < len(sessions):
+            sess = sessions[session_id]
+            return [{"role": m["role"], "content": m["content"]} for m in sess["messages"]]
+        return []
 
 
 class MemoryManager:

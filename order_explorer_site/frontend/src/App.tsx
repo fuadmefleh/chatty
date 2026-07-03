@@ -22,6 +22,7 @@ import WorkoutDetail from './pages/WorkoutDetail';
 import ProgressTracker from './pages/ProgressTracker';
 import Chat from './pages/Chat';
 import Notes from './pages/Notes';
+import Insights from './pages/Insights';
 import Reminders from './pages/Reminders';
 import MemoryViewer from './pages/MemoryViewer';
 import Requests from './pages/Requests';
@@ -60,6 +61,7 @@ function App() {
               {/* Chatty Routes */}
               <Route path="/chat" element={<Chat />} />
               <Route path="/notes" element={<Notes />} />
+              <Route path="/insights" element={<Insights />} />
               <Route path="/reminders" element={<Reminders />} />
               <Route path="/memory" element={<MemoryViewer />} />
               <Route path="/requests" element={<Requests />} />

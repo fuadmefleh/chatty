@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import { api } from '../api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import type { PieLabelRenderProps } from 'recharts';
 import PageHeader from '../components/ui/PageHeader';
@@ -42,7 +42,7 @@ const Vendors: React.FC = () => {
   const [selectedVendor, setSelectedVendor] = useState<string | null>(null);
 
   useEffect(() => {
-    axios.get<VendorAnalysis>('http://localhost:8015/vendors')
+    api.get<VendorAnalysis>('/vendors')
       .then(response => {
         setData(response.data);
         setLoading(false);
