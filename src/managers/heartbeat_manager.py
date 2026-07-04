@@ -141,7 +141,12 @@ class HeartbeatManager:
                         result = await self._cleanup_long_term_memories(user_agents, user_memories)
                         if result:
                             summary.append(result)
-                    
+
+                    # Mine any pending transcriptions (e.g. iOS voice memos) into long-term memory
+                    result = await self._process_transcription_mining()
+                    if result:
+                        summary.append(result)
+
                     # Process Gmail cleanup and organization
                     result = await self._process_gmail_cleanup()
                     if result:
@@ -313,7 +318,45 @@ Otherwise, just think through the checks and conclude with your assessment.
         if cleaned_users:
             return f"🗂️ Memory cleanup: Organized memories for {len(cleaned_users)} user(s)"
         return None
-    
+
+    async def _process_transcription_mining(self) -> Optional[str]:
+        """Mine pending transcriptions (e.g. iOS voice memos) into long-term memory.
+
+        Unlike world watch/self-upgrade, this has no interval gate - it runs
+        every heartbeat cycle, since checking for pending transcriptions is
+        cheap and the point is getting voice notes into memory quickly.
+        Successfully processed transcriptions are archived (not deleted) via
+        TranscriptionsManager, so the raw text stays available afterward.
+
+        Scoped to config.WEB_USER_ID (the single web/iOS app user), not
+        Telegram's authorized_users - transcriptions arrive over the web API.
+        """
+        try:
+            from skills.transcriptions.transcriptions_manager import TranscriptionsManager
+            from src.core.memory import MemoryManager
+
+            user_id = config.WEB_USER_ID
+            if not user_id:
+                return None
+
+            transcriptions_mgr = TranscriptionsManager()
+            pending = transcriptions_mgr.get_pending(user_id)
+            if not pending:
+                return None
+
+            combined_text = "\n\n".join(f"[{t.created_at}] {t.content}" for t in pending)
+
+            memory_manager = MemoryManager(user_id)
+            await memory_manager.consolidate_text(combined_text)
+
+            transcriptions_mgr.archive(user_id, [t.id for t in pending])
+
+            return f"🎙️ Transcriptions: mined {len(pending)} into long-term memory"
+
+        except Exception as e:
+            heartbeat_logger.error(f"Error in transcription mining: {e}", exc_info=True)
+            return None
+
     async def _process_gmail_cleanup(self) -> str:
         """Clean up and organize Gmail inbox autonomously.
         
@@ -335,7 +378,6 @@ Otherwise, just think through the checks and conclude with your assessment.
                 get_social_emails,
                 archive_emails,
                 get_email_count,
-                SCOPES
             )
             
             # Check if Gmail is configured
@@ -377,10 +419,6 @@ Otherwise, just think through the checks and conclude with your assessment.
             promo_emails = get_promotional_emails(max_results=100)
             
             if promo_emails:
-                # Filter for emails 7+ days old
-                from datetime import datetime, timedelta
-                seven_days_ago = datetime.now() - timedelta(days=7)
-                
                 old_promo_ids = []
                 for email in promo_emails:
                     # Parse date from email (this is approximate, Gmail API doesn't return timestamps easily)
@@ -1055,7 +1093,7 @@ If nothing is worth suggesting, reply with exactly: NONE"""
         
         try:
             # Format the summary message
-            message = f"💓 **Heartbeat Summary**\n"
+            message = "💓 **Heartbeat Summary**\n"
             message += f"⏰ {timestamp}\n\n"
             message += "Activities completed:\n\n"
             

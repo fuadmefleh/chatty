@@ -1,53 +1,76 @@
-#!/usr/bin/env python3
-"""Test script for heartbeat summary functionality."""
-import asyncio
+"""Tests for HeartbeatManager._send_heartbeat_summary.
+
+Deliberately does NOT call execute_heartbeat() directly: that method calls
+through to _process_world_watch/_process_memory_watch_suggestions/
+_process_daily_briefing/_process_self_upgrade_ideas (real network/LLM calls,
+and - since this repo's data/authorized_users.json has a real entry - even a
+real self-upgrade attempt) plus a real agent.think() LLM call at the end.
+Those are covered in isolation with proper mocking in test_world_watch.py,
+test_daily_briefing.py, test_memory_suggestions.py, and
+test_heartbeat_self_upgrade.py. This file only exercises the summary
+formatting/sending logic itself.
+"""
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, AsyncMock, patch
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.managers.heartbeat_manager import HeartbeatManager
-from src.core.skills_manager import SkillsManager
 
 
-async def test_heartbeat_summary():
-    """Test the heartbeat summary functionality."""
-    print("Testing heartbeat summary functionality...")
-    print("=" * 60)
-    
-    # Create skills manager
-    skills_manager = SkillsManager()
-    await skills_manager.initialize()
-    
-    # Create heartbeat manager
-    heartbeat_manager = HeartbeatManager(skills_manager)
-    
-    # Create mock callbacks
-    def get_user_agents():
-        return {}
-    
-    def get_user_memories():
-        return {}
-    
-    async def send_message(user_id, message):
-        print("\n" + "=" * 60)
-        print(f"📱 TELEGRAM MESSAGE TO USER {user_id}:")
-        print("=" * 60)
-        print(message)
-        print("=" * 60 + "\n")
-    
-    # Set callbacks
-    heartbeat_manager.set_user_agents_callback(get_user_agents)
-    heartbeat_manager.set_user_memories_callback(get_user_memories)
-    heartbeat_manager.set_send_message_callback(send_message)
-    
-    # Execute heartbeat
-    print("Executing heartbeat cycle...\n")
-    await heartbeat_manager.execute_heartbeat()
-    
-    print("\n✅ Heartbeat test completed!")
+def make_manager():
+    return HeartbeatManager(skills_manager=MagicMock())
 
 
-if __name__ == "__main__":
-    asyncio.run(test_heartbeat_summary())
+@pytest.mark.asyncio
+async def test_summary_sent_to_all_authorized_users():
+    hb = make_manager()
+    send = AsyncMock()
+    hb.set_send_message_callback(send)
+
+    with patch("src.main.authorized_users", {"user1": "phone1", "user2": "phone2"}):
+        await hb._send_heartbeat_summary(["📧 Gmail: inbox clean"], "2026-01-01 08:00 AM")
+
+    assert send.await_count == 2
+    sent_user_ids = {call.args[0] for call in send.await_args_list}
+    assert sent_user_ids == {"user1", "user2"}
+    message = send.await_args_list[0].args[1]
+    assert "Heartbeat Summary" in message
+    assert "📧 Gmail: inbox clean" in message
+    assert "2026-01-01 08:00 AM" in message
+
+
+@pytest.mark.asyncio
+async def test_empty_summary_sends_nothing():
+    hb = make_manager()
+    send = AsyncMock()
+    hb.set_send_message_callback(send)
+
+    with patch("src.main.authorized_users", {"user1": "phone1"}):
+        await hb._send_heartbeat_summary([], "2026-01-01 08:00 AM")
+
+    send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_callback_configured_does_not_raise():
+    hb = make_manager()  # no send_message_callback set
+
+    with patch("src.main.authorized_users", {"user1": "phone1"}):
+        await hb._send_heartbeat_summary(["something happened"], "2026-01-01 08:00 AM")
+    # No exception is the assertion here.
+
+
+@pytest.mark.asyncio
+async def test_no_authorized_users_sends_nothing():
+    hb = make_manager()
+    send = AsyncMock()
+    hb.set_send_message_callback(send)
+
+    with patch("src.main.authorized_users", {}):
+        await hb._send_heartbeat_summary(["something happened"], "2026-01-01 08:00 AM")
+
+    send.assert_not_awaited()

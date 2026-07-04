@@ -96,32 +96,46 @@ def _slugify(text: str, max_len: int = 40) -> str:
     return slug or "upgrade"
 
 
-# Repeated here (not just left for Pi to discover) because it's the single
-# most common way a self-upgrade's own new tests fail the gate: this repo's
-# pytest has no asyncio-mode config, so async tests silently fail to collect
-# without the marker.
-_TEST_CONVENTIONS = """This repo's pytest is NOT configured for asyncio auto-mode. Any test function
-defined as `async def test_...` MUST be decorated with `@pytest.mark.asyncio`, or it will fail with
-"async def functions are not natively supported" instead of actually running. See
-tests/test_world_watch.py for the convention used elsewhere in this repo. Before finishing, run
-`venv/bin/python -m pytest tests/` yourself and make sure it passes."""
+# Repeated here (not just left for Pi to discover) because these are the
+# concrete gates the commit/merge will actually be checked against - a
+# pre-commit git hook (.githooks/pre-commit) independently re-runs all of
+# this at commit time, so getting it right the first time avoids a wasted
+# retry round-trip.
+_CONVENTIONS = """This repo enforces, on every commit (via a git hook - you cannot bypass it):
+- `ruff check --select E9,F` on any Python file you touch: no undefined names, no
+  use-before-assignment, no syntax errors. Unused imports/variables are also flagged - clean them up.
+- The full test suite (`pytest tests/`) must pass. pytest-asyncio is in auto mode, so async test
+  functions do NOT need an @pytest.mark.asyncio decorator - just name them `test_...`.
+- If you change any non-test, non-doc source file, you MUST also add or update a test that
+  exercises the change, in the tests/ directory. A change with no corresponding test change will
+  be sent back to you, even if the existing suite still passes."""
 
 
 def _wrap_idea_prompt(idea_prompt: str) -> str:
-    return f"{idea_prompt}\n\n{_TEST_CONVENTIONS}"
+    return f"{idea_prompt}\n\n{_CONVENTIONS}"
 
 
-def _build_fix_prompt(idea_prompt: str, test_output: str) -> str:
+def _build_fix_prompt(idea_prompt: str, reason: str, details: str) -> str:
     return f"""You previously attempted this change:
 
 {idea_prompt}
 
-The test suite failed. Fix the underlying issue so `pytest tests/` passes - do not weaken or
-remove test assertions just to make them pass. Test output:
+{reason} Fix the underlying issue - do not weaken or remove test assertions, or delete a failing
+test, just to make the gate pass. Details:
 
-{test_output[-3000:]}
+{details[-3000:]}
 
-{_TEST_CONVENTIONS}"""
+{_CONVENTIONS}"""
+
+
+def _missing_test_coverage(changed_files: List[str]) -> bool:
+    """True if source files changed but no tests/ file changed alongside them."""
+    source_files = [
+        f for f in changed_files
+        if not f.startswith("tests/") and not f.endswith(".md")
+    ]
+    test_files = [f for f in changed_files if f.startswith("tests/")]
+    return bool(source_files) and not test_files
 
 
 def _affected_services(changed_files: List[str]) -> List[str]:
@@ -329,8 +343,15 @@ async def run_self_upgrade(
             if attempt > 1:
                 commit_msg += f" (fix attempt {attempt})"
             rc, out = await _git(["commit", "-m", commit_msg], cwd=worktree_dir)
+            feature_requests_manager.append_log(request.id, f"commit (attempt {attempt}):\n{out[-2000:]}")
             if rc != 0:
-                return await fail(f"Commit failed: {out[:400]}")
+                # The pre-commit hook (lint + full test suite) rejected this -
+                # same retry mechanism as a post-commit test failure below.
+                if attempt >= max_attempts:
+                    return await fail(f"Commit rejected by pre-commit hook after {attempt} attempt(s). Tail:\n{out[-500:]}")
+                feature_requests_manager.update(request.id, status="running")
+                current_prompt = _build_fix_prompt(idea_prompt, "The commit was rejected by the pre-commit hook (lint/tests).", out)
+                continue
 
             feature_requests_manager.update(request.id, status="testing")
 
@@ -339,17 +360,31 @@ async def run_self_upgrade(
                 timeout=config.SELF_UPGRADE_TEST_TIMEOUT_SECONDS, env=env,
             )
             feature_requests_manager.append_log(request.id, f"pytest (attempt {attempt}):\n{out[-2000:]}")
-            if rc == 0:
-                break  # test gate passed - fall through to frontend checks / merge below
+            if rc != 0:
+                if attempt >= max_attempts:
+                    return await fail(f"Test suite failed after {attempt} attempt(s) (exit {rc}). Tail:\n{out[-500:]}")
+                feature_requests_manager.update(request.id, status="running")
+                current_prompt = _build_fix_prompt(idea_prompt, "The test suite failed.", out)
+                continue
 
-            if attempt >= max_attempts:
-                return await fail(f"Test suite failed after {attempt} attempt(s) (exit {rc}). Tail:\n{out[-500:]}")
+            _, changed_files_out = await _git(["diff", "--name-only", "main", "HEAD"], cwd=worktree_dir)
+            changed_files = [f.strip() for f in changed_files_out.splitlines() if f.strip()]
 
-            feature_requests_manager.update(request.id, status="running")
-            current_prompt = _build_fix_prompt(idea_prompt, out)
+            if _missing_test_coverage(changed_files):
+                if attempt >= max_attempts:
+                    return await fail(
+                        f"No test coverage added after {attempt} attempt(s). Changed: {', '.join(changed_files[:10])}"
+                    )
+                feature_requests_manager.update(request.id, status="running")
+                current_prompt = _build_fix_prompt(
+                    idea_prompt,
+                    "Tests pass, but you didn't add or update any test for this change.",
+                    f"Files changed so far: {', '.join(changed_files)}",
+                )
+                continue
 
-        _, changed_files_out = await _git(["diff", "--name-only", "main", "HEAD"], cwd=worktree_dir)
-        changed_files = [f.strip() for f in changed_files_out.splitlines() if f.strip()]
+            break  # test gate + coverage check passed - fall through to frontend checks / merge below
+
         touched_test_files = [f for f in changed_files if f.startswith("tests/")]
         frontend_touched = any(f.startswith("order_explorer_site/frontend/") for f in changed_files)
 

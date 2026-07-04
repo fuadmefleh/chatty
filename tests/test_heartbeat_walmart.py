@@ -34,7 +34,7 @@ async def test_walmart_processing():
     pdf_files_after = list(walmart_dir.glob("*.pdf"))
     archived_files = list((walmart_dir / "archived").glob("*.pdf"))
     
-    print(f"\nFinal state:")
+    print("\nFinal state:")
     print(f"  - PDFs remaining in data/walmart: {len(pdf_files_after)}")
     print(f"  - PDFs in archived: {len(archived_files)}")
     print(f"  - PDFs processed: {len(pdf_files) - len(pdf_files_after)}")

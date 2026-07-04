@@ -13,7 +13,6 @@ single personal server with at most two callers, not a multi-tenant system.
 import json
 import os
 import time
-from pathlib import Path
 from typing import Optional
 
 from src.core import config

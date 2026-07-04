@@ -4,7 +4,6 @@ These tools allow the LLM to save and manage notes for users.
 The NotesManager must be set via set_notes_manager() before using.
 """
 import json
-from typing import Optional
 from src.core.skill_tool import SkillTool
 
 # Module-level reference to NotesManager - set by main.py

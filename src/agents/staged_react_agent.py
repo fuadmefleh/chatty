@@ -835,7 +835,7 @@ you can call additional tools if needed, or stop when you have enough informatio
                     content = str(msg)
                 total += len(self.encoder.encode(content))
             return total
-        except Exception as e:
+        except Exception:
             # Fallback to character-based estimation
             total_chars = 0
             for msg in messages:

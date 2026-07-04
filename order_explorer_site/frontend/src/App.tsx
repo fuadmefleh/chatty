@@ -22,11 +22,13 @@ import WorkoutDetail from './pages/WorkoutDetail';
 import ProgressTracker from './pages/ProgressTracker';
 import Chat from './pages/Chat';
 import Notes from './pages/Notes';
+import Transcriptions from './pages/Transcriptions';
 import Insights from './pages/Insights';
 import Reminders from './pages/Reminders';
 import MemoryViewer from './pages/MemoryViewer';
 import Requests from './pages/Requests';
 import SystemStatus from './pages/SystemStatus';
+import CodeBrowser from './pages/CodeBrowser';
 
 function App() {
   return (
@@ -61,11 +63,13 @@ function App() {
               {/* Chatty Routes */}
               <Route path="/chat" element={<Chat />} />
               <Route path="/notes" element={<Notes />} />
+              <Route path="/transcriptions" element={<Transcriptions />} />
               <Route path="/insights" element={<Insights />} />
               <Route path="/reminders" element={<Reminders />} />
               <Route path="/memory" element={<MemoryViewer />} />
               <Route path="/requests" element={<Requests />} />
               <Route path="/system" element={<SystemStatus />} />
+              <Route path="/code" element={<CodeBrowser />} />
             </Routes>
           </main>
         </div>

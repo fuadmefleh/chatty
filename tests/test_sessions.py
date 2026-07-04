@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.core.memory import ConversationHistoryManager, SESSION_GAP_SECONDS
+from src.core.memory import ConversationHistoryManager
 
 
 def _ts(dt: datetime) -> str:

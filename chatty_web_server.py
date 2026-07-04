@@ -4,11 +4,15 @@ Port: 8016
 Provides REST + WebSocket endpoints for:
 - Chat (WebSocket, streams agent responses)
 - Notes (CRUD)
+- Transcriptions (create/list/delete - staged for automatic memory mining)
+- Audio ingestion (raw-body upload -> WhisperX STT -> transcriptions queue)
 - Reminders (read + delete)
 - Memory viewer (read-only)
+- Code browser (read-only)
 - System status (skills, pm2)
 """
 import asyncio
+import fnmatch
 import json
 import os
 import subprocess
@@ -17,9 +21,13 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Header, Query
+import httpx
+from fastapi import (
+    FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Header,
+    Query, Request, BackgroundTasks,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -31,10 +39,10 @@ PROJECT_ROOT = Path(__file__).parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core import config
 from src.core.logging_config import get_api_logger
 from src.core.skills_manager import SkillsManager
 from skills.notes.notes_manager import NotesManager
+from skills.transcriptions.transcriptions_manager import TranscriptionsManager
 from skills.watchlist.watchlist_manager import WatchlistManager
 from src.managers.insights_manager import InsightsManager
 from skills.pi_agent.requests_manager import FeatureRequestsManager
@@ -50,6 +58,35 @@ REMINDERS_DIR = PROJECT_ROOT / "reminders"
 MEMORY_DIR = PROJECT_ROOT / "memory"
 PORT = int(os.getenv("CHATTY_WEB_PORT", "8016"))
 
+# WhisperX STT engine already running on this host (see
+# /home/edgeworks-server/feedback_to_specs/stt_engine) - reused here rather
+# than embedding a second Whisper install. Handles diarization itself
+# (gracefully skipped server-side if it has no HUGGINGFACE_TOKEN configured).
+STT_ENGINE_URL = os.getenv("STT_ENGINE_URL", "http://127.0.0.1:8003")
+
+# ── Code browser config ──────────────────────────────────────────────────────
+CODE_EXCLUDE_DIRS = {
+    ".git", "venv", "env", "ENV", "node_modules", "__pycache__",
+    "data", "memory", "logs", "reminders", "dist", "build",
+    ".vite", ".opencode", ".claude", ".vscode", ".idea",
+    ".pytest_cache", "coverage",
+}
+CODE_EXCLUDE_FILE_GLOBS = (
+    ".env", ".env.*", "credentials.json", "*_token*", "*_tokens*",
+    "*.pickle", "*.db", "*.sqlite", "*.sqlite3", "*.pem", "*.key", "*secret*",
+)
+CODE_BINARY_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp", ".pdf",
+    ".zip", ".tar", ".gz", ".whl", ".pyc", ".so", ".woff", ".woff2", ".ttf", ".eot",
+}
+CODE_LANGUAGE_MAP = {
+    ".py": "python", ".ts": "typescript", ".tsx": "tsx", ".js": "javascript",
+    ".jsx": "jsx", ".json": "json", ".css": "css", ".html": "markup",
+    ".md": "markdown", ".sh": "bash", ".yml": "yaml", ".yaml": "yaml",
+    ".toml": "toml", ".cfg": "text", ".ini": "text", ".txt": "text",
+}
+CODE_MAX_FILE_BYTES = 500_000  # reject rather than truncate
+
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(title="Chatty Web API", version="1.0.0")
 
@@ -63,6 +100,7 @@ app.add_middleware(
 
 # ── Shared state ─────────────────────────────────────────────────────────────
 notes_manager = NotesManager()
+transcriptions_manager = TranscriptionsManager()
 watchlist_manager = WatchlistManager()
 insights_manager = InsightsManager()
 feature_requests_manager = FeatureRequestsManager()
@@ -130,6 +168,113 @@ async def delete_note(note_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="Note not found")
     return {"deleted": True}
+
+
+# ── Transcriptions ───────────────────────────────────────────────────────────
+# Raw transcriptions (e.g. iOS voice memos) awaiting automatic mining into
+# long-term memory by the heartbeat - not user-editable notes. Listing only
+# returns pending ones by default; already-mined ones are archived server-side.
+class TranscriptionCreate(BaseModel):
+    content: str
+    source: str = "ios_app"
+
+
+@app.get("/api/chatty/transcriptions", dependencies=[Depends(require_api_key)])
+async def get_transcriptions(include_archived: bool = False):
+    pending = [{**t.to_dict(), "mined": False} for t in transcriptions_manager.get_pending(WEB_USER_ID)]
+    if not include_archived:
+        return pending
+    archived = [{**t.to_dict(), "mined": True} for t in transcriptions_manager.get_archived(WEB_USER_ID)]
+    return pending + archived
+
+
+@app.post("/api/chatty/transcriptions", dependencies=[Depends(require_api_key)], status_code=201)
+async def create_transcription(body: TranscriptionCreate):
+    transcription = transcriptions_manager.add_transcription(WEB_USER_ID, body.content, body.source)
+    return transcription.to_dict()
+
+
+@app.delete("/api/chatty/transcriptions/{transcription_id}", dependencies=[Depends(require_api_key)])
+async def delete_transcription(transcription_id: str):
+    ok = transcriptions_manager.delete_transcription(WEB_USER_ID, transcription_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Transcription not found")
+    return {"deleted": True}
+
+
+@app.get("/api/chatty/transcriptions/{transcription_id}/audio", dependencies=[Depends(require_api_key)])
+async def get_transcription_audio(transcription_id: str):
+    path = transcriptions_manager.get_audio_path(WEB_USER_ID, transcription_id)
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="Audio not found")
+    return FileResponse(path, media_type="audio/mp4")
+
+
+# ── Audio ingestion (iOS app) ────────────────────────────────────────────────
+# Raw-body (not multipart) audio chunk upload. Transcribed via the WhisperX
+# STT engine already running on this host, then fed into the same
+# TranscriptionsManager pending queue as text transcriptions - the existing
+# heartbeat mining step (HeartbeatManager._process_transcription_mining)
+# picks it up from there unchanged.
+def _format_transcript(stt_result: dict) -> str:
+    """Render an STT engine result as plain text, using per-speaker lines
+    when diarization segments are present."""
+    segments = stt_result.get("segments") or []
+    if segments and isinstance(segments[0], dict) and "speaker" in segments[0]:
+        lines = []
+        for seg in segments:
+            text = (seg.get("text") or "").strip()
+            if text:
+                lines.append(f"{seg.get('speaker', '?')}: {text}")
+        if lines:
+            return "\n".join(lines)
+    return (stt_result.get("text") or "").strip()
+
+
+async def _transcribe_and_store_audio(
+    audio_bytes: bytes, device_id: str, chunk_start: str, chunk_duration: str, source: str
+) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{STT_ENGINE_URL}/transcribe",
+                files={"file": ("chunk.m4a", audio_bytes, "audio/mp4")},
+                data={"language": "en", "diarize": "true"},
+            )
+            resp.raise_for_status()
+            result = resp.json()
+
+        transcript = _format_transcript(result)
+        if not transcript:
+            logger.info(f"Audio chunk from device {device_id} at {chunk_start} had no speech, skipping")
+            return
+
+        audio_filename = transcriptions_manager.save_audio(audio_bytes)
+        content = f"[{chunk_start}] (device {device_id}, {chunk_duration}s audio) {transcript}"
+        transcriptions_manager.add_transcription(WEB_USER_ID, content, source=source, audio_filename=audio_filename)
+        logger.info(f"Transcribed and queued audio chunk from device {device_id} at {chunk_start}")
+
+    except Exception as e:
+        logger.error(f"Failed to transcribe audio chunk from device {device_id} at {chunk_start}: {e}")
+
+
+@app.post("/api/chatty/audio", dependencies=[Depends(require_api_key)], status_code=202)
+async def receive_audio(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_device_id: str = Header(default=""),
+    x_chunk_start: str = Header(default=""),
+    x_chunk_duration: str = Header(default=""),
+    x_source: str = Header(default="ios_app"),
+):
+    audio_bytes = await request.body()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio body")
+
+    background_tasks.add_task(
+        _transcribe_and_store_audio, audio_bytes, x_device_id, x_chunk_start, x_chunk_duration, x_source
+    )
+    return {"accepted": True}
 
 
 # ── Watchlist ────────────────────────────────────────────────────────────────
@@ -317,6 +462,85 @@ async def get_memory(days: int = Query(default=7, ge=1, le=90)):
             })
 
     return result
+
+
+# ── Code browser (read-only) ──────────────────────────────────────────────────
+def _is_excluded_component(name: str) -> bool:
+    if name.startswith(".") or name in CODE_EXCLUDE_DIRS:
+        return True
+    lower = name.lower()
+    return any(fnmatch.fnmatch(lower, pat) for pat in CODE_EXCLUDE_FILE_GLOBS)
+
+
+def _resolve_code_path(rel_path: str) -> Path:
+    root = PROJECT_ROOT.resolve()
+    candidate = (PROJECT_ROOT / (rel_path or "").strip().lstrip("/")).resolve()
+    try:
+        parts = candidate.relative_to(root).parts
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if any(_is_excluded_component(p) for p in parts):
+        raise HTTPException(status_code=403, detail="Path is not browsable")
+    if not candidate.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+    return candidate
+
+
+@app.get("/api/chatty/code/tree", dependencies=[Depends(require_api_key)])
+async def get_code_tree(path: str = Query(default="")):
+    target = _resolve_code_path(path)
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+
+    root = PROJECT_ROOT.resolve()
+    entries = []
+    for child in sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+        if _is_excluded_component(child.name):
+            continue
+        is_dir = child.is_dir()
+        entries.append({
+            "name": child.name,
+            "path": str(child.resolve().relative_to(root)),
+            "type": "dir" if is_dir else "file",
+            "size": None if is_dir else child.stat().st_size,
+        })
+
+    resolved = target.resolve()
+    return {
+        "path": "" if resolved == root else str(resolved.relative_to(root)),
+        "entries": entries,
+    }
+
+
+@app.get("/api/chatty/code/file", dependencies=[Depends(require_api_key)])
+async def get_code_file(path: str = Query(default="")):
+    target = _resolve_code_path(path)
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+
+    ext = target.suffix.lower()
+    if ext in CODE_BINARY_EXTENSIONS:
+        raise HTTPException(status_code=415, detail="Binary file — preview not supported")
+
+    size = target.stat().st_size
+    if size > CODE_MAX_FILE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large to preview ({size:,} bytes, limit {CODE_MAX_FILE_BYTES:,})",
+        )
+
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=415, detail="Binary file — preview not supported")
+
+    return {
+        "path": str(target.resolve().relative_to(PROJECT_ROOT.resolve())),
+        "name": target.name,
+        "size": size,
+        "language": CODE_LANGUAGE_MAP.get(ext, "text"),
+        "content": content,
+    }
 
 
 # ── System status ─────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 """Skills system for loading agent capabilities from markdown files."""
 import aiofiles
 from pathlib import Path
-from typing import List, Dict, Optional, Callable, Any
+from typing import List, Dict, Optional, Callable
 import re
 import importlib.util
 import inspect

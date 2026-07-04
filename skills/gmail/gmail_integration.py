@@ -1,12 +1,10 @@
 """Gmail Integration for reading and searching emails."""
-import os
 import pickle
 import base64
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -287,11 +285,11 @@ def mark_as_read(message_ids: List[str]) -> Dict[str, Any]:
             'removeLabelIds': ['UNREAD']
         }
         
-        result = service.users().messages().batchModify(
+        service.users().messages().batchModify(
             userId='me',
             body=body
         ).execute()
-        
+
         return {
             'success': True,
             'count': len(message_ids),
@@ -323,11 +321,11 @@ def archive_emails(message_ids: List[str]) -> Dict[str, Any]:
             'removeLabelIds': ['INBOX']
         }
         
-        result = service.users().messages().batchModify(
+        service.users().messages().batchModify(
             userId='me',
             body=body
         ).execute()
-        
+
         return {
             'success': True,
             'count': len(message_ids),
@@ -358,7 +356,7 @@ def trash_emails(message_ids: List[str]) -> Dict[str, Any]:
             'ids': message_ids
         }
         
-        result = service.users().messages().batchDelete(
+        service.users().messages().batchDelete(
             userId='me',
             body=body
         ).execute()
@@ -417,11 +415,11 @@ def add_label(message_ids: List[str], label_name: str) -> Dict[str, Any]:
             'addLabelIds': [label_id]
         }
         
-        result = service.users().messages().batchModify(
+        service.users().messages().batchModify(
             userId='me',
             body=body
         ).execute()
-        
+
         return {
             'success': True,
             'count': len(message_ids),

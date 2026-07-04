@@ -4,8 +4,7 @@ Skills define their tools by subclassing SkillTool in their own tools.py file.
 The framework dynamically loads these tools when skills are activated.
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional
-import json
+from typing import Dict, Any, List
 
 
 class SkillTool(ABC):

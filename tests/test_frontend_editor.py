@@ -2,16 +2,9 @@
 import json
 import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from src.core.skills_manager import SkillsManager
 from skills.frontend_editor.tools import (
-    ListFrontendFiles,
-    ReadFrontendFile,
-    WriteFrontendFile,
-    BuildFrontend,
-    RestartFrontendService,
-    GetFrontendInfo,
     FRONTEND_DIR,
     _is_safe_path,
 )

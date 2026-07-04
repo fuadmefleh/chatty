@@ -5,7 +5,6 @@ The ReminderManager must be set via set_reminder_manager() before using.
 """
 import json
 from datetime import datetime
-from typing import Optional
 from src.core.skill_tool import SkillTool
 
 # Module-level reference to ReminderManager - set by main.py

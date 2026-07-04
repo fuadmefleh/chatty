@@ -63,6 +63,41 @@ export const deleteChattyNote = async (id: string): Promise<void> => {
   await chattyApi.delete(`/api/chatty/notes/${id}`);
 };
 
+// ── Transcriptions ─────────────────────────────────────────────────────────────
+// Raw transcriptions (e.g. iOS voice memos) awaiting/after automatic mining
+// into long-term memory by the heartbeat. Separate from Notes — write-once,
+// no update endpoint.
+export interface ChattyTranscription {
+  id: string;
+  content: string;
+  created_at: string;
+  user_id: string;
+  source: string;
+  mined: boolean;
+  has_audio: boolean;
+}
+
+export const fetchTranscriptions = async (includeArchived = false): Promise<ChattyTranscription[]> => {
+  const res = await chattyApi.get<ChattyTranscription[]>('/api/chatty/transcriptions', {
+    params: { include_archived: includeArchived },
+  });
+  return res.data;
+};
+
+export const deleteTranscription = async (id: string): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/transcriptions/${id}`);
+};
+
+// Fetches the audio as a blob (via the authenticated axios instance, since a
+// plain <audio src> can't attach the X-API-Key header) and hands back an
+// object URL the caller must revoke when done with it.
+export const fetchTranscriptionAudioUrl = async (id: string): Promise<string> => {
+  const res = await chattyApi.get(`/api/chatty/transcriptions/${id}/audio`, {
+    responseType: 'blob',
+  });
+  return URL.createObjectURL(res.data);
+};
+
 // ── Watchlist ────────────────────────────────────────────────────────────────
 export type WatchTopicKind = 'news' | 'stock' | 'github';
 
@@ -143,6 +178,37 @@ export interface MemoryData {
 
 export const fetchChattyMemory = async (days = 7): Promise<MemoryData> => {
   const res = await chattyApi.get<MemoryData>('/api/chatty/memory', { params: { days } });
+  return res.data;
+};
+
+// ── Code Browser ─────────────────────────────────────────────────────────────
+export interface CodeTreeEntry {
+  name: string;
+  path: string;
+  type: 'dir' | 'file';
+  size: number | null;
+}
+
+export interface CodeTreeResponse {
+  path: string;
+  entries: CodeTreeEntry[];
+}
+
+export interface CodeFile {
+  path: string;
+  name: string;
+  size: number;
+  language: string;
+  content: string;
+}
+
+export const fetchCodeTree = async (path = ''): Promise<CodeTreeResponse> => {
+  const res = await chattyApi.get<CodeTreeResponse>('/api/chatty/code/tree', { params: { path } });
+  return res.data;
+};
+
+export const fetchCodeFile = async (path: string): Promise<CodeFile> => {
+  const res = await chattyApi.get<CodeFile>('/api/chatty/code/file', { params: { path } });
   return res.data;
 };
 

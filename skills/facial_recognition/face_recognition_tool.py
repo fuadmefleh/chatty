@@ -1,9 +1,9 @@
 """Facial recognition tool for detecting and identifying faces in images."""
-import os
+import importlib.util
 import json
 import pickle
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import Dict, Optional
 
 # Lazy import - only import when needed to avoid startup crashes
 FACE_RECOGNITION_AVAILABLE = None
@@ -12,13 +12,10 @@ def _check_face_recognition():
     """Check if face_recognition is available and cache the result."""
     global FACE_RECOGNITION_AVAILABLE
     if FACE_RECOGNITION_AVAILABLE is None:
-        try:
-            import face_recognition
-            from PIL import Image
-            import numpy as np
-            FACE_RECOGNITION_AVAILABLE = True
-        except ImportError as e:
-            FACE_RECOGNITION_AVAILABLE = False
+        FACE_RECOGNITION_AVAILABLE = all(
+            importlib.util.find_spec(module) is not None
+            for module in ("face_recognition", "PIL", "numpy")
+        )
     return FACE_RECOGNITION_AVAILABLE
 
 
@@ -101,7 +98,6 @@ class FaceRecognitionManager:
         
         try:
             import face_recognition
-            import numpy as np
             
             # Load image
             image = face_recognition.load_image_file(image_path)

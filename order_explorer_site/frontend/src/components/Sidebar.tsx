@@ -41,11 +41,13 @@ const GROUPS: NavGroup[] = [
     entries: [
       { to: '/chat', label: 'Chat' },
       { to: '/notes', label: 'Notes' },
+      { to: '/transcriptions', label: 'Transcriptions' },
       { to: '/insights', label: 'Insights' },
       { to: '/reminders', label: 'Reminders' },
       { to: '/memory', label: 'Memory' },
       { to: '/requests', label: 'Requests' },
       { to: '/system', label: 'System' },
+      { to: '/code', label: 'Code' },
     ],
   },
 ];

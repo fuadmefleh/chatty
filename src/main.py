@@ -412,7 +412,6 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_send_reply(update.message, "📊 Fetching today's top stocks...")
     
     try:
-        import json as _json
         from skills.stocks.yahoo_client import get_top_stocks
         
         result = await get_top_stocks()
@@ -493,21 +492,6 @@ async def walmart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in walmart_command: {e}", exc_info=True)
         await safe_send_reply(update.message, f"Error displaying Walmart orders: {str(e)}")
-        keyboard = [mini_app_row]
-        if nav_row:
-            keyboard.append(nav_row)
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await safe_send_reply(
-            update.message,
-            "\n".join(response_lines),
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
-    except Exception as e:
-        logger.error(f"Error in notes_command: {e}", exc_info=True)
-        await safe_send_reply(update.message, "An error occurred retrieving your notes.")
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -752,8 +736,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             start_idx = page * notes_per_page
             end_idx = start_idx + notes_per_page
             page_notes = notes[start_idx:end_idx]
-            
-            from datetime import datetime
+
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             
             response_lines = [f"📝 **Your Notes** (Page {page + 1}/{(len(notes) - 1) // notes_per_page + 1})\n"]
@@ -1158,7 +1141,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response += f"📅 Date: {order_date}\n"
             response += f"💰 Total: ${total:.2f}\n"
             response += f"🛒 Items: {items_count}\n\n"
-            response += f"Order has been added to the database!"
+            response += "Order has been added to the database!"
             
             await safe_send_reply(update.message, response)
             
@@ -1208,10 +1191,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
         
         logger.info(f"Processing photo from user {user_id}")
-        api_logger.debug(f"Downloading photo file_id={photo.file_id}")
-        
+
         # Get the largest photo
         photo = update.message.photo[-1]
+        api_logger.debug(f"Downloading photo file_id={photo.file_id}")
         
         # Get memory manager to access uploads directory
         if user_id not in user_memories:

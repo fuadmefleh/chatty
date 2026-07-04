@@ -123,6 +123,17 @@ python -m pytest tests/test_memory_tools.py -v
 
 - **chatty-bot** (id:1) — Main Telegram bot (`src/main.py`)
 - **chatty-mini-apps** (id:16) — Mini app server (`mini_app_server.py`)
+- **chatty-web-server** (id:15) — FastAPI backend for the web dashboard
+  (`chatty_web_server.py`, port 8016)
+- **order-explorer-frontend** (id:19) — React dashboard
+  (`order_explorer_site/frontend`). Runs `vite preview` against the
+  committed `dist/` build, **not** the vite dev server — editing files
+  under `src/` has no effect until you rebuild:
+  ```bash
+  cd order_explorer_site/frontend && npm run build
+  pm2 restart order-explorer-frontend
+  ```
+  A plain `pm2 restart` alone just re-serves the stale build.
 
 ## Important Files
 
@@ -138,7 +149,30 @@ python -m pytest tests/test_memory_tools.py -v
 
 - Always run tests after modifying skills or core code
 - Test files go in `tests/` with `test_` prefix
-- Use `python -m pytest` from project root
+- Use `python -m pytest` from project root (pytest-asyncio is in `auto` mode
+  via `pyproject.toml` - async `test_*` functions don't need an explicit
+  `@pytest.mark.asyncio`)
+- If you change a non-test source file, add or update a test alongside it -
+  enforced for the self-upgrade pipeline (see Guardrails below), and good
+  practice for manual changes too
+
+## Guardrails
+
+A git pre-commit hook (`.githooks/pre-commit`, enabled via
+`git config core.hooksPath .githooks`) runs on every commit to this repo -
+human or the self-upgrade pipeline (`src/managers/self_upgrade_manager.py`):
+- `ruff check --select E9,F` on staged Python files (real correctness bugs -
+  undefined names, use-before-assignment, syntax errors, unused
+  imports/vars - not style)
+- the full test suite (`pytest tests/`)
+- `eslint` on staged frontend files
+
+If a commit is rejected, fix the issue and try again - do not bypass with
+`--no-verify` unless you have a specific, understood reason to. The
+self-upgrade pipeline treats a hook rejection the same as a failing test: it
+feeds the output back to the coding agent for a fix attempt (up to
+`SELF_UPGRADE_MAX_TEST_ATTEMPTS`) before giving up and leaving the branch
+for manual review.
 
 ## After Making Changes
 

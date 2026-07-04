@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from src.core import config
 from src.core.logging_config import get_heartbeat_logger
 
 logger = get_heartbeat_logger()

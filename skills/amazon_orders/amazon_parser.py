@@ -928,8 +928,7 @@ Return the data in JSON format like:
                         total = parse_money(row.get('total', '0'))
                         shipping = parse_money(row.get('shipping', '0'))
                         tax = parse_money(row.get('tax', '0'))
-                        refund = parse_money(row.get('refund', '0'))
-                        
+
                         # Calculate subtotal (total - shipping - tax)
                         subtotal = total - shipping - tax
                         
@@ -1190,7 +1189,7 @@ async def execute(pdf_path: Optional[str] = None, action: str = "parse", use_vis
                             try:
                                 db.insert_order(order_data, items)
                                 success_count += 1
-                            except Exception as e:
+                            except Exception:
                                 pass  # Continue with other orders
                         
                         # Move to archived

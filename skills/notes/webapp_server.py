@@ -1,7 +1,5 @@
 """Flask web server for Notes Mini App."""
-import os
 import sys
-import json
 import logging
 from pathlib import Path
 

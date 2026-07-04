@@ -5,7 +5,7 @@ from transaction data across multiple sources (Plaid, Rocket Money, etc.).
 """
 import logging
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Any, Optional
 import sys
 
@@ -131,8 +131,8 @@ class BudgetAnalyzer:
             
             # Get transactions for current month
             days_in_month = self.current_date.day
-            transactions_result = plaid.get_recent_transactions(days=days_in_month)
-            
+            plaid.get_recent_transactions(days=days_in_month)
+
             # Parse and aggregate by category
             # This is a simplified version - would need proper parsing
             return {

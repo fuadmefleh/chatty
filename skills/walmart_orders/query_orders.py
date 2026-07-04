@@ -1,5 +1,4 @@
 """Query tools for Walmart orders database."""
-from datetime import datetime
 from typing import Dict, Any
 from pathlib import Path
 import sys

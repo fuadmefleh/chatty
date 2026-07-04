@@ -1,6 +1,6 @@
 """Query tools for Rocket Money transactions database."""
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from pathlib import Path
 import sys
 

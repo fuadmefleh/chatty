@@ -1,12 +1,8 @@
 """WhatsApp message parsing and data access implementation."""
-import os
 import re
-import sqlite3
-import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Optional, Any
-import json
+from typing import List, Dict, Any
 
 
 class WhatsAppParser:

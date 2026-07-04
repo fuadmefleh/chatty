@@ -25,13 +25,13 @@ def test_basic_parsing():
         db = RocketMoneyDB()
         result = db.parse_csv(str(csv_path))
         
-        print(f"✓ CSV parsed successfully")
+        print("✓ CSV parsed successfully")
         print(f"  File: {result['csv_filename']}")
         print(f"  Total transactions: {result['total_transactions']}")
         print(f"  Skipped: {result['skipped']}")
         
         if result['total_transactions'] > 0:
-            print(f"\n  Sample transaction:")
+            print("\n  Sample transaction:")
             sample = result['transactions'][0]
             print(f"    Date: {sample['date']}")
             print(f"    Merchant: {sample['name']}")
@@ -66,14 +66,14 @@ def test_database_import():
         # Import the CSV
         result = db.import_csv(str(csv_path))
         
-        print(f"✓ CSV imported successfully")
+        print("✓ CSV imported successfully")
         print(f"  Added: {result['added']}")
         print(f"  Duplicates: {result['duplicates']}")
         print(f"  Skipped: {result['skipped']}")
         
         # Try importing again to test duplicate detection
         result2 = db.import_csv(str(csv_path))
-        print(f"\n✓ Re-import test (should show all duplicates)")
+        print("\n✓ Re-import test (should show all duplicates)")
         print(f"  Added: {result2['added']}")
         print(f"  Duplicates: {result2['duplicates']}")
         

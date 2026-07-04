@@ -1,7 +1,7 @@
 """Yahoo Finance client wrapper using yfinance."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, Optional, Callable
 import yfinance as yf
 
 
@@ -33,9 +33,6 @@ async def get_market_movers(category: str = "gainers", limit: int = 10) -> Dict[
         Dict with stock data
     """
     try:
-        # Use Yahoo Finance's predefined views
-        ticker = yf.Ticker("^DJI")  # Dow Jones as anchor for market data
-        
         # Scrape trending/movers from Yahoo Finance
         movers_data = await _run_in_thread(_fetch_movers, category, limit)
         return movers_data
@@ -52,13 +49,7 @@ def _fetch_movers(category: str, limit: int) -> Dict[str, Any]:
     """Fetch market movers by scraping Yahoo Finance."""
     import requests
     from bs4 import BeautifulSoup
-    
-    url_map = {
-        "gainers": "https://finance.yahoo.com/trending-tickers/",
-        "losers": "https://finance.yahoo.com/trending-tickers/",
-        "most_active": "https://finance.yahoo.com/trending-tickers/",
-    }
-    
+
     # Try to use yfinance's built-in capabilities first
     try:
         # Fetch trending tickers from Yahoo

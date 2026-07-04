@@ -57,3 +57,4 @@ credentials.json
 node_modules/
 .vite/
 .opencode/
+*.vsix

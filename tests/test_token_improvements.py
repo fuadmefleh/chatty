@@ -69,7 +69,7 @@ try:
     print("Test 3: Token Budget Compliance")
     print("-" * 40)
     
-    print(f"Rate limit: 200,000 TPM")
+    print("Rate limit: 200,000 TPM")
     print(f"Conservative budget: {StagedReACTAgent.MAX_TOKENS_PER_MINUTE:,} TPM")
     print(f"Safety margin: {(200000 - StagedReACTAgent.MAX_TOKENS_PER_MINUTE) / 200000 * 100:.0f}%")
     print()
@@ -88,12 +88,12 @@ try:
     after_total = after_memory + after_emails
     after_tokens = after_total // 4
     
-    print(f"BEFORE improvements:")
+    print("BEFORE improvements:")
     print(f"  Memory: ~{before_memory:,} chars")
     print(f"  Emails: ~{before_emails:,} chars")
     print(f"  Total: ~{before_total:,} chars (~{before_tokens:,} tokens)")
     print()
-    print(f"AFTER improvements:")
+    print("AFTER improvements:")
     print(f"  Memory: ~{after_memory:,} chars")
     print(f"  Emails: ~{after_emails:,} chars")
     print(f"  Total: ~{after_total:,} chars (~{after_tokens:,} tokens)")

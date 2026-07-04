@@ -3,11 +3,9 @@
 These tools are dynamically loaded by the framework when the skill is activated.
 """
 import json
-import logging
 import sys
 import importlib.util
 from pathlib import Path
-from typing import Dict, Any, Optional
 
 # Add project root to path for src imports
 project_root = str(Path(__file__).parent.parent.parent)

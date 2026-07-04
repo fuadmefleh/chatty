@@ -3,7 +3,6 @@ import re
 import subprocess
 import aiofiles
 from pathlib import Path
-from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 from src.core import config
 import logging

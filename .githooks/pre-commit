@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Pre-commit gate: Python lint (real bugs only, not style), the full test
+# suite, and frontend lint/typecheck if frontend files are staged.
+#
+# Applies to every commit in this repo - human or the self-upgrade pipeline
+# (src/managers/self_upgrade_manager.py commits inside its own git worktree,
+# and its final merge into main, both go through this same hook, since
+# core.hooksPath is a repo-level setting shared across worktrees). This is
+# deliberate defense-in-depth: even if the pipeline's own Python-level test
+# gate had a bug or got bypassed, this still runs independently at the git
+# level and can reject the commit outright.
+#
+# Enabled via: git config core.hooksPath .githooks  (already set on this
+# clone - see README/AGENTS.md).
+set -uo pipefail
+
+# Git sets GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE/GIT_PREFIX (relative paths,
+# pointing at the repo being committed to) for the duration of this hook.
+# The test suite includes tests that spawn their *own* nested `git` commands
+# against disposable scratch repos (tests/test_self_upgrade_git_integration.py)
+# - if those inherit these variables, the nested git commands get confused
+# about which repo/index they're targeting. Strip them before running anything.
+for var in $(env | grep -oE '^GIT_[A-Z_]*' || true); do
+    unset "$var"
+done
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+VENV_PYTHON="$REPO_ROOT/venv/bin/python"
+RUFF="$REPO_ROOT/venv/bin/ruff"
+NODE_BIN="$HOME/.nvm/versions/node/v22.12.0/bin"
+
+cd "$REPO_ROOT" || exit 1
+
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+STAGED_PY=$(echo "$STAGED_FILES" | grep -E '\.py$' || true)
+STAGED_FRONTEND=$(echo "$STAGED_FILES" | grep -E '^order_explorer_site/frontend/.*\.(ts|tsx)$' || true)
+
+FAILED=0
+
+if [ -n "$STAGED_PY" ]; then
+    echo "-- ruff (staged Python files) --"
+    # shellcheck disable=SC2086
+    if ! "$RUFF" check --select E9,F $STAGED_PY; then
+        echo "FAILED: ruff found real correctness issues (undefined names, use-before-assign, etc.) above."
+        FAILED=1
+    fi
+fi
+
+echo "-- pytest (full suite) --"
+if ! "$VENV_PYTHON" -m pytest tests/ -q; then
+    echo "FAILED: test suite did not pass."
+    FAILED=1
+fi
+
+if [ -n "$STAGED_FRONTEND" ]; then
+    echo "-- eslint (staged frontend files) --"
+    FRONTEND_DIR="$REPO_ROOT/order_explorer_site/frontend"
+    RELATIVE_FILES=""
+    for f in $STAGED_FRONTEND; do
+        RELATIVE_FILES="$RELATIVE_FILES ${f#order_explorer_site/frontend/}"
+    done
+    if [ -d "$FRONTEND_DIR/node_modules" ]; then
+        # shellcheck disable=SC2086
+        if ! (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" npx eslint $RELATIVE_FILES); then
+            echo "FAILED: eslint found issues in staged frontend files above."
+            FAILED=1
+        fi
+    else
+        echo "SKIPPED: frontend node_modules not present, cannot run eslint here."
+    fi
+fi
+
+if [ "$FAILED" -ne 0 ]; then
+    echo ""
+    echo "Commit blocked. Fix the issue(s) above and try again."
+    exit 1
+fi
+
+exit 0

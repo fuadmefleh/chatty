@@ -28,6 +28,11 @@ CHAT_API_KEY = "not-needed" if CHAT_PROVIDER == "local" else OPENAI_API_KEY
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_PHONE_NUMBER = os.getenv("ALLOWED_PHONE_NUMBER", "")
 
+# Web/iOS App Configuration (same env var chatty_web_server.py reads directly;
+# duplicated here so heartbeat_manager.py can scope per-user work, e.g.
+# transcription mining, without importing the web server module).
+WEB_USER_ID = os.getenv("WEB_USER_ID", "")
+
 # Memory Configuration
 MEMORY_DIR = BASE_DIR / os.getenv("MEMORY_DIR", "memory")
 MAX_MEMORY_TOKENS = int(os.getenv("MAX_MEMORY_TOKENS", "4000"))

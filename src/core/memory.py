@@ -1,10 +1,9 @@
 """Memory management system using daily markdown files."""
 import json
-import os
 import aiofiles
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict
 from src.core import config
 from src.core.logging_config import get_memory_logger
 
@@ -428,7 +427,6 @@ class MemoryManager:
         Returns:
             Summary of consolidation results
         """
-        from datetime import datetime
         
         # Get files older than 7 days
         files_to_consolidate = await self.get_short_term_files_for_consolidation(days_old=7)
@@ -495,6 +493,70 @@ If a category has no relevant information, skip it.
             print(f"Error during consolidation: {e}")
             return f"Error consolidating memories: {e}"
     
+    async def consolidate_text(self, text: str) -> str:
+        """Extract and store long-term-memory-worthy content from arbitrary
+        text (e.g. a mined transcription) using the same category taxonomy
+        as consolidate_memories().
+
+        Unlike consolidate_memories(), this takes raw text directly instead
+        of reading short-term memory files, and calls the LLM directly
+        rather than going through a ReACTAgent - so it can run without a
+        live per-user agent instance (e.g. from the heartbeat, for a web/iOS
+        user who may not have an active chat session).
+
+        Args:
+            text: Raw text to mine for long-term-memory-worthy content.
+
+        Returns:
+            Summary string of what was stored.
+        """
+        from openai import AsyncOpenAI
+
+        consolidation_prompt = f"""You are extracting long-term-memory-worthy information from a piece of text (e.g. a transcribed voice memo).
+
+Analyze the following text and extract important information that should be remembered long-term:
+
+{text}
+
+Please identify and categorize important information into these categories:
+
+1. **Personal Preferences** - User's likes, dislikes, preferences
+2. **Important Facts** - Key facts about the user (name, location, job, family, etc.)
+3. **Goals and Projects** - User's goals, ongoing projects, aspirations
+4. **Relationships** - Important people in the user's life
+5. **Recurring Topics** - Topics the user frequently discusses
+6. **Key Insights** - Important insights or decisions made
+
+For each category that has relevant information, provide:
+- A clear, concise summary
+- Specific details worth remembering
+
+Format your response as:
+CATEGORY: [category name]
+CONTENT: [summary and details]
+
+If a category has no relevant information, skip it. If nothing in the text is memory-worthy, reply with exactly: NOTHING_NOTABLE
+"""
+
+        try:
+            client = AsyncOpenAI(api_key=config.CHAT_API_KEY, base_url=config.CHAT_BASE_URL)
+            response = await client.chat.completions.create(
+                model=config.CHAT_MODEL,
+                messages=[{"role": "user", "content": consolidation_prompt}],
+                temperature=0.3,
+            )
+            consolidation_result = (response.choices[0].message.content or "").strip()
+
+            if not consolidation_result or consolidation_result == "NOTHING_NOTABLE":
+                return "No long-term-memory-worthy content found."
+
+            await self._parse_and_store_consolidation(consolidation_result)
+            return "Extracted and stored long-term memory from text."
+
+        except Exception as e:
+            memory_logger.error(f"Error consolidating text for {self.user_id}: {e}")
+            return f"Error consolidating text: {e}"
+
     async def _parse_and_store_consolidation(self, consolidation_text: str):
         """Parse AI consolidation result and store in appropriate long-term memory files.
         
@@ -579,7 +641,7 @@ Provide ONLY the cleaned content, no explanations."""
                     if not cleaned_content.startswith("# Long-Term Memory:"):
                         category_name = file_path.stem.replace("_", " ").title()
                         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        cleaned_content = f"# Long-Term Memory: {file_path.stem}\n\nCreated: {timestamp}\n\n{cleaned_content}"
+                        cleaned_content = f"# Long-Term Memory: {category_name}\n\nCreated: {timestamp}\n\n{cleaned_content}"
                     await f.write(cleaned_content)
                 
                 cleaned_count += 1

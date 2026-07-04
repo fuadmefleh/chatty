@@ -8,7 +8,6 @@ just that the mocked call sequence looks right.
 Only run_pi_agent (no real Pi CLI), the pytest/npm test-gate subprocess
 (_run's non-git commands), the pi_agent lock, and pm2 restart (_restart_services) are mocked.
 """
-import asyncio
 import subprocess
 import sys
 import tempfile
@@ -52,10 +51,17 @@ def _init_scratch_repo(repo_dir: Path) -> None:
 
 
 async def _fake_pi_agent_writes_file(prompt, cwd=None):
-    """Simulates Pi actually editing a file inside the given worktree."""
+    """Simulates Pi actually editing a file inside the given worktree - and,
+    per the pipeline's test-coverage gate, adding a test alongside it."""
     new_file = Path(cwd) / "src" / "new_feature.py"
     new_file.write_text("# added by self-upgrade\n")
-    yield {"type": "file_change", "content": f"Writing: src/new_feature.py"}
+    yield {"type": "file_change", "content": "Writing: src/new_feature.py"}
+
+    test_dir = Path(cwd) / "tests"
+    test_dir.mkdir(exist_ok=True)
+    (test_dir / "test_new_feature.py").write_text("def test_new_feature():\n    assert True\n")
+    yield {"type": "file_change", "content": "Writing: tests/test_new_feature.py"}
+
     yield {"type": "completed", "content": "Pi agent finished successfully."}
 
 

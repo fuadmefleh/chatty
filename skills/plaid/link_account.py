@@ -48,7 +48,7 @@ def main():
         print(f"\n✅ Link token created: {link_token[:20]}...")
         print()
         print("Next steps:")
-        print(f"1. Open Plaid Link by visiting:")
+        print("1. Open Plaid Link by visiting:")
         print(f"   https://cdn.plaid.com/link/v2/stable/link-initialize.html?link_token={link_token}")
         print()
         print("2. Complete the bank login flow")

@@ -4,7 +4,7 @@ NOTE: This is the legacy ReACT agent. Consider using StagedReACTAgent instead
 for the new staged reasoning process.
 """
 import json
-from typing import List, Dict, Optional
+from typing import List, Dict
 from openai import AsyncOpenAI
 from src.core import config
 from src.core.memory import MemoryManager

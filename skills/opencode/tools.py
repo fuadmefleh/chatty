@@ -47,8 +47,8 @@ class RunOpenCodeTool(SkillTool):
             "success": True,
             "status": "launching",
             "message": (
-                f"OpenCode agent is launching with your request. "
-                f"Progress will be streamed to you in real-time."
+                "OpenCode agent is launching with your request. "
+                "Progress will be streamed to you in real-time."
             )
         })
 

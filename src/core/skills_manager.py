@@ -7,11 +7,10 @@ Skills are loaded from the skills/ directory. Each skill folder can contain:
 """
 import aiofiles
 from pathlib import Path
-from typing import List, Dict, Optional, Callable, Any, TYPE_CHECKING
+from typing import List, Dict, Optional, Any
 import re
 import importlib.util
 import importlib
-import inspect
 import sys
 from src.core import config
 from src.core.logging_config import get_skills_logger

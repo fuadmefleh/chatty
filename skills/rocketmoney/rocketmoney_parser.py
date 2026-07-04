@@ -5,7 +5,6 @@ import csv
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from decimal import Decimal
 
 
 class RocketMoneyDB:
@@ -455,7 +454,7 @@ def main():
     db = RocketMoneyDB()
     result = db.import_csv(csv_path)
     
-    print(f"\nImport Results:")
+    print("\nImport Results:")
     print(f"  CSV File: {result['csv_filename']}")
     print(f"  Total in file: {result['total_in_file']}")
     print(f"  Added: {result['added']}")
@@ -463,7 +462,7 @@ def main():
     print(f"  Skipped: {result['skipped']}")
     
     stats = db.get_statistics()
-    print(f"\nDatabase Statistics:")
+    print("\nDatabase Statistics:")
     print(f"  Total transactions: {stats['total_transactions']}")
     print(f"  Date range: {stats['date_range']['earliest']} to {stats['date_range']['latest']}")
     print(f"  Total amount: ${stats['total_amount']:,.2f}")

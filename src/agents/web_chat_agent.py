@@ -13,7 +13,7 @@ Usage:
         print(chunk, end="", flush=True)
 """
 import json
-from typing import AsyncGenerator, List, Dict, Optional, Any
+from typing import AsyncGenerator, List, Dict, Any
 from openai import AsyncOpenAI
 from src.core import config
 from src.core.memory import MemoryManager

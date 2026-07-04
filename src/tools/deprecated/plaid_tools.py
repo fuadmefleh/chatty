@@ -1,7 +1,5 @@
 """Plaid bank account tools for LLM function calling."""
-import json
 import logging
-from datetime import datetime, timedelta
 from typing import Dict, Any
 from src.core.base_tool import BaseTool
 

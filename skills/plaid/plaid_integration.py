@@ -12,8 +12,6 @@ from plaid.model.country_code import CountryCode
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.transactions_get_request import TransactionsGetRequest
-from plaid.model.transactions_sync_request import TransactionsSyncRequest
-from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
 import plaid
 
 # Setup logging

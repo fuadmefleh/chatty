@@ -6,7 +6,6 @@ import json
 import sys
 import importlib.util
 from pathlib import Path
-from typing import Dict, Any
 
 # Add project root to path for src imports
 project_root = str(Path(__file__).parent.parent.parent)

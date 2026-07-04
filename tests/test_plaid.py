@@ -1,7 +1,6 @@
 """Test script for Plaid integration."""
 import os
 import sys
-from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import pytest
 
@@ -48,7 +47,7 @@ print()
 print("Test 3: Initialize Plaid Client")
 try:
     plaid = get_plaid_integration()
-    print(f"✅ Plaid client initialized")
+    print("✅ Plaid client initialized")
     print(f"   Environment: {plaid.environment}")
 except Exception as e:
     print(f"❌ Failed to initialize: {e}")
