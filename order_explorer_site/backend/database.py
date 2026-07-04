@@ -1,13 +1,16 @@
 import sqlite3
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Any
 from collections import Counter
 
-# Absolute paths
-AMAZON_DB = "/home/edgeworks-server/chatty/data/amazon/amazon_orders.db"
-WALMART_DB = "/home/edgeworks-server/chatty/data/walmart/walmart_orders.db"
-ROCKETMONEY_DB = "/home/edgeworks-server/chatty/data/rocketmoney/rocketmoney_transactions.db"
+# order_explorer_site/backend/database.py -> repo root
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+AMAZON_DB = str(_REPO_ROOT / "data" / "amazon" / "amazon_orders.db")
+WALMART_DB = str(_REPO_ROOT / "data" / "walmart" / "walmart_orders.db")
+ROCKETMONEY_DB = str(_REPO_ROOT / "data" / "rocketmoney" / "rocketmoney_transactions.db")
 
 def get_db_connection(db_path):
     if os.path.exists(db_path):

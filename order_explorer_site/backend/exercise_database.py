@@ -4,10 +4,11 @@ Handles workout programs, exercises, sets, and progress tracking
 """
 import sqlite3
 import os
-from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-EXERCISE_DB = "/home/edgeworks-server/chatty/data/exercises/exercise_tracker.db"
+# order_explorer_site/backend/exercise_database.py -> repo root
+EXERCISE_DB = str(Path(__file__).resolve().parent.parent.parent / "data" / "exercises" / "exercise_tracker.db")
 
 def get_exercise_db_connection():
     """Create database connection and ensure schema exists"""

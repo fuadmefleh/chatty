@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import uuid
 
+from src.core import config
+
 MAX_LOG_LINES = 200
 
 
@@ -72,7 +74,7 @@ class FeatureRequest:
 class FeatureRequestsManager:
     """Manages feature requests with persistent JSON storage."""
 
-    def __init__(self, data_dir: str = "/home/edgeworks-server/chatty/data/feature_requests"):
+    def __init__(self, data_dir: str = str(config.BASE_DIR / "data" / "feature_requests")):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._file = self.data_dir / "requests.json"

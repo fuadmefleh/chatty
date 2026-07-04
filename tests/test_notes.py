@@ -10,12 +10,13 @@ from skills.notes.notes_manager import NotesManager
 from skills.notes.tools import TakeNoteTool, ListUserNotesTool, DeleteNoteTool, SearchNotesTool, set_notes_manager
 
 
-async def test_notes_system():
+async def test_notes_system(tmp_path):
     """Test the notes system functionality."""
     print("🧪 Testing Notes System\n")
-    
-    # Initialize the notes manager
-    manager = NotesManager("/home/edgeworks-server/chatty/data/notes")
+
+    # Initialize the notes manager against a scratch dir - never the real
+    # data/notes used in production, which this test would otherwise pollute.
+    manager = NotesManager(str(tmp_path / "notes"))
     set_notes_manager(manager)
     
     test_user_id = "test_user_123"

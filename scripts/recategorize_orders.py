@@ -6,6 +6,9 @@ using the updated categorization logic.
 
 import sqlite3
 import os
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def categorize_item_amazon(item_name: str) -> str:
@@ -152,14 +155,14 @@ def main():
     print("=" * 80)
     
     # Amazon database
-    amazon_db = "/home/edgeworks-server/chatty/data/amazon/amazon_orders.db"
+    amazon_db = str(REPO_ROOT / "data" / "amazon" / "amazon_orders.db")
     amazon_count, amazon_changes = recategorize_database(
         amazon_db, 
         categorize_item_amazon
     )
     
     # Walmart database
-    walmart_db = "/home/edgeworks-server/chatty/data/walmart/walmart_orders.db"
+    walmart_db = str(REPO_ROOT / "data" / "walmart" / "walmart_orders.db")
     walmart_count, walmart_changes = recategorize_database(
         walmart_db,
         categorize_item_walmart
@@ -169,7 +172,7 @@ def main():
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print(f"Total items recategorized:")
+    print("Total items recategorized:")
     print(f"  Amazon:  {amazon_count} items")
     print(f"  Walmart: {walmart_count} items")
     print(f"  TOTAL:   {amazon_count + walmart_count} items")

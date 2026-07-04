@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import uuid
 
+from src.core import config
+
 
 class Note:
     """Represents a single note."""
@@ -38,7 +40,7 @@ class Note:
 class NotesManager:
     """Manages user notes with persistent storage."""
     
-    def __init__(self, data_dir: str = "/home/edgeworks-server/chatty/data/notes"):
+    def __init__(self, data_dir: str = str(config.BASE_DIR / "data" / "notes")):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
     

@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import uuid
 
+from src.core import config
+
 
 class Transcription:
     """Represents a single raw transcription pending (or already) mined into memory."""
@@ -65,7 +67,7 @@ class TranscriptionsManager:
     available without cluttering the pending list.
     """
 
-    def __init__(self, data_dir: str = "/home/edgeworks-server/chatty/data/transcriptions"):
+    def __init__(self, data_dir: str = str(config.BASE_DIR / "data" / "transcriptions")):
         self.data_dir = Path(data_dir)
         self.archived_dir = self.data_dir / "archived"
         self.audio_dir = self.data_dir / "audio"

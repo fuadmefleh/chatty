@@ -58,10 +58,10 @@ REMINDERS_DIR = PROJECT_ROOT / "reminders"
 MEMORY_DIR = PROJECT_ROOT / "memory"
 PORT = int(os.getenv("CHATTY_WEB_PORT", "8016"))
 
-# WhisperX STT engine already running on this host (see
-# /home/edgeworks-server/feedback_to_specs/stt_engine) - reused here rather
-# than embedding a second Whisper install. Handles diarization itself
-# (gracefully skipped server-side if it has no HUGGINGFACE_TOKEN configured).
+# Expects a WhisperX-based STT engine reachable at this URL (run separately,
+# not part of this repo) rather than embedding a second Whisper install.
+# Handles diarization itself (gracefully skipped server-side if it has no
+# HUGGINGFACE_TOKEN configured).
 STT_ENGINE_URL = os.getenv("STT_ENGINE_URL", "http://127.0.0.1:8003")
 
 # ── Code browser config ──────────────────────────────────────────────────────
