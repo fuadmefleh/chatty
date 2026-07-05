@@ -10,8 +10,7 @@ This project uses a **Staged ReACT (Reasoning and Acting) Agent** architecture w
 chatty/
 ├── src/                          # LEAN Framework Code
 │   ├── agents/
-│   │   ├── staged_react_agent.py # Main ReACT agent with 7 stages
-│   │   └── react_agent.py        # Legacy agent (deprecated)
+│   │   └── staged_react_agent.py # Main ReACT agent with 7 stages
 │   ├── core/
 │   │   ├── skill_tool.py         # Base class for skill tools
 │   │   ├── skills_manager.py     # Dynamic skill/tool loader
@@ -21,8 +20,9 @@ chatty/
 │   │   ├── memory_tools.py       # Core memory tools (always loaded)
 │   │   └── skills_tools.py       # Skill management tools
 │   └── managers/
-│       ├── heartbeat_manager.py  # Background tasks
-│       └── reminder_manager.py   # Reminders
+│       ├── heartbeat_manager.py  # Background tasks (see docs/heartbeat.md)
+│       ├── reminder_manager.py   # Reminders
+│       └── self_upgrade_manager.py # Self-upgrade pipeline (see docs/heartbeat.md)
 │
 ├── skills/                        # SKILL IMPLEMENTATIONS
 │   ├── walmart_orders/
@@ -40,9 +40,34 @@ chatty/
     └── {user_id}/
 ```
 
+> **Note:** `src/core/base_tool.py` and `src/core/tool_registry.py` are leftovers
+> from an earlier, intermediate refactor and are no longer wired into the live
+> bot — `staged_react_agent.py` uses `SkillsManager`/`SkillTool` exclusively.
+> Ignore them; the pattern below is the one actually in use.
+
 ## Staged ReACT Agent
 
 The `StagedReACTAgent` processes user queries through 7 explicit stages:
+
+```mermaid
+flowchart TD
+    U([User message]) --> D
+    D["1 · DECOMPOSE\nSplit into sub-tasks, classify query type,\nextract entities"] --> M
+    M["2 · MEMORY\nCan short/long-term memory answer this\nalready? Decide if tools are needed"] --> P
+    P["3 · PLAN\nPick skills/tools, order them,\nfill in arguments"] --> E
+    E["4 · EXECUTE\nRun tools via OpenAI-style function\ncalling, handle multi-step chains"] --> S
+    S["5 · SYNTHESIZE\nCombine tool results + memory into\na natural response"] --> R
+    R["6 · REFLECT\nDoes the answer address the query?\nConfidence score, gaps?"] --> Z
+    Z["7 · MEMORIZE\nExtract new facts/preferences into\nlong-term memory"] --> OUT([Reply to user])
+
+    style D fill:#fef3e2,stroke:#d97706
+    style M fill:#fef3e2,stroke:#d97706
+    style P fill:#fef3e2,stroke:#d97706
+    style E fill:#e0f2f1,stroke:#0f766e
+    style S fill:#e0f2f1,stroke:#0f766e
+    style R fill:#fee2e2,stroke:#b91c1c
+    style Z fill:#fee2e2,stroke:#b91c1c
+```
 
 ### Stage 1: DECOMPOSE
 - Break down the user's query into sub-tasks
@@ -158,6 +183,17 @@ async def my_function(param1: str):
 
 Skills and their tools are loaded dynamically when the application starts:
 
+```mermaid
+flowchart LR
+    S["SkillsManager.load_skills()\nscans skills/"] --> F{"For each\nskill folder"}
+    F --> MD["Parse .md file\nfor description"]
+    F --> TP["Load tools.py\n(if present)"]
+    TP --> SC["Extract SkillTool\nsubclasses"]
+    MD --> IDX
+    SC --> IDX["Index all tools\nfor lookup"]
+    IDX --> LLM(["Expose to the LLM\nas function-calling tools"])
+```
+
 1. `SkillsManager.load_skills()` scans the `skills/` directory
 2. For each skill folder:
    - Parses the `.md` file for description
@@ -168,7 +204,10 @@ Skills and their tools are loaded dynamically when the application starts:
 
 ## Memory Tools (Core)
 
-These tools are always available (defined in `src/tools/memory_tools.py`):
+These tools are always available - hardcoded directly into `staged_react_agent.py`
+(tool definitions in `_get_memory_tools_definitions()`, implementation in
+`src/core/memory_tools.py`'s `MemoryTools` class) rather than loaded from `skills/`,
+since every user needs them regardless of which skills are active:
 
 - `search_memory_grep` - Search memory for patterns
 - `search_recent_mentions` - Find recent topic mentions
@@ -196,10 +235,13 @@ source venv/bin/activate
 ./start.sh
 ```
 
+Or via Docker Compose — see the [root README](../README.md#docker-deployment).
+
 ## Configuration
 
-Environment variables (in `.env`):
-- `OPENAI_API_KEY` - OpenAI API key
+Environment variables (in `.env`, copied from `.env.example`):
+- `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` - LLM provider credentials (see `CHAT_PROVIDER`)
 - `TELEGRAM_BOT_TOKEN` - Telegram bot token
-- `PLAID_CLIENT_ID` - Plaid API credentials
-- `PLAID_SECRET` - Plaid secret
+- `PLAID_CLIENT_ID` / `PLAID_SECRET` - Plaid API credentials
+
+See [`.env.example`](../.env.example) for the complete, annotated list covering every skill and subsystem.

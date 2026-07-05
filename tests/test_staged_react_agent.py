@@ -214,3 +214,23 @@ class TestBackgroundedReflectAndMemorize:
 
         task = next(iter(agent._background_tasks))
         await task  # should not raise — errors are caught inside _finish_reasoning
+
+
+class TestMemoryToolSchema:
+    """The OpenAI-advertised parameter names for the always-on memory tools
+    (_get_memory_tools_definitions) must match what _execute_memory_tool
+    actually passes through to MemoryTools - a past mismatch (advertised
+    "pattern" vs. the real "search_term") meant the LLM's schema-conformant
+    call would always throw, silently swallowed by the dispatcher's
+    try/except into an "Error executing ..." string."""
+
+    @pytest.mark.asyncio
+    async def test_search_memory_grep_advertised_params_are_callable(self, agent):
+        tool_defs = agent._get_memory_tools_definitions()
+        search_def = next(t for t in tool_defs if t["function"]["name"] == "search_memory_grep")
+        required_params = search_def["function"]["parameters"]["required"]
+
+        arguments = {param: "test" for param in required_params}
+        result = await agent._execute_memory_tool("search_memory_grep", arguments)
+
+        assert not result.startswith("Error executing"), result

@@ -155,8 +155,10 @@ Either way, everything downstream (heartbeat mining, archiving) is identical.
 
 For continuous/background recording (e.g. an always-listening mode), upload
 short raw audio chunks directly — no local transcription needed. The server
-transcribes via a WhisperX STT engine already running on this host (with
-diarization when speakers are distinguishable), formats the result, and adds
+transcribes via a WhisperX STT engine (`STT_ENGINE_URL` in `.env` — see the
+[Docker deployment's `whisperx` profile](../README.md#docker-deployment) for
+a scaffold, or bring your own), with diarization when speakers are
+distinguishable, formats the result, and adds
 it to the same pending-transcription queue as above.
 
 **Request:** raw audio bytes as the request body — **not multipart**.

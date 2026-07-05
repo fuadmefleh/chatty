@@ -727,9 +727,9 @@ If nothing important to remember, return empty array."""
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "pattern": {"type": "string", "description": "The pattern to search for"}
+                            "search_term": {"type": "string", "description": "The term to search for"}
                         },
-                        "required": ["pattern"]
+                        "required": ["search_term"]
                     }
                 }
             },

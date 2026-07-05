@@ -5,7 +5,7 @@ The bot now has an extensive logging system with separate log files for differen
 
 ## Log Files
 
-All log files are located in `/home/edgeworks-server/chatty/logs/` with automatic rotation (10MB max, 5 backups).
+All log files are located in `logs/` (repo root) with automatic rotation (10MB max, 5 backups).
 
 ### 1. **bot_main.log**
 - **Purpose**: Main bot operations, initialization, and general flow

@@ -22,18 +22,13 @@ The bot now has a dual memory system that separates short-term conversation logs
 
 ## Memory Flow
 
-```
-User Conversation → Short-Term Memory (daily .md files)
-                            ↓
-                    (After 7 days)
-                            ↓
-         Heartbeat Consolidation Process
-                            ↓
-              AI Analysis & Extraction
-                            ↓
-         Long-Term Memory (categorized .md files)
-                            ↓
-              Archive Old Short-Term Files
+```mermaid
+flowchart TD
+    C([User conversation]) --> ST["Short-term memory\n(daily .md files)"]
+    ST -->|after 7 days| HB["Heartbeat consolidation\n(every HEARTBEAT_INTERVAL_MINUTES)"]
+    HB --> AI["AI analysis & extraction\n(preferences, facts, goals,\nrelationships, insights)"]
+    AI --> LT["Long-term memory\n(categorized .md files)"]
+    HB --> ARC["Archive processed\nshort-term files"]
 ```
 
 ## Consolidation Process
@@ -120,10 +115,10 @@ HEARTBEAT_INTERVAL_MINUTES=15  # How often to run consolidation
 ## Technical Implementation
 
 ### Key Files
-- `memory.py`: MemoryManager class with short/long-term support
-- `heartbeat_manager.py`: Orchestrates consolidation during heartbeat
-- `react_agent.py`: Uses both memory types in agent context
-- `heartbeat.md`: Defines autonomous consolidation task
+- `src/core/memory.py`: MemoryManager class with short/long-term support
+- `src/managers/heartbeat_manager.py`: Orchestrates consolidation during heartbeat
+- `src/agents/staged_react_agent.py`: Uses both memory types in agent context (see docs/ARCHITECTURE.md)
+- `docs/heartbeat.md`: Defines autonomous consolidation task
 
 ### Key Methods
 - `MemoryManager.consolidate_memories()`: Main consolidation logic

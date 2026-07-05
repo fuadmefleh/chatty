@@ -1,5 +1,11 @@
 # Logic Loop Improvements - February 2026
 
+> **Historical incident report / changelog entry**, not living documentation -
+> the constants and code excerpts below reflect `staged_react_agent.py` as it
+> was at the time. They're still accurate as of this writing (verified against
+> the current file), but if you're looking for how the agent works today,
+> start with [ARCHITECTURE.md](ARCHITECTURE.md) instead.
+
 ## Problem Summary
 
 The system was experiencing rate limit errors when processing email queries due to excessive token usage:
