@@ -4,27 +4,37 @@ import type { SystemStatus as SystemStatusData, Pm2Process } from '../chattyApi'
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
+import Spinner from '../components/ui/Spinner';
 
-const statusColor: Record<string, string> = {
-  online: 'var(--success)',
-  stopping: 'var(--stamp-gold)',
-  stopped: 'var(--danger)',
-  errored: 'var(--danger)',
-  'one-launch': 'var(--stamp-teal)',
+const statusToneClass: Record<string, string> = {
+  online: 'bg-alert-green',
+  stopping: 'bg-alert-amber',
+  stopped: 'bg-alert-red',
+  errored: 'bg-alert-red',
+  'one-launch': 'bg-signal',
+};
+
+const statusTextClass: Record<string, string> = {
+  online: 'text-alert-green',
+  stopping: 'text-alert-amber',
+  stopped: 'text-alert-red',
+  errored: 'text-alert-red',
+  'one-launch': 'text-signal',
 };
 
 const Pm2Badge: React.FC<{ proc: Pm2Process }> = ({ proc }) => {
   if (proc.error) {
-    return <span style={{ fontSize: 12, color: 'var(--muted)' }}>pm2 unavailable</span>;
+    return <span className="text-xs text-muted">pm2 unavailable</span>;
   }
-  const color = statusColor[proc.status ?? ''] ?? 'var(--muted)';
+  const dotClass = statusToneClass[proc.status ?? ''] ?? 'bg-muted';
+  const textClass = statusTextClass[proc.status ?? ''] ?? 'text-muted';
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block' }} />
-      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--paper)' }}>{proc.name}</span>
-      <span style={{ fontSize: 11, color, fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{proc.status}</span>
+    <div className="flex items-center gap-1.5">
+      <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotClass}`} />
+      <span className="text-[13px] font-semibold text-ink">{proc.name}</span>
+      <span className={`font-mono text-[11px] font-semibold ${textClass}`}>{proc.status}</span>
       {proc.restarts !== undefined && proc.restarts > 0 && (
-        <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--font-mono)' }}>↺{proc.restarts}</span>
+        <span className="font-mono text-[11px] text-muted">↺{proc.restarts}</span>
       )}
     </div>
   );
@@ -51,16 +61,16 @@ const SystemStatus: React.FC = () => {
   useEffect(() => { load(); }, []);
 
   return (
-    <div style={{ maxWidth: 900, margin: '0 auto', padding: '24px 24px 48px' }}>
+    <div className="mx-auto max-w-[900px] px-4 pb-12 pt-6 md:px-6">
       <PageHeader
         eyebrow="Assistant / System"
-        eyebrowColor="var(--stamp-teal)"
+        eyebrowColor="var(--signal)"
         title="System status"
         actions={
           <>
-            <button onClick={load} style={{ fontSize: 12, padding: '4px 12px' }}>Refresh</button>
+            <button onClick={load} className="rounded-md px-3 py-1 text-xs font-semibold">Refresh</button>
             {data && (
-              <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--muted)' }}>
+              <span className="font-mono text-[11px] text-muted">
                 {new Date(data.timestamp).toLocaleTimeString()}
               </span>
             )}
@@ -68,24 +78,24 @@ const SystemStatus: React.FC = () => {
         }
       />
 
-      {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
-      {loading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
+      {error && <p className="mb-4 text-sm text-alert-red">{error}</p>}
+      {loading && !data && <Spinner label="Loading system status…" />}
 
       {data && (
         <>
           {/* pm2 section */}
-          <section style={{ marginBottom: 32 }}>
-            <h3 style={{ fontSize: 13, fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 14, color: 'var(--muted)' }}>
+          <section className="mb-8">
+            <h3 className="mb-3.5 font-mono text-[13px] uppercase tracking-wider text-muted">
               Processes (pm2)
             </h3>
             {data.pm2.length === 0 ? (
-              <p style={{ color: 'var(--muted)' }}>No pm2 processes found.</p>
+              <p className="text-muted">No pm2 processes found.</p>
             ) : (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+              <div className="flex flex-wrap gap-3">
                 {data.pm2.map((proc, i) => (
-                  <Card key={i} padding="12px 18px" style={{ minWidth: 180 }}>
+                  <Card key={i} padding="12px 18px" className="min-w-[180px]">
                     <Pm2Badge proc={proc} />
-                    {proc.pid && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4, fontFamily: 'var(--font-mono)' }}>PID {proc.pid}</div>}
+                    {proc.pid && <div className="mt-1 font-mono text-[11px] text-muted">PID {proc.pid}</div>}
                   </Card>
                 ))}
               </div>
@@ -94,51 +104,43 @@ const SystemStatus: React.FC = () => {
 
           {/* Skills section */}
           <section>
-            <h3 style={{ fontSize: 13, fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 14, color: 'var(--muted)' }}>
+            <h3 className="mb-3.5 font-mono text-[13px] uppercase tracking-wider text-muted">
               Loaded skills ({data.skills.length})
             </h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {data.skills.map((skill) => (
                 <div
                   key={skill.name}
-                  style={{
-                    background: 'var(--ink-800)', borderRadius: 10, border: '1px solid var(--ink-700)',
-                    overflow: 'hidden',
-                  }}
+                  className="overflow-hidden rounded-[10px] border border-line bg-surface"
                 >
                   <button
                     onClick={() => setExpandedSkill(expandedSkill === skill.name ? null : skill.name)}
-                    style={{
-                      width: '100%', textAlign: 'left', padding: '14px 16px', borderRadius: 0,
-                      background: expandedSkill === skill.name ? 'var(--ink-750)' : 'var(--ink-800)',
-                      display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
-                    }}
+                    className={`flex w-full items-start justify-between rounded-none px-4 py-3.5 text-left ${
+                      expandedSkill === skill.name ? 'bg-surface-dim' : 'bg-surface'
+                    }`}
                   >
                     <div>
-                      <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--paper)', marginBottom: 4 }}>
+                      <div className="mb-1 text-sm font-bold text-ink">
                         {skill.name}
                       </div>
-                      <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.45 }}>
+                      <div className="text-xs leading-snug text-muted">
                         {skill.description.slice(0, 80)}{skill.description.length > 80 ? '…' : ''}
                       </div>
                     </div>
                     <Badge tone="teal">{skill.tool_count} tool{skill.tool_count !== 1 ? 's' : ''}</Badge>
                   </button>
                   {expandedSkill === skill.name && skill.tools.length > 0 && (
-                    <div style={{ padding: '0 16px 14px', borderTop: '1px solid var(--ink-700)' }}>
-                      <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 10, marginBottom: 6 }}>Tools</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    <div className="border-t border-line px-4 pb-3.5">
+                      <div className="mb-1.5 mt-2.5 font-mono text-[11px] uppercase tracking-wider text-muted">Tools</div>
+                      <div className="flex flex-wrap gap-1.5">
                         {skill.tools.map((t) => (
-                          <span key={t} style={{
-                            fontSize: 11, padding: '2px 8px', borderRadius: 6,
-                            background: 'var(--ink-900)', color: 'var(--paper-dim)', fontFamily: 'var(--font-mono)',
-                          }}>
+                          <span key={t} className="rounded-md bg-surface-dim px-2 py-0.5 font-mono text-[11px] text-ink-dim">
                             {t}
                           </span>
                         ))}
                       </div>
                       {skill.description.length > 80 && (
-                        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 10, lineHeight: 1.5 }}>
+                        <div className="mt-2.5 text-xs leading-snug text-muted">
                           {skill.description}
                         </div>
                       )}

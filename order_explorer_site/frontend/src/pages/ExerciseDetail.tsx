@@ -4,17 +4,29 @@ import { fetchExercise, fetchExerciseHistory, fetchPersonalRecords } from '../ap
 import type { Exercise, WorkoutSet, PersonalRecord } from '../api';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
+import PageHeader from '../components/ui/PageHeader';
+import StatCard from '../components/ui/StatCard';
+import EmptyState from '../components/ui/EmptyState';
+import Spinner from '../components/ui/Spinner';
+import ResponsiveTable from '../components/ui/ResponsiveTable';
+import type { TableColumn } from '../components/ui/ResponsiveTable';
 
 // The history endpoint joins in the session's workout_date, which the shared WorkoutSet type doesn't declare.
 type HistorySet = WorkoutSet & { workout_date: string };
 
-const statLabel: React.CSSProperties = { margin: 0, fontSize: '11px', color: 'var(--muted)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.04em' };
-
-const rpeTone = (rpe: number): { bg: string; fg: string } => {
-  if (rpe >= 9) return { bg: 'rgba(216, 96, 63, 0.18)', fg: 'var(--stamp-ember)' };
-  if (rpe >= 7) return { bg: 'rgba(200, 155, 60, 0.18)', fg: 'var(--stamp-gold)' };
-  return { bg: 'rgba(110, 168, 122, 0.18)', fg: 'var(--success)' };
+// Badge doesn't have a "green" tone, so RPE severity (which needs green/amber/red)
+// is rendered with the same visual shape as Badge but its own tone classes.
+const rpeClasses = (rpe: number): string => {
+  if (rpe >= 9) return 'bg-alert-red/15 text-alert-red';
+  if (rpe >= 7) return 'bg-alert-amber/15 text-alert-amber';
+  return 'bg-alert-green/15 text-alert-green';
 };
+
+const RpeBadge: React.FC<{ rpe: number }> = ({ rpe }) => (
+  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 font-mono text-[11px] font-semibold ${rpeClasses(rpe)}`}>
+    {rpe}
+  </span>
+);
 
 export default function ExerciseDetail() {
   const { id } = useParams<{ id: string }>();
@@ -49,11 +61,19 @@ export default function ExerciseDetail() {
   }, [id]);
 
   if (loading) {
-    return <div style={{ padding: 24, color: 'var(--muted)' }}>Loading…</div>;
+    return (
+      <div className="mx-auto max-w-[900px] px-4 py-10 md:px-6">
+        <Spinner label="Loading exercise…" />
+      </div>
+    );
   }
 
   if (!exercise) {
-    return <div style={{ padding: 24, color: 'var(--muted)' }}>Exercise not found</div>;
+    return (
+      <div className="mx-auto max-w-[900px] px-4 py-10 md:px-6">
+        <EmptyState title="Exercise not found" />
+      </div>
+    );
   }
 
   const maxWeight = history.length > 0 ? Math.max(...history.map(h => h.weight)) : 0;
@@ -61,70 +81,80 @@ export default function ExerciseDetail() {
   const totalVolume = history.reduce((sum, h) => sum + (h.reps * h.weight), 0);
   const lastWorkout = history.length > 0 ? history[0].workout_date : null;
 
-  return (
-    <div style={{ padding: '24px 24px 48px' }}>
-      {/* Header */}
-      <div style={{ marginBottom: '24px' }}>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--stamp-ember)', marginBottom: 6 }}>
-          Training / Exercise
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-          <h1 style={{ fontSize: 26 }}>{exercise.name}</h1>
-          {exercise.is_bfs_core && <Badge tone="ember">BFS core lift</Badge>}
-        </div>
-        <div style={{ color: 'var(--muted)', fontSize: 14 }}>{exercise.category} · {exercise.muscle_group}</div>
-        {exercise.description && (
-          <div style={{ color: 'var(--paper-dim)', marginTop: 8, fontSize: 13.5 }}>{exercise.description}</div>
-        )}
-      </div>
+  const historyColumns: TableColumn<HistorySet & { _idx: number }>[] = [
+    {
+      key: 'date',
+      header: 'Date',
+      primary: true,
+      render: (row) => (
+        <span className="font-mono text-sm text-ink-dim">
+          {new Date(row.workout_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+        </span>
+      ),
+    },
+    { key: 'set', header: 'Set', render: (row) => <span className="text-ink-dim">{row.set_number}</span> },
+    { key: 'reps', header: 'Reps', render: (row) => <span className="text-ink-dim">{row.reps}</span> },
+    { key: 'weight', header: 'Weight', render: (row) => <span className="font-mono font-semibold text-ink">{row.weight} lbs</span> },
+    { key: 'rpe', header: 'RPE', render: (row) => <RpeBadge rpe={row.rpe} /> },
+  ];
 
-      {/* Action Buttons */}
-      <div style={{ display: 'flex', gap: '10px', marginBottom: '28px' }}>
-        <Link to="/exercise/workout-logger" style={{ background: 'var(--stamp-ember)', color: 'var(--ink-900)', padding: '11px 22px', borderRadius: 8, fontWeight: 700, fontSize: 14 }}>
-          Log workout
-        </Link>
-        <Link to={`/exercise/progress?exercise=${id}`} style={{ background: 'var(--ink-700)', color: 'var(--paper)', padding: '11px 22px', borderRadius: 8, fontWeight: 600, fontSize: 14 }}>
-          View progress
-        </Link>
+  return (
+    <div className="mx-auto max-w-[900px] px-4 py-6 md:px-6">
+      <PageHeader
+        eyebrow="Training / Exercise"
+        eyebrowColor="var(--alert-red)"
+        title={exercise.name}
+        actions={
+          <>
+            <Link
+              to="/exercise/workout-logger"
+              className="rounded-lg bg-alert-red px-5 py-2.5 text-sm font-bold text-white"
+            >
+              Log workout
+            </Link>
+            <Link
+              to={`/exercise/progress?exercise=${id}`}
+              className="rounded-lg border border-line bg-surface-dim px-5 py-2.5 text-sm font-semibold text-ink"
+            >
+              View progress
+            </Link>
+          </>
+        }
+      />
+
+      <div className={`flex flex-wrap items-center gap-2 text-sm text-muted ${exercise.description ? 'mb-2' : 'mb-7'}`}>
+        <span>{exercise.category} · {exercise.muscle_group}</span>
+        {exercise.is_bfs_core && <Badge tone="ember">BFS core lift</Badge>}
       </div>
+      {exercise.description && (
+        <p className="mb-7 text-[13.5px] text-ink-dim">{exercise.description}</p>
+      )}
 
       {/* Stats Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '14px', marginBottom: '28px' }}>
-        <Card>
-          <div style={statLabel}>Max weight</div>
-          <div style={{ fontSize: '24px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-ember)', marginTop: 8 }}>{maxWeight} lbs</div>
-        </Card>
-        <Card>
-          <div style={statLabel}>Total sets</div>
-          <div style={{ fontSize: '24px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-gold)', marginTop: 8 }}>{totalSets}</div>
-        </Card>
-        <Card>
-          <div style={statLabel}>Total volume</div>
-          <div style={{ fontSize: '24px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-teal)', marginTop: 8 }}>{totalVolume.toLocaleString()} lbs</div>
-        </Card>
-        <Card>
-          <div style={statLabel}>Last workout</div>
-          <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--paper)', marginTop: 8 }}>{lastWorkout ? new Date(lastWorkout).toLocaleDateString() : 'N/A'}</div>
-        </Card>
+      <div className="mb-7 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="Max weight" value={`${maxWeight} lbs`} tone="red" />
+        <StatCard label="Total sets" value={totalSets} tone="amber" />
+        <StatCard label="Total volume" value={`${totalVolume.toLocaleString()} lbs`} tone="signal" />
+        <StatCard label="Last workout" value={lastWorkout ? new Date(lastWorkout).toLocaleDateString() : 'N/A'} tone="neutral" />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '20px' }}>
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
         {/* Personal Records */}
         <Card>
-          <h2 style={{ fontSize: 13, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 16, color: 'var(--muted)' }}>Personal records</h2>
+          <h2 className="mb-4 font-mono text-[13px] uppercase tracking-wider text-muted">Personal records</h2>
           {records.length === 0 ? (
-            <div style={{ color: 'var(--muted)', textAlign: 'center', padding: '28px 0' }}>No personal records yet</div>
+            <EmptyState title="No personal records yet" />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div className="flex flex-col gap-2.5">
               {records.map((record) => (
-                <div key={record.id} style={{ borderLeft: '3px solid var(--stamp-ember)', paddingLeft: 14, paddingTop: 4, paddingBottom: 4 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div key={record.id} className="border-l-[3px] border-alert-red py-1 pl-3.5">
+                  <div className="flex items-start justify-between gap-3">
                     <div>
-                      <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--paper)' }}>{record.record_type}</div>
-                      <div style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'var(--font-mono)' }}>{new Date(record.date_achieved).toLocaleDateString()}</div>
-                      {record.notes && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>{record.notes}</div>}
+                      <div className="text-[15px] font-bold text-ink">{record.record_type}</div>
+                      <div className="font-mono text-xs text-muted">{new Date(record.date_achieved).toLocaleDateString()}</div>
+                      {record.notes && <div className="mt-1 text-xs text-muted">{record.notes}</div>}
                     </div>
-                    <div style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-ember)' }}>
+                    <div className="whitespace-nowrap font-mono text-xl font-bold text-alert-red">
                       {record.value} {record.record_type.includes('RM') ? 'lbs' : ''}
                     </div>
                   </div>
@@ -136,46 +166,18 @@ export default function ExerciseDetail() {
 
         {/* Recent History */}
         <Card>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <h2 style={{ fontSize: 13, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--muted)' }}>Recent sets</h2>
-            <Link to={`/exercise/progress?exercise=${id}`} style={{ color: 'var(--stamp-ember)', fontSize: 12, fontWeight: 600 }}>View all →</Link>
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="font-mono text-[13px] uppercase tracking-wider text-muted">Recent sets</h2>
+            <Link to={`/exercise/progress?exercise=${id}`} className="text-xs font-semibold text-alert-red">View all →</Link>
           </div>
           {history.length === 0 ? (
-            <div style={{ color: 'var(--muted)', textAlign: 'center', padding: '28px 0' }}>No workout history yet</div>
+            <EmptyState title="No workout history yet" />
           ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid var(--ink-700)' }}>
-                    <th style={{ padding: '8px', textAlign: 'left', fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--muted)', textTransform: 'uppercase' }}>Date</th>
-                    <th style={{ padding: '8px', textAlign: 'left', fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--muted)', textTransform: 'uppercase' }}>Set</th>
-                    <th style={{ padding: '8px', textAlign: 'left', fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--muted)', textTransform: 'uppercase' }}>Reps</th>
-                    <th style={{ padding: '8px', textAlign: 'left', fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--muted)', textTransform: 'uppercase' }}>Weight</th>
-                    <th style={{ padding: '8px', textAlign: 'left', fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--muted)', textTransform: 'uppercase' }}>RPE</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.slice(0, 15).map((set, index) => {
-                    const tone = rpeTone(set.rpe);
-                    return (
-                      <tr key={index} style={{ borderBottom: '1px solid var(--ink-700)' }}>
-                        <td style={{ padding: '8px', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)', color: 'var(--paper-dim)' }}>
-                          {new Date(set.workout_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                        </td>
-                        <td style={{ padding: '8px', color: 'var(--paper-dim)' }}>{set.set_number}</td>
-                        <td style={{ padding: '8px', color: 'var(--paper-dim)' }}>{set.reps}</td>
-                        <td style={{ padding: '8px', fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--paper)' }}>{set.weight} lbs</td>
-                        <td style={{ padding: '8px' }}>
-                          <span style={{ padding: '2px 8px', fontSize: 11, fontWeight: 700, borderRadius: 6, background: tone.bg, color: tone.fg }}>
-                            {set.rpe}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <ResponsiveTable
+              columns={historyColumns}
+              rows={history.slice(0, 15).map((set, i) => ({ ...set, _idx: i }))}
+              rowKey={(row) => row._idx}
+            />
           )}
         </Card>
       </div>

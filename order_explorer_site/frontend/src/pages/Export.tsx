@@ -2,37 +2,31 @@ import React, { useState } from 'react';
 import { api } from '../api';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
+import Spinner from '../components/ui/Spinner';
+import FormField from '../components/ui/form/FormField';
+import Input from '../components/ui/form/Input';
+import { useToast } from '../hooks/useToast';
 
 type ExportRow = Record<string, unknown>;
 
-const primaryBtn = (disabled: boolean): React.CSSProperties => ({
-  background: 'var(--stamp-gold)',
-  color: 'var(--ink-900)',
-  padding: '13px',
-  fontSize: '14px',
-  fontWeight: 700,
-  opacity: disabled ? 0.55 : 1,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-});
+const rangeBtnClass = (active: boolean) =>
+  `h-10 rounded-lg border px-3 text-sm font-semibold transition-colors ${
+    active ? 'border-alert-amber bg-alert-amber text-white' : 'border-line bg-transparent text-ink'
+  }`;
 
-const rangeBtn = (active: boolean): React.CSSProperties => ({
-  background: active ? 'var(--stamp-gold)' : 'transparent',
-  color: active ? 'var(--ink-900)' : 'var(--paper)',
-  border: `1px solid ${active ? 'var(--stamp-gold)' : 'var(--ink-600)'}`,
-  padding: '11px',
-  fontSize: '13px',
-  fontWeight: 600,
-});
+const primaryBtnClass = 'h-10 rounded-lg bg-alert-amber px-4 text-sm font-bold text-white disabled:opacity-55';
+const amberBtnClass = 'h-9 w-full rounded-lg bg-alert-amber px-4 text-[13px] font-bold text-white disabled:opacity-55';
+const tealBtnClass = 'h-9 w-full rounded-lg bg-signal px-4 text-[13px] font-bold text-white disabled:opacity-55';
+const redBtnClass = 'h-9 w-full rounded-lg bg-alert-red px-4 text-[13px] font-bold text-white disabled:opacity-55';
 
-const TipRow: React.FC<{ color: string; children: React.ReactNode }> = ({ color, children }) => (
-  <div style={{ padding: '13px 16px', background: 'var(--ink-900)', borderRadius: '8px', borderLeft: `3px solid ${color}` }}>
-    <p style={{ margin: 0, fontSize: '13.5px', color: 'var(--paper-dim)', lineHeight: 1.5 }}>{children}</p>
+const TipRow: React.FC<{ colorClass: string; children: React.ReactNode }> = ({ colorClass, children }) => (
+  <div className={`rounded-lg bg-surface-dim px-4 py-3.5 border-l-[3px] ${colorClass}`}>
+    <p className="text-sm leading-relaxed text-ink-dim">{children}</p>
   </div>
 );
 
 const Export: React.FC = () => {
+  const { showToast } = useToast();
   const [loading, setLoading] = useState(false);
   const [dateRange, setDateRange] = useState<'all' | 'year' | 'month' | 'custom'>('all');
   const [startDate, setStartDate] = useState('');
@@ -40,7 +34,7 @@ const Export: React.FC = () => {
 
   const downloadCSV = async (data: ExportRow[], filename: string) => {
     if (data.length === 0) {
-      alert('No data to export');
+      showToast('No data to export', 'amber');
       return;
     }
 
@@ -69,6 +63,7 @@ const Export: React.FC = () => {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    showToast(`Downloaded ${filename}`, 'signal');
   };
 
   const filterByDate = (items: ExportRow[]) => {
@@ -105,7 +100,7 @@ const Export: React.FC = () => {
       await downloadCSV(filtered, `orders_${dateRange}_${new Date().toISOString().split('T')[0]}.csv`);
     } catch (err) {
       console.error('Export failed', err);
-      alert('Export failed');
+      showToast('Export failed', 'red');
     }
     setLoading(false);
   };
@@ -118,7 +113,7 @@ const Export: React.FC = () => {
       await downloadCSV(filtered, `items_${dateRange}_${new Date().toISOString().split('T')[0]}.csv`);
     } catch (err) {
       console.error('Export failed', err);
-      alert('Export failed');
+      showToast('Export failed', 'red');
     }
     setLoading(false);
   };
@@ -130,7 +125,7 @@ const Export: React.FC = () => {
       await downloadCSV(response.data.categories, `categories_${new Date().toISOString().split('T')[0]}.csv`);
     } catch (err) {
       console.error('Export failed', err);
-      alert('Export failed');
+      showToast('Export failed', 'red');
     }
     setLoading(false);
   };
@@ -142,7 +137,7 @@ const Export: React.FC = () => {
       await downloadCSV(response.data, `monthly_summary_${new Date().toISOString().split('T')[0]}.csv`);
     } catch (err) {
       console.error('Export failed', err);
-      alert('Export failed');
+      showToast('Export failed', 'red');
     }
     setLoading(false);
   };
@@ -152,79 +147,77 @@ const Export: React.FC = () => {
   };
 
   return (
-    <div style={{ padding: '24px 24px 48px' }}>
+    <div className="mx-auto max-w-[1000px] px-4 py-6 md:px-6">
       <PageHeader eyebrow="Ledger / Export" title="Export & reports" />
 
       {/* Date Range Selection */}
-      <Card style={{ marginBottom: '24px' }}>
-        <h2 style={{ fontSize: 15, marginBottom: 16, color: 'var(--paper)' }}>Date range</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
-          <button onClick={() => setDateRange('all')} style={rangeBtn(dateRange === 'all')}>All time</button>
-          <button onClick={() => setDateRange('year')} style={rangeBtn(dateRange === 'year')}>This year</button>
-          <button onClick={() => setDateRange('month')} style={rangeBtn(dateRange === 'month')}>This month</button>
-          <button onClick={() => setDateRange('custom')} style={rangeBtn(dateRange === 'custom')}>Custom range</button>
+      <Card className="mb-6">
+        <h2 className="mb-4 text-base font-semibold text-ink">Date range</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <button onClick={() => setDateRange('all')} className={rangeBtnClass(dateRange === 'all')}>All time</button>
+          <button onClick={() => setDateRange('year')} className={rangeBtnClass(dateRange === 'year')}>This year</button>
+          <button onClick={() => setDateRange('month')} className={rangeBtnClass(dateRange === 'month')}>This month</button>
+          <button onClick={() => setDateRange('custom')} className={rangeBtnClass(dateRange === 'custom')}>Custom range</button>
         </div>
 
         {dateRange === 'custom' && (
-          <div style={{ marginTop: '16px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
-            <div>
-              <label style={{ display: 'block', marginBottom: '6px', fontSize: '12px', fontWeight: 600, color: 'var(--muted)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }}>Start date</label>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={{ width: '100%', padding: '10px', borderRadius: '6px', fontSize: '14px' }} />
-            </div>
-            <div>
-              <label style={{ display: 'block', marginBottom: '6px', fontSize: '12px', fontWeight: 600, color: 'var(--muted)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }}>End date</label>
-              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={{ width: '100%', padding: '10px', borderRadius: '6px', fontSize: '14px' }} />
-            </div>
+          <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <FormField label="Start date" htmlFor="export-start">
+              <Input id="export-start" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            </FormField>
+            <FormField label="End date" htmlFor="export-end">
+              <Input id="export-end" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            </FormField>
           </div>
         )}
       </Card>
 
       {/* CSV Exports */}
-      <Card style={{ marginBottom: '24px' }}>
-        <h2 style={{ fontSize: 15, marginBottom: 8, color: 'var(--paper)' }}>Export to CSV</h2>
-        <p style={{ margin: '0 0 18px 0', fontSize: '13px', color: 'var(--muted)' }}>
+      <Card className="mb-6">
+        <h2 className="mb-1.5 text-base font-semibold text-ink">Export to CSV</h2>
+        <p className="mb-4.5 text-sm text-muted">
           Download your data in CSV format for use in Excel, Google Sheets, or other applications.
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px' }}>
-          <button onClick={exportOrders} disabled={loading} style={primaryBtn(loading)}>Export orders</button>
-          <button onClick={exportItems} disabled={loading} style={primaryBtn(loading)}>Export items</button>
-          <button onClick={exportCategories} disabled={loading} style={primaryBtn(loading)}>Export categories</button>
-          <button onClick={exportMonthly} disabled={loading} style={primaryBtn(loading)}>Export monthly summary</button>
+        <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+          <button onClick={exportOrders} disabled={loading} className={primaryBtnClass}>Export orders</button>
+          <button onClick={exportItems} disabled={loading} className={primaryBtnClass}>Export items</button>
+          <button onClick={exportCategories} disabled={loading} className={primaryBtnClass}>Export categories</button>
+          <button onClick={exportMonthly} disabled={loading} className={primaryBtnClass}>Export monthly summary</button>
         </div>
       </Card>
 
       {/* PDF Reports */}
-      <Card style={{ marginBottom: '24px' }}>
-        <h2 style={{ fontSize: 15, marginBottom: 8, color: 'var(--paper)' }}>Generate reports</h2>
-        <p style={{ margin: '0 0 18px 0', fontSize: '13px', color: 'var(--muted)' }}>
+      <Card className="mb-6">
+        <h2 className="mb-1.5 text-base font-semibold text-ink">Generate reports</h2>
+        <p className="mb-4.5 text-sm text-muted">
           Generate printable PDF reports of your spending data.
         </p>
-        <button onClick={generatePDFReport} style={{ background: 'var(--stamp-ember)', color: 'var(--ink-900)', padding: '13px 26px', fontSize: '14px', fontWeight: 700 }}>
+        <button onClick={generatePDFReport} className="h-10 rounded-lg bg-alert-red px-6 text-sm font-bold text-white">
           Generate PDF report
         </button>
-        <p style={{ margin: '14px 0 0 0', fontSize: '12px', color: 'var(--muted)', fontStyle: 'italic' }}>
+        <p className="mt-3.5 text-xs italic text-muted">
           This will open your browser's print dialog where you can save as PDF.
         </p>
       </Card>
 
       {/* Export Tips */}
-      <Card style={{ marginBottom: '24px' }}>
-        <h2 style={{ fontSize: 15, marginBottom: 16, color: 'var(--paper)' }}>Export tips</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <TipRow color="var(--stamp-gold)"><strong>Tax reporting:</strong> Export your yearly data for tax preparation and expense tracking.</TipRow>
-          <TipRow color="var(--stamp-teal)"><strong>Budget analysis:</strong> Open CSV files in Excel or Google Sheets for advanced analysis.</TipRow>
-          <TipRow color="var(--stamp-ember)"><strong>Backup:</strong> Regular exports serve as a backup of your order and spending data.</TipRow>
-          <TipRow color="#e8c478"><strong>Custom analysis:</strong> Use custom date ranges to analyze specific time periods.</TipRow>
+      <Card className="mb-6">
+        <h2 className="mb-4 text-base font-semibold text-ink">Export tips</h2>
+        <div className="flex flex-col gap-2.5">
+          <TipRow colorClass="border-alert-amber"><strong>Tax reporting:</strong> Export your yearly data for tax preparation and expense tracking.</TipRow>
+          <TipRow colorClass="border-signal"><strong>Budget analysis:</strong> Open CSV files in Excel or Google Sheets for advanced analysis.</TipRow>
+          <TipRow colorClass="border-alert-red"><strong>Backup:</strong> Regular exports serve as a backup of your order and spending data.</TipRow>
+          <TipRow colorClass="border-alert-green"><strong>Custom analysis:</strong> Use custom date ranges to analyze specific time periods.</TipRow>
         </div>
       </Card>
 
       {/* Quick Export Templates */}
       <Card>
-        <h2 style={{ fontSize: 15, marginBottom: 16, color: 'var(--paper)' }}>Quick export templates</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '14px' }}>
-          <div style={{ padding: '16px', border: '1px solid var(--ink-700)', borderRadius: '8px' }}>
-            <h3 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 700, color: 'var(--paper)' }}>Tax year report</h3>
-            <p style={{ margin: '0 0 14px 0', fontSize: '12.5px', color: 'var(--muted)' }}>Export all orders and items for the current tax year</p>
+        <h2 className="mb-4 text-base font-semibold text-ink">Quick export templates</h2>
+        <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-3">
+          <div className="rounded-lg border border-line p-4">
+            <h3 className="mb-2 text-sm font-bold text-ink">Tax year report</h3>
+            <p className="mb-3.5 text-xs text-muted">Export all orders and items for the current tax year</p>
             <button
               onClick={() => {
                 setDateRange('year');
@@ -234,30 +227,30 @@ const Export: React.FC = () => {
                 }, 100);
               }}
               disabled={loading}
-              style={{ ...primaryBtn(loading), width: '100%', padding: '9px 16px', fontSize: '13px' }}
+              className={amberBtnClass}
             >
               Export tax report
             </button>
           </div>
 
-          <div style={{ padding: '16px', border: '1px solid var(--ink-700)', borderRadius: '8px' }}>
-            <h3 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 700, color: 'var(--paper)' }}>Monthly summary</h3>
-            <p style={{ margin: '0 0 14px 0', fontSize: '12.5px', color: 'var(--muted)' }}>Export current month's spending summary</p>
+          <div className="rounded-lg border border-line p-4">
+            <h3 className="mb-2 text-sm font-bold text-ink">Monthly summary</h3>
+            <p className="mb-3.5 text-xs text-muted">Export current month's spending summary</p>
             <button
               onClick={() => {
                 setDateRange('month');
                 setTimeout(exportMonthly, 100);
               }}
               disabled={loading}
-              style={{ background: 'var(--stamp-teal)', color: 'var(--ink-900)', width: '100%', padding: '9px 16px', fontSize: '13px', fontWeight: 700, opacity: loading ? 0.55 : 1 }}
+              className={tealBtnClass}
             >
               Export this month
             </button>
           </div>
 
-          <div style={{ padding: '16px', border: '1px solid var(--ink-700)', borderRadius: '8px' }}>
-            <h3 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 700, color: 'var(--paper)' }}>Complete backup</h3>
-            <p style={{ margin: '0 0 14px 0', fontSize: '12.5px', color: 'var(--muted)' }}>Export all data — orders, items, and categories</p>
+          <div className="rounded-lg border border-line p-4">
+            <h3 className="mb-2 text-sm font-bold text-ink">Complete backup</h3>
+            <p className="mb-3.5 text-xs text-muted">Export all data — orders, items, and categories</p>
             <button
               onClick={() => {
                 setDateRange('all');
@@ -270,7 +263,7 @@ const Export: React.FC = () => {
                 }, 100);
               }}
               disabled={loading}
-              style={{ background: 'var(--stamp-ember)', color: 'var(--ink-900)', width: '100%', padding: '9px 16px', fontSize: '13px', fontWeight: 700, opacity: loading ? 0.55 : 1 }}
+              className={redBtnClass}
             >
               Full backup
             </button>
@@ -279,18 +272,8 @@ const Export: React.FC = () => {
       </Card>
 
       {loading && (
-        <div style={{
-          position: 'fixed',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          background: 'var(--ink-800)',
-          border: '1px solid var(--ink-700)',
-          padding: '20px 40px',
-          borderRadius: '10px',
-          zIndex: 1000
-        }}>
-          <p style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: 'var(--paper)' }}>Exporting data…</p>
+        <div className="fixed left-1/2 top-1/2 z-[1000] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-line bg-surface px-8 py-5 shadow-xl">
+          <Spinner label="Exporting data…" />
         </div>
       )}
     </div>

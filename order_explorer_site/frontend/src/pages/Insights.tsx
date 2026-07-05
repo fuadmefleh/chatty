@@ -9,6 +9,8 @@ import {
 import type { ChattyWatchTopic, ChattyInsight, WatchTopicKind } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
+import Spinner from '../components/ui/Spinner';
+import EmptyState from '../components/ui/EmptyState';
 
 const formatLastRun = (lastRunAt: string | null): string => {
   if (!lastRunAt) return 'not yet checked';
@@ -87,25 +89,21 @@ const Insights: React.FC = () => {
   };
 
   return (
-    <div style={{ maxWidth: 760, margin: '0 auto', padding: '24px 24px 48px' }}>
-      <PageHeader eyebrow="Assistant / Insights" eyebrowColor="var(--stamp-teal)" title="Insights" />
+    <div className="mx-auto max-w-[760px] px-4 pb-12 pt-6 md:px-6">
+      <PageHeader eyebrow="Assistant / Insights" eyebrowColor="var(--signal)" title="Insights" />
 
-      {error && <p style={{ color: 'var(--danger)', marginBottom: 16 }}>{error}</p>}
+      {error && <p className="mb-4 text-sm text-alert-red">{error}</p>}
 
       {/* Watchlist management */}
-      <Card style={{ marginBottom: 28 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--paper)', marginBottom: 12 }}>
+      <Card className="mb-7">
+        <div className="mb-3 text-[13px] font-bold text-ink">
           Watched topics
         </div>
-        <div style={{ display: 'flex', gap: 8, marginBottom: topics.length ? 14 : 0 }}>
+        <div className={`flex flex-col gap-2 sm:flex-row ${topics.length ? 'mb-3.5' : ''}`}>
           <select
             value={newKind}
             onChange={(e) => setNewKind(e.target.value as WatchTopicKind)}
-            style={{
-              padding: '8px 10px', borderRadius: 8, border: '1px solid var(--ink-600)',
-              fontSize: 13.5, fontFamily: 'inherit', outline: 'none',
-              background: 'var(--ink-900)', color: 'var(--paper)',
-            }}
+            className="rounded-lg border border-line bg-bg px-2.5 py-2 text-[13.5px] text-ink outline-none"
           >
             <option value="news">News</option>
             <option value="stock">Stock</option>
@@ -117,45 +115,42 @@ const Insights: React.FC = () => {
             value={newTopic}
             onChange={(e) => setNewTopic(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') handleAddTopic(); }}
-            style={{
-              flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--ink-600)',
-              fontSize: 14, fontFamily: 'inherit', outline: 'none',
-              background: 'var(--ink-900)', color: 'var(--paper)',
-            }}
+            className="flex-1 rounded-lg border border-line bg-bg px-3 py-2 text-sm text-ink outline-none"
           />
           <button
             onClick={handleAddTopic}
             disabled={saving || !newTopic.trim()}
-            style={btnStyle('var(--stamp-teal)', saving || !newTopic.trim())}
+            className={`rounded-lg px-4.5 py-2 text-[13px] font-bold ${
+              saving || !newTopic.trim()
+                ? 'bg-surface-dim text-muted'
+                : 'bg-signal text-bg'
+            }`}
           >
             {saving ? 'Saving…' : '+ Watch'}
           </button>
         </div>
         {topics.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div className="flex flex-col gap-2">
             {topics.map((topic) => (
               <div
                 key={topic.id}
-                style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '8px 12px', borderRadius: 8, background: 'var(--ink-900)',
-                }}
+                className="flex items-center justify-between rounded-lg bg-surface-dim px-3 py-2"
               >
                 <div>
-                  <div style={{ fontSize: 14, color: 'var(--paper)' }}>
+                  <div className="text-sm text-ink">
                     {topic.topic}
-                    <span style={{
-                      marginLeft: 8, fontSize: 10.5, fontFamily: 'var(--font-mono)', color: 'var(--muted)',
-                      textTransform: 'uppercase', letterSpacing: '0.06em',
-                    }}>
+                    <span className="ml-2 font-mono text-[10.5px] uppercase tracking-wider text-muted">
                       {KIND_LABELS[topic.kind] ?? topic.kind}
                     </span>
                   </div>
-                  <div style={{ fontSize: 11.5, fontFamily: 'var(--font-mono)', color: 'var(--muted)' }}>
+                  <div className="font-mono text-[11.5px] text-muted">
                     {formatLastRun(topic.last_run_at)}
                   </div>
                 </div>
-                <button onClick={() => handleRemoveTopic(topic.id)} style={btnSmall('transparent', 'var(--danger)')}>
+                <button
+                  onClick={() => handleRemoveTopic(topic.id)}
+                  className="rounded-md border border-line bg-transparent px-3 py-1 text-xs font-semibold text-alert-red"
+                >
                   Remove
                 </button>
               </div>
@@ -166,45 +161,46 @@ const Insights: React.FC = () => {
 
       {/* Insight feed */}
       {loading ? (
-        <p style={{ color: 'var(--muted)' }}>Loading insights…</p>
+        <Spinner label="Loading insights…" />
       ) : insights.length === 0 ? (
-        <p style={{ color: 'var(--muted)', textAlign: 'center', marginTop: 40 }}>
-          No insights yet. Watched topics are checked periodically in the background.
-        </p>
+        <EmptyState
+          title="No insights yet"
+          description="Watched topics are checked periodically in the background."
+        />
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="flex flex-col gap-3">
           {insights.map((insight) => (
             <Card key={insight.id}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                <span style={{
-                  fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase',
-                  color: 'var(--stamp-teal)',
-                }}>
+              <div className="mb-2 flex items-start justify-between">
+                <span className="font-mono text-[11px] uppercase tracking-wider text-signal">
                   {insight.topic}
                 </span>
-                <button onClick={() => handleDeleteInsight(insight.id)} style={btnSmall('transparent', 'var(--danger)')}>
+                <button
+                  onClick={() => handleDeleteInsight(insight.id)}
+                  className="rounded-md border border-line bg-transparent px-3 py-1 text-xs font-semibold text-alert-red"
+                >
                   Delete
                 </button>
               </div>
-              <p style={{ margin: '0 0 12px', fontSize: 14.5, whiteSpace: 'pre-wrap', color: 'var(--paper)', lineHeight: 1.6 }}>
+              <p className="mb-3 whitespace-pre-wrap text-[14.5px] leading-relaxed text-ink">
                 {insight.summary}
               </p>
               {insight.sources.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
+                <div className="mb-2.5 flex flex-col gap-1">
                   {insight.sources.map((source) => (
                     <a
                       key={source.url}
                       href={source.url}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ fontSize: 12.5, color: 'var(--stamp-gold)', textDecoration: 'none' }}
+                      className="text-[12.5px] text-alert-amber no-underline"
                     >
                       {source.title}
                     </a>
                   ))}
                 </div>
               )}
-              <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--muted)' }}>
+              <span className="font-mono text-xs text-muted">
                 {new Date(insight.created_at).toLocaleString()}
               </span>
             </Card>
@@ -214,18 +210,5 @@ const Insights: React.FC = () => {
     </div>
   );
 };
-
-const btnStyle = (color: string, disabled: boolean): React.CSSProperties => ({
-  padding: '8px 18px', borderRadius: 8, border: 'none',
-  background: disabled ? 'var(--ink-700)' : color,
-  color: disabled ? 'var(--muted)' : color === 'var(--ink-700)' ? 'var(--paper)' : 'var(--ink-900)',
-  fontWeight: 700, fontSize: 13,
-});
-
-const btnSmall = (bg: string, fg: string): React.CSSProperties => ({
-  padding: '4px 12px', borderRadius: 6, border: bg === 'transparent' ? '1px solid var(--ink-600)' : 'none',
-  background: bg, color: fg, fontWeight: 600,
-  fontSize: 12,
-});
 
 export default Insights;

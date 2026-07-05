@@ -4,6 +4,11 @@ import { fetchExercises, createWorkout, addSetToWorkout } from '../api';
 import type { Exercise } from '../api';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
+import Spinner from '../components/ui/Spinner';
+import FormField from '../components/ui/form/FormField';
+import Input from '../components/ui/form/Input';
+import Select from '../components/ui/form/Select';
+import { useToast } from '../hooks/useToast';
 
 interface WorkoutSet {
   exercise_id: number;
@@ -15,12 +20,13 @@ interface WorkoutSet {
   notes: string;
 }
 
-const fieldLabel: React.CSSProperties = { display: 'block', marginBottom: '6px', fontSize: '12px', fontWeight: 600, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--muted)' };
-const fieldInput: React.CSSProperties = { width: '100%', padding: '10px 12px', borderRadius: 8, fontSize: 14 };
-const thStyle: React.CSSProperties = { padding: '8px 10px', textAlign: 'left', fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--muted)', textTransform: 'uppercase' };
+const sectionTitle = 'mb-4 font-mono text-[13px] uppercase tracking-wider text-muted';
+const textareaClass = 'w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-signal resize-vertical';
+const thClass = 'px-2.5 py-2 text-left font-mono text-[11px] uppercase text-muted';
 
 export default function WorkoutLogger() {
   const navigate = useNavigate();
+  const { showToast } = useToast();
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -55,7 +61,7 @@ export default function WorkoutLogger() {
 
   const addSet = () => {
     if (!selectedExercise) {
-      alert('Please select an exercise');
+      showToast('Please select an exercise', 'amber');
       return;
     }
 
@@ -89,7 +95,7 @@ export default function WorkoutLogger() {
 
   const saveWorkout = async () => {
     if (sets.length === 0) {
-      alert('Please add at least one set');
+      showToast('Please add at least one set', 'amber');
       return;
     }
 
@@ -116,18 +122,22 @@ export default function WorkoutLogger() {
         });
       }
 
-      alert('Workout saved successfully!');
+      showToast('Workout saved successfully', 'green');
       navigate(`/exercise/workout/${sessionId}`);
     } catch (error) {
       console.error('Error saving workout:', error);
-      alert('Failed to save workout');
+      showToast('Failed to save workout', 'red');
     } finally {
       setSaving(false);
     }
   };
 
   if (loading) {
-    return <div style={{ padding: 24, color: 'var(--muted)' }}>Loading…</div>;
+    return (
+      <div className="mx-auto flex max-w-[1000px] items-center justify-center px-4 py-16 md:px-6">
+        <Spinner label="Loading…" />
+      </div>
+    );
   }
 
   const groupedSets = sets.reduce((acc, set) => {
@@ -139,52 +149,54 @@ export default function WorkoutLogger() {
   }, {} as Record<string, WorkoutSet[]>);
 
   return (
-    <div style={{ padding: '24px 24px 48px' }}>
-      <PageHeader eyebrow="Training / Exercise" eyebrowColor="var(--stamp-ember)" title="Log workout" />
+    <div className="mx-auto max-w-[1000px] px-4 py-6 md:px-6">
+      <PageHeader eyebrow="Training / Exercise" eyebrowColor="var(--alert-red)" title="Log workout" />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px', alignItems: 'start' }}>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         {/* Left Column - Workout Details */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div className="flex flex-col gap-5">
           <Card>
-            <h2 style={{ fontSize: 13, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 16, color: 'var(--muted)' }}>Workout details</h2>
+            <h2 className={sectionTitle}>Workout details</h2>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div>
-                <label style={fieldLabel}>Date</label>
-                <input type="date" value={workoutDate} onChange={(e) => setWorkoutDate(e.target.value)} style={fieldInput} />
-              </div>
+            <div className="flex flex-col gap-3.5">
+              <FormField label="Date" htmlFor="workout-date">
+                <Input id="workout-date" type="date" value={workoutDate} onChange={(e) => setWorkoutDate(e.target.value)} />
+              </FormField>
 
-              <div>
-                <label style={fieldLabel}>Type</label>
-                <select value={workoutType} onChange={(e) => setWorkoutType(e.target.value)} style={fieldInput}>
+              <FormField label="Type" htmlFor="workout-type">
+                <Select id="workout-type" value={workoutType} onChange={(e) => setWorkoutType(e.target.value)}>
                   <option value="upper">Upper body</option>
                   <option value="lower">Lower body</option>
                   <option value="full">Full body</option>
                   <option value="speed">Speed/Agility</option>
                   <option value="flexibility">Flexibility</option>
-                </select>
-              </div>
+                </Select>
+              </FormField>
 
-              <div>
-                <label style={fieldLabel}>Duration (minutes)</label>
-                <input type="number" value={duration} onChange={(e) => setDuration(parseInt(e.target.value))} style={fieldInput} min="0" />
-              </div>
+              <FormField label="Duration (minutes)" htmlFor="workout-duration">
+                <Input id="workout-duration" type="number" value={duration} onChange={(e) => setDuration(parseInt(e.target.value))} min="0" />
+              </FormField>
 
-              <div>
-                <label style={fieldLabel}>Notes</label>
-                <textarea value={workoutNotes} onChange={(e) => setWorkoutNotes(e.target.value)} style={{ ...fieldInput, resize: 'vertical' }} rows={3} placeholder="How did you feel? Any observations?" />
-              </div>
+              <FormField label="Notes" htmlFor="workout-notes">
+                <textarea
+                  id="workout-notes"
+                  value={workoutNotes}
+                  onChange={(e) => setWorkoutNotes(e.target.value)}
+                  className={textareaClass}
+                  rows={3}
+                  placeholder="How did you feel? Any observations?"
+                />
+              </FormField>
             </div>
           </Card>
 
           {/* Add Set Form */}
           <Card>
-            <h2 style={{ fontSize: 13, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 16, color: 'var(--muted)' }}>Add set</h2>
+            <h2 className={sectionTitle}>Add set</h2>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div>
-                <label style={fieldLabel}>Exercise</label>
-                <select value={selectedExercise || ''} onChange={(e) => setSelectedExercise(parseInt(e.target.value))} style={fieldInput}>
+            <div className="flex flex-col gap-3.5">
+              <FormField label="Exercise" htmlFor="set-exercise">
+                <Select id="set-exercise" value={selectedExercise || ''} onChange={(e) => setSelectedExercise(parseInt(e.target.value))}>
                   <option value="">Select exercise…</option>
                   <optgroup label="BFS core lifts">
                     {exercises.filter(e => e.is_bfs_core).map(exercise => (
@@ -201,31 +213,27 @@ export default function WorkoutLogger() {
                       <option key={exercise.id} value={exercise.id}>{exercise.name}</option>
                     ))}
                   </optgroup>
-                </select>
+                </Select>
+              </FormField>
+
+              <div className="grid grid-cols-2 gap-3">
+                <FormField label="Reps" htmlFor="set-reps">
+                  <Input id="set-reps" type="number" value={newSetReps} onChange={(e) => setNewSetReps(parseInt(e.target.value))} min="1" />
+                </FormField>
+                <FormField label="Weight (lbs)" htmlFor="set-weight">
+                  <Input id="set-weight" type="number" value={newSetWeight} onChange={(e) => setNewSetWeight(parseFloat(e.target.value))} min="0" step="5" />
+                </FormField>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <div>
-                  <label style={fieldLabel}>Reps</label>
-                  <input type="number" value={newSetReps} onChange={(e) => setNewSetReps(parseInt(e.target.value))} style={fieldInput} min="1" />
-                </div>
-                <div>
-                  <label style={fieldLabel}>Weight (lbs)</label>
-                  <input type="number" value={newSetWeight} onChange={(e) => setNewSetWeight(parseFloat(e.target.value))} style={fieldInput} min="0" step="5" />
-                </div>
-              </div>
+              <FormField label="RPE (perceived exertion, 1–10)" htmlFor="set-rpe">
+                <Input id="set-rpe" type="number" value={newSetRpe} onChange={(e) => setNewSetRpe(parseFloat(e.target.value))} min="1" max="10" step="0.5" />
+              </FormField>
 
-              <div>
-                <label style={fieldLabel}>RPE (perceived exertion, 1–10)</label>
-                <input type="number" value={newSetRpe} onChange={(e) => setNewSetRpe(parseFloat(e.target.value))} style={fieldInput} min="1" max="10" step="0.5" />
-              </div>
+              <FormField label="Set notes" htmlFor="set-notes">
+                <Input id="set-notes" type="text" value={newSetNotes} onChange={(e) => setNewSetNotes(e.target.value)} placeholder="Optional notes" />
+              </FormField>
 
-              <div>
-                <label style={fieldLabel}>Set notes</label>
-                <input type="text" value={newSetNotes} onChange={(e) => setNewSetNotes(e.target.value)} style={fieldInput} placeholder="Optional notes" />
-              </div>
-
-              <button onClick={addSet} style={{ width: '100%', background: 'var(--stamp-ember)', color: 'var(--ink-900)', padding: '11px', fontWeight: 700, fontSize: 14 }}>
+              <button onClick={addSet} className="h-10 w-full rounded-lg bg-alert-red text-sm font-bold text-white">
                 Add set
               </button>
             </div>
@@ -233,30 +241,30 @@ export default function WorkoutLogger() {
         </div>
 
         {/* Right Column - Current Workout */}
-        <div style={{ gridColumn: 'span 2', minWidth: 0 }}>
+        <div className="min-w-0 lg:col-span-2">
           <Card>
-            <h2 style={{ fontSize: 13, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 16, color: 'var(--muted)' }}>Current workout</h2>
+            <h2 className={sectionTitle}>Current workout</h2>
 
             {sets.length === 0 ? (
-              <div style={{ color: 'var(--muted)', textAlign: 'center', padding: '40px 0' }}>
+              <div className="py-10 text-center text-sm text-muted">
                 No sets added yet. Add your first set to begin.
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <div className="flex flex-col gap-5">
                 {Object.entries(groupedSets).map(([exerciseName, exerciseSets]) => (
-                  <div key={exerciseName} style={{ border: '1px solid var(--ink-700)', borderRadius: 8, padding: 14 }}>
-                    <h3 style={{ fontWeight: 700, fontSize: 14.5, color: 'var(--paper)', marginBottom: 12 }}>{exerciseName}</h3>
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <div key={exerciseName} className="rounded-lg border border-line p-3.5">
+                    <h3 className="mb-3 text-[14.5px] font-bold text-ink">{exerciseName}</h3>
+                    <div className="overflow-x-auto">
+                      <table className="w-full border-collapse">
                         <thead>
-                          <tr style={{ background: 'var(--ink-750)' }}>
-                            <th style={thStyle}>Set</th>
-                            <th style={thStyle}>Reps</th>
-                            <th style={thStyle}>Weight</th>
-                            <th style={thStyle}>RPE</th>
-                            <th style={thStyle}>Volume</th>
-                            <th style={thStyle}>Notes</th>
-                            <th style={{ ...thStyle, textAlign: 'center' }}>Action</th>
+                          <tr className="bg-surface-dim">
+                            <th className={thClass}>Set</th>
+                            <th className={thClass}>Reps</th>
+                            <th className={thClass}>Weight</th>
+                            <th className={thClass}>RPE</th>
+                            <th className={thClass}>Volume</th>
+                            <th className={thClass}>Notes</th>
+                            <th className={`${thClass} text-center`}>Action</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -265,17 +273,17 @@ export default function WorkoutLogger() {
                               s.exercise_id === set.exercise_id && s.set_number === set.set_number
                             );
                             return (
-                              <tr key={index} style={{ borderTop: '1px solid var(--ink-700)' }}>
-                                <td style={{ padding: '8px 10px', color: 'var(--paper-dim)' }}>{set.set_number}</td>
-                                <td style={{ padding: '8px 10px', color: 'var(--paper-dim)' }}>{set.reps}</td>
-                                <td style={{ padding: '8px 10px', color: 'var(--paper-dim)' }}>{set.weight} lbs</td>
-                                <td style={{ padding: '8px 10px', color: 'var(--paper-dim)' }}>{set.rpe}</td>
-                                <td style={{ padding: '8px 10px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-ember)' }}>
+                              <tr key={index} className="border-t border-line">
+                                <td className="px-2.5 py-2 text-ink-dim">{set.set_number}</td>
+                                <td className="px-2.5 py-2 text-ink-dim">{set.reps}</td>
+                                <td className="px-2.5 py-2 text-ink-dim">{set.weight} lbs</td>
+                                <td className="px-2.5 py-2 text-ink-dim">{set.rpe}</td>
+                                <td className="px-2.5 py-2 font-mono font-bold text-alert-red">
                                   {(set.reps * set.weight).toFixed(0)} lbs
                                 </td>
-                                <td style={{ padding: '8px 10px', fontSize: 12, color: 'var(--muted)' }}>{set.notes}</td>
-                                <td style={{ padding: '8px 10px', textAlign: 'center' }}>
-                                  <button onClick={() => removeSet(globalIndex)} style={{ background: 'transparent', color: 'var(--danger)', padding: '4px 10px', fontSize: 12, border: '1px solid var(--ink-600)' }}>
+                                <td className="px-2.5 py-2 text-xs text-muted">{set.notes}</td>
+                                <td className="px-2.5 py-2 text-center">
+                                  <button onClick={() => removeSet(globalIndex)} className="rounded-md border border-line px-2.5 py-1 text-xs text-alert-red">
                                     Remove
                                   </button>
                                 </td>
@@ -289,21 +297,21 @@ export default function WorkoutLogger() {
                 ))}
 
                 {/* Workout Summary */}
-                <div style={{ borderTop: '1px solid var(--ink-700)', paddingTop: 16 }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, textAlign: 'center' }}>
+                <div className="border-t border-line pt-4">
+                  <div className="grid grid-cols-3 gap-3 text-center">
                     <div>
-                      <div style={{ fontSize: '22px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-ember)' }}>{sets.length}</div>
-                      <div style={{ fontSize: 12, color: 'var(--muted)' }}>Total sets</div>
+                      <div className="font-mono text-xl font-bold text-alert-red">{sets.length}</div>
+                      <div className="text-xs text-muted">Total sets</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: '22px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-gold)' }}>{Object.keys(groupedSets).length}</div>
-                      <div style={{ fontSize: 12, color: 'var(--muted)' }}>Exercises</div>
+                      <div className="font-mono text-xl font-bold text-alert-amber">{Object.keys(groupedSets).length}</div>
+                      <div className="text-xs text-muted">Exercises</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: '22px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-teal)' }}>
+                      <div className="font-mono text-xl font-bold text-signal">
                         {sets.reduce((sum, set) => sum + (set.reps * set.weight), 0).toFixed(0)}
                       </div>
-                      <div style={{ fontSize: 12, color: 'var(--muted)' }}>Total volume (lbs)</div>
+                      <div className="text-xs text-muted">Total volume (lbs)</div>
                     </div>
                   </div>
                 </div>
@@ -311,7 +319,7 @@ export default function WorkoutLogger() {
                 <button
                   onClick={saveWorkout}
                   disabled={saving}
-                  style={{ width: '100%', background: 'var(--success)', color: 'var(--ink-900)', padding: '13px', fontWeight: 700, fontSize: 15, opacity: saving ? 0.6 : 1 }}
+                  className="h-11 w-full rounded-lg bg-alert-green text-[15px] font-bold text-white disabled:opacity-60"
                 >
                   {saving ? 'Saving…' : 'Save workout'}
                 </button>

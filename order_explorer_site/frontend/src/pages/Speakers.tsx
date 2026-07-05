@@ -8,7 +8,7 @@ import Spinner from '../components/ui/Spinner';
 import EmptyState from '../components/ui/EmptyState';
 import Modal from '../components/ui/Modal';
 import Input from '../components/ui/form/Input';
-import { useToast } from '../components/ui/ToastProvider';
+import { useToast } from '../hooks/useToast';
 
 const Speakers: React.FC = () => {
   const { showToast } = useToast();

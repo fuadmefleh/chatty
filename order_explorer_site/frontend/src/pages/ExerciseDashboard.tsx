@@ -4,19 +4,25 @@ import { fetchExerciseStats, fetchWorkouts } from '../api';
 import type { ExerciseStats, WorkoutSession } from '../api';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
+import StatCard from '../components/ui/StatCard';
+import Spinner from '../components/ui/Spinner';
+import EmptyState from '../components/ui/EmptyState';
 
-const statLabel: React.CSSProperties = { margin: 0, fontSize: '11px', color: 'var(--muted)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.04em' };
+const sectionTitle = 'font-mono text-[13px] uppercase tracking-wider text-muted';
 
-const quickAction = (bg: string): React.CSSProperties => ({
-  background: bg,
-  color: 'var(--ink-900)',
-  padding: '18px',
-  borderRadius: 10,
-  textAlign: 'center',
-  fontWeight: 700,
-  fontSize: 14,
-  display: 'block',
-});
+const QUICK_ACTIONS: Array<{ to: string; label: string; className: string }> = [
+  { to: '/exercise/workout-logger', label: 'Log workout', className: 'bg-alert-red text-bg' },
+  { to: '/exercise/exercises', label: 'View exercises', className: 'bg-alert-amber text-bg' },
+  { to: '/exercise/history', label: 'Workout history', className: 'bg-signal text-bg' },
+  { to: '/exercise/progress', label: 'Track progress', className: 'bg-alert-amber/50 text-ink' },
+];
+
+const BFS_GROUPS = [
+  { title: 'Core lifts', items: ['Squat', 'Bench press', 'Power clean', 'Deadlift'] },
+  { title: 'Key principles', items: ['Progressive overload', 'Proper form', 'Consistency', 'Recovery'] },
+  { title: 'Training focus', items: ['Strength', 'Speed', 'Flexibility', 'Explosiveness'] },
+  { title: 'Set-rep schemes', items: ['3x3 (strength)', '5x5 (power)', '10-8-6 (hypertrophy)', '3x5 (volume)'] },
+];
 
 export default function ExerciseDashboard() {
   const [stats, setStats] = useState<ExerciseStats | null>(null);
@@ -43,77 +49,69 @@ export default function ExerciseDashboard() {
   }, []);
 
   if (loading) {
-    return <div style={{ padding: 24, color: 'var(--muted)' }}>Loading…</div>;
+    return (
+      <div className="mx-auto max-w-[1100px] px-4 pb-12 pt-6 md:px-6">
+        <Spinner label="Loading exercise dashboard…" />
+      </div>
+    );
   }
 
   return (
-    <div style={{ padding: '24px 24px 48px' }}>
-      <PageHeader eyebrow="Training / Exercise" eyebrowColor="var(--stamp-ember)" title="Exercise tracker — BFS method" />
+    <div className="mx-auto max-w-[1100px] px-4 pb-12 pt-6 md:px-6">
+      <PageHeader eyebrow="Training / Exercise" eyebrowColor="var(--alert-red)" title="Exercise tracker — BFS method" />
 
       {/* Stats Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '14px', marginBottom: '28px' }}>
-        <Card>
-          <div style={statLabel}>Total workouts</div>
-          <div style={{ fontSize: '26px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-ember)', marginTop: 8 }}>{stats?.total_workouts || 0}</div>
-        </Card>
-        <Card>
-          <div style={statLabel}>Total sets</div>
-          <div style={{ fontSize: '26px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-gold)', marginTop: 8 }}>{stats?.total_sets || 0}</div>
-        </Card>
-        <Card>
-          <div style={statLabel}>Total volume (lbs)</div>
-          <div style={{ fontSize: '26px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-teal)', marginTop: 8 }}>{stats?.total_volume.toLocaleString() || 0}</div>
-        </Card>
-        <Card>
-          <div style={statLabel}>Last 30 days</div>
-          <div style={{ fontSize: '26px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--paper-dim)', marginTop: 8 }}>{stats?.workouts_last_30_days || 0}</div>
-        </Card>
-        <Card>
-          <div style={statLabel}>Last workout</div>
-          <div style={{ fontSize: '16px', fontWeight: 700, color: 'var(--paper)', marginTop: 8 }}>{stats?.last_workout_date || 'N/A'}</div>
-        </Card>
+      <div className="mb-7 grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-5">
+        <StatCard label="Total workouts" value={stats?.total_workouts || 0} tone="red" />
+        <StatCard label="Total sets" value={stats?.total_sets || 0} tone="amber" />
+        <StatCard label="Total volume (lbs)" value={stats?.total_volume.toLocaleString() || 0} tone="signal" />
+        <StatCard label="Last 30 days" value={stats?.workouts_last_30_days || 0} tone="neutral" />
+        <StatCard label="Last workout" value={stats?.last_workout_date || 'N/A'} tone="neutral" />
       </div>
 
       {/* Quick Actions */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '14px', marginBottom: '28px' }}>
-        <Link to="/exercise/workout-logger" style={quickAction('var(--stamp-ember)')}>Log workout</Link>
-        <Link to="/exercise/exercises" style={quickAction('var(--stamp-gold)')}>View exercises</Link>
-        <Link to="/exercise/history" style={quickAction('var(--stamp-teal)')}>Workout history</Link>
-        <Link to="/exercise/progress" style={quickAction('#e8c478')}>Track progress</Link>
+      <div className="mb-7 grid grid-cols-2 gap-3.5 sm:grid-cols-4">
+        {QUICK_ACTIONS.map((action) => (
+          <Link
+            key={action.to}
+            to={action.to}
+            className={`block rounded-[10px] p-4.5 text-center text-sm font-bold ${action.className}`}
+          >
+            {action.label}
+          </Link>
+        ))}
       </div>
 
       {/* Recent Workouts */}
       <Card>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h2 style={{ fontSize: 13, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--muted)' }}>Recent workouts</h2>
-          <Link to="/exercise/history" style={{ color: 'var(--stamp-ember)', fontSize: 13, fontWeight: 600 }}>View all →</Link>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className={sectionTitle}>Recent workouts</h2>
+          <Link to="/exercise/history" className="text-[13px] font-semibold text-alert-red">View all →</Link>
         </div>
 
         {recentWorkouts.length === 0 ? (
-          <div style={{ color: 'var(--muted)', textAlign: 'center', padding: '32px 0' }}>
-            No workouts yet. Start by logging your first workout.
-          </div>
+          <EmptyState title="No workouts yet" description="Start by logging your first workout." />
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="flex flex-col gap-2.5">
             {recentWorkouts.map((workout) => (
               <Link
                 key={workout.id}
                 to={`/exercise/workout/${workout.id}`}
-                style={{ display: 'block', border: '1px solid var(--ink-700)', borderRadius: 8, padding: 14, background: 'var(--ink-900)' }}
+                className="block rounded-lg border border-line bg-bg p-3.5"
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div style={{ fontWeight: 700, color: 'var(--paper)', fontSize: 14 }}>{workout.workout_type}</div>
-                    <div style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>{workout.workout_date}</div>
+                    <div className="text-sm font-bold text-ink">{workout.workout_type}</div>
+                    <div className="mt-0.5 font-mono text-xs text-muted">{workout.workout_date}</div>
                     {workout.notes && (
-                      <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>{workout.notes}</div>
+                      <div className="mt-1 text-xs text-muted">{workout.notes}</div>
                     )}
                   </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 12, color: 'var(--muted)' }}>{workout.exercise_count || 0} exercises</div>
-                    <div style={{ fontSize: 12, color: 'var(--muted)' }}>{workout.duration_minutes > 0 && `${workout.duration_minutes} min`}</div>
+                  <div className="shrink-0 text-right">
+                    <div className="text-xs text-muted">{workout.exercise_count || 0} exercises</div>
+                    <div className="text-xs text-muted">{workout.duration_minutes > 0 && `${workout.duration_minutes} min`}</div>
                     {workout.total_volume && (
-                      <div style={{ fontSize: 13, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-ember)', marginTop: 2 }}>
+                      <div className="mt-0.5 font-mono text-[13px] font-bold text-alert-red">
                         {workout.total_volume.toLocaleString()} lbs
                       </div>
                     )}
@@ -126,22 +124,17 @@ export default function ExerciseDashboard() {
       </Card>
 
       {/* BFS Method Info */}
-      <Card style={{ marginTop: '28px', borderLeft: '3px solid var(--stamp-ember)' }}>
-        <h2 style={{ fontSize: 16, marginBottom: 12, color: 'var(--paper)' }}>About the BFS method</h2>
-        <p style={{ marginBottom: 18, fontSize: 13.5, color: 'var(--paper-dim)', lineHeight: 1.6 }}>
+      <Card className="mt-7 border-l-[3px] border-l-alert-red">
+        <h2 className="mb-3 text-base font-semibold text-ink">About the BFS method</h2>
+        <p className="mb-4.5 text-[13.5px] leading-relaxed text-ink-dim">
           The Bigger, Faster, Stronger (BFS) program is a comprehensive strength and conditioning system designed
           to help athletes reach their full potential.
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '16px' }}>
-          {[
-            { title: 'Core lifts', items: ['Squat', 'Bench press', 'Power clean', 'Deadlift'] },
-            { title: 'Key principles', items: ['Progressive overload', 'Proper form', 'Consistency', 'Recovery'] },
-            { title: 'Training focus', items: ['Strength', 'Speed', 'Flexibility', 'Explosiveness'] },
-            { title: 'Set-rep schemes', items: ['3x3 (strength)', '5x5 (power)', '10-8-6 (hypertrophy)', '3x5 (volume)'] },
-          ].map((group) => (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {BFS_GROUPS.map((group) => (
             <div key={group.title}>
-              <h3 style={{ fontSize: 12, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--stamp-ember)', marginBottom: 8 }}>{group.title}</h3>
-              <ul style={{ fontSize: 13, color: 'var(--paper-dim)', lineHeight: 1.9, margin: 0, paddingLeft: 16 }}>
+              <h3 className="mb-2 font-mono text-xs uppercase tracking-wider text-alert-red">{group.title}</h3>
+              <ul className="m-0 list-disc pl-4 text-[13px] leading-loose text-ink-dim">
                 {group.items.map((item) => <li key={item}>{item}</li>)}
               </ul>
             </div>

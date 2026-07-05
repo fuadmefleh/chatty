@@ -3,11 +3,18 @@ import { fetchChattyReminders, deleteChattyReminder } from '../chattyApi';
 import type { ChattyReminder } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
+import Spinner from '../components/ui/Spinner';
+import EmptyState from '../components/ui/EmptyState';
+import Modal from '../components/ui/Modal';
+import { useToast } from '../hooks/useToast';
 
 const Reminders: React.FC = () => {
+  const { showToast } = useToast();
   const [reminders, setReminders] = useState<ChattyReminder[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -22,13 +29,19 @@ const Reminders: React.FC = () => {
 
   useEffect(() => { load(); }, []);
 
-  const handleDelete = async (filename: string) => {
-    if (!confirm('Delete this reminder?')) return;
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
     try {
-      await deleteChattyReminder(filename);
-      setReminders((prev) => prev.filter((r) => r._file !== filename));
+      await deleteChattyReminder(pendingDelete);
+      setReminders((prev) => prev.filter((r) => r._file !== pendingDelete));
+      showToast('Reminder deleted', 'signal');
+      setPendingDelete(null);
     } catch {
       setError('Failed to delete reminder');
+      showToast('Failed to delete reminder', 'red');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -40,53 +53,55 @@ const Reminders: React.FC = () => {
   };
 
   return (
-    <div style={{ maxWidth: 760, margin: '0 auto', padding: '24px 24px 48px' }}>
+    <div className="mx-auto max-w-[720px] px-4 py-6 md:px-6">
       <PageHeader
         eyebrow="Assistant / Reminders"
-        eyebrowColor="var(--stamp-teal)"
+        eyebrowColor="var(--signal)"
         title="Reminders"
         actions={
-          <button onClick={load} style={{ fontSize: 12, padding: '4px 12px' }}>
+          <button onClick={load} className="h-9 rounded-lg border border-line px-3 text-xs font-medium text-ink-dim">
             Refresh
           </button>
         }
       />
-      <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: -18, marginBottom: 24 }}>
+      <p className="-mt-4 mb-6 text-sm text-muted">
         Set reminders by asking Chatty in the chat.
       </p>
 
-      {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
+      {error && <p className="mb-4 text-sm text-alert-red">{error}</p>}
 
       {loading ? (
-        <p style={{ color: 'var(--muted)' }}>Loading reminders…</p>
-      ) : reminders.length === 0 ? (
-        <div style={{ textAlign: 'center', marginTop: 60, color: 'var(--muted)' }}>
-          <p>No active reminders.</p>
-          <p style={{ fontSize: 13 }}>Say "Remind me to…" in the Chat to create one.</p>
+        <div className="flex justify-center py-10">
+          <Spinner label="Loading reminders…" />
         </div>
+      ) : reminders.length === 0 ? (
+        <EmptyState
+          title="No active reminders"
+          description={'Say "Remind me to…" in the Chat to create one.'}
+        />
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="flex flex-col gap-3">
           {reminders.map((r) => {
             const { _file, ...fields } = r;
             return (
               <Card key={_file}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div style={{ flex: 1 }}>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
                     {Object.entries(fields).map(([k, v]) => (
-                      <div key={k} style={{ marginBottom: 6 }}>
-                        <span style={{ fontWeight: 600, fontSize: 12, color: 'var(--stamp-teal)', textTransform: 'capitalize', fontFamily: 'var(--font-mono)' }}>
+                      <div key={k} className="mb-1.5">
+                        <span className="font-mono text-xs font-semibold capitalize text-signal">
                           {k.replace(/_/g, ' ')}:{' '}
                         </span>
-                        <span style={{ fontSize: 14, color: 'var(--paper)' }}>{renderValue(v)}</span>
+                        <span className="text-sm text-ink">{renderValue(v)}</span>
                       </div>
                     ))}
-                    <div style={{ marginTop: 8 }}>
-                      <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--muted)' }}>{_file}</span>
+                    <div className="mt-2">
+                      <span className="font-mono text-[11px] text-muted">{_file}</span>
                     </div>
                   </div>
                   <button
-                    onClick={() => handleDelete(_file)}
-                    style={{ marginLeft: 16, padding: '5px 12px', border: '1px solid var(--ink-600)', background: 'transparent', color: 'var(--danger)', fontWeight: 600, fontSize: 12, whiteSpace: 'nowrap' }}
+                    onClick={() => setPendingDelete(_file)}
+                    className="shrink-0 whitespace-nowrap rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-alert-red"
                   >
                     Delete
                   </button>
@@ -96,6 +111,26 @@ const Reminders: React.FC = () => {
           })}
         </div>
       )}
+
+      <Modal open={pendingDelete !== null} onClose={() => setPendingDelete(null)} title="Delete reminder?">
+        <p className="mb-4 text-sm text-ink-dim">This will permanently remove the reminder.</p>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={() => setPendingDelete(null)}
+            disabled={deleting}
+            className="h-9 rounded-lg border border-line px-4 text-sm font-medium text-ink-dim"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={confirmDelete}
+            disabled={deleting}
+            className="h-9 rounded-lg bg-alert-red px-4 text-sm font-semibold text-white disabled:opacity-60"
+          >
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 };

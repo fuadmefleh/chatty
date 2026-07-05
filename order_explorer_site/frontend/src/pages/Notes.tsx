@@ -8,8 +8,15 @@ import {
 import type { ChattyNote } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
+import Spinner from '../components/ui/Spinner';
+import EmptyState from '../components/ui/EmptyState';
+import Modal from '../components/ui/Modal';
+import { useToast } from '../hooks/useToast';
+
+const textareaClass = 'w-full rounded-lg border border-line bg-surface px-3.5 py-2.5 text-sm text-ink outline-none transition-colors focus:border-signal resize-vertical';
 
 const Notes: React.FC = () => {
+  const { showToast } = useToast();
   const [notes, setNotes] = useState<ChattyNote[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -17,6 +24,8 @@ const Notes: React.FC = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
   const [saving, setSaving] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const load = async () => {
@@ -40,8 +49,10 @@ const Notes: React.FC = () => {
       const note = await createChattyNote(content);
       setNotes((prev) => [note, ...prev]);
       setNewContent('');
+      showToast('Note added', 'signal');
     } catch {
       setError('Failed to create note');
+      showToast('Failed to create note', 'red');
     } finally {
       setSaving(false);
     }
@@ -60,60 +71,66 @@ const Notes: React.FC = () => {
       const updated = await updateChattyNote(id, content);
       setNotes((prev) => prev.map((n) => (n.id === id ? updated : n)));
       setEditingId(null);
+      showToast('Note saved', 'signal');
     } catch {
       setError('Failed to update note');
+      showToast('Failed to update note', 'red');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this note?')) return;
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
     try {
-      await deleteChattyNote(id);
-      setNotes((prev) => prev.filter((n) => n.id !== id));
+      await deleteChattyNote(pendingDelete);
+      setNotes((prev) => prev.filter((n) => n.id !== pendingDelete));
+      showToast('Note deleted', 'signal');
+      setPendingDelete(null);
     } catch {
       setError('Failed to delete note');
+      showToast('Failed to delete note', 'red');
+    } finally {
+      setDeleting(false);
     }
   };
 
   return (
-    <div style={{ maxWidth: 760, margin: '0 auto', padding: '24px 24px 48px' }}>
-      <PageHeader eyebrow="Assistant / Notes" eyebrowColor="var(--stamp-teal)" title="Notes" />
+    <div className="mx-auto max-w-[1000px] px-4 py-6 md:px-6">
+      <PageHeader eyebrow="Assistant / Notes" eyebrowColor="var(--signal)" title="Notes" />
 
       {/* Create */}
-      <Card style={{ marginBottom: 28 }}>
+      <Card className="mb-6">
         <textarea
           ref={inputRef}
           placeholder="Write a new note…"
           value={newContent}
           onChange={(e) => setNewContent(e.target.value)}
           rows={3}
-          style={{
-            width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--ink-600)',
-            fontSize: 14.5, resize: 'vertical', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box',
-            background: 'var(--ink-900)', color: 'var(--paper)',
-          }}
+          className={textareaClass}
           onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey) handleCreate(); }}
         />
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+        <div className="mt-2.5 flex justify-end">
           <button
             onClick={handleCreate}
             disabled={saving || !newContent.trim()}
-            style={btnStyle('var(--stamp-teal)', saving || !newContent.trim())}
+            className="h-10 w-full rounded-lg bg-signal px-5 text-sm font-bold text-white disabled:bg-surface-dim disabled:text-muted sm:w-auto"
           >
             {saving ? 'Saving…' : '+ Add note'}
           </button>
         </div>
       </Card>
 
-      {error && <p style={{ color: 'var(--danger)', marginBottom: 16 }}>{error}</p>}
+      {error && <p className="mb-4 text-sm text-alert-red">{error}</p>}
       {loading ? (
-        <p style={{ color: 'var(--muted)' }}>Loading notes…</p>
+        <div className="flex justify-center py-10">
+          <Spinner label="Loading notes…" />
+        </div>
       ) : notes.length === 0 ? (
-        <p style={{ color: 'var(--muted)', textAlign: 'center', marginTop: 40 }}>No notes yet. Create your first note above.</p>
+        <EmptyState title="No notes yet" description="Create your first note above." />
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="flex flex-col gap-3">
           {notes.map((note) => (
             <Card key={note.id}>
               {editingId === note.id ? (
@@ -122,30 +139,26 @@ const Notes: React.FC = () => {
                     value={editContent}
                     onChange={(e) => setEditContent(e.target.value)}
                     rows={4}
-                    style={{
-                      width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--ink-600)',
-                      fontSize: 14.5, resize: 'vertical', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box',
-                      background: 'var(--ink-900)', color: 'var(--paper)',
-                    }}
+                    className={textareaClass}
                     autoFocus
                   />
-                  <div style={{ display: 'flex', gap: 8, marginTop: 10, justifyContent: 'flex-end' }}>
-                    <button onClick={() => setEditingId(null)} style={btnStyle('var(--ink-700)', false)}>Cancel</button>
-                    <button onClick={() => handleUpdate(note.id)} disabled={saving} style={btnStyle('var(--stamp-teal)', saving)}>Save</button>
+                  <div className="mt-2.5 flex justify-end gap-2">
+                    <button onClick={() => setEditingId(null)} className="h-9 rounded-lg border border-line px-4 text-sm font-medium text-ink-dim">Cancel</button>
+                    <button onClick={() => handleUpdate(note.id)} disabled={saving} className="h-9 rounded-lg bg-signal px-4 text-sm font-bold text-white disabled:opacity-60">Save</button>
                   </div>
                 </>
               ) : (
                 <>
-                  <p style={{ margin: '0 0 12px', fontSize: 14.5, whiteSpace: 'pre-wrap', color: 'var(--paper)', lineHeight: 1.6 }}>
+                  <p className="mb-3 whitespace-pre-wrap text-sm leading-relaxed text-ink">
                     {note.content}
                   </p>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--muted)' }}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-xs text-muted">
                       {new Date(note.created_at).toLocaleString()}
                     </span>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button onClick={() => startEdit(note)} style={btnSmall('var(--ink-700)', 'var(--paper)')}>Edit</button>
-                      <button onClick={() => handleDelete(note.id)} style={btnSmall('transparent', 'var(--danger)')}>Delete</button>
+                    <div className="flex gap-2">
+                      <button onClick={() => startEdit(note)} className="rounded-md border border-line px-3 py-1 text-xs font-semibold text-ink-dim">Edit</button>
+                      <button onClick={() => setPendingDelete(note.id)} className="rounded-md border border-line px-3 py-1 text-xs font-semibold text-alert-red">Delete</button>
                     </div>
                   </div>
                 </>
@@ -154,21 +167,28 @@ const Notes: React.FC = () => {
           ))}
         </div>
       )}
+
+      <Modal open={pendingDelete !== null} onClose={() => setPendingDelete(null)} title="Delete note?">
+        <p className="mb-4 text-sm text-ink-dim">This will permanently remove the note.</p>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={() => setPendingDelete(null)}
+            disabled={deleting}
+            className="h-9 rounded-lg border border-line px-4 text-sm font-medium text-ink-dim"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={confirmDelete}
+            disabled={deleting}
+            className="h-9 rounded-lg bg-alert-red px-4 text-sm font-semibold text-white disabled:opacity-60"
+          >
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 };
-
-const btnStyle = (color: string, disabled: boolean): React.CSSProperties => ({
-  padding: '8px 18px', borderRadius: 8, border: 'none',
-  background: disabled ? 'var(--ink-700)' : color,
-  color: disabled ? 'var(--muted)' : color === 'var(--ink-700)' ? 'var(--paper)' : 'var(--ink-900)',
-  fontWeight: 700, fontSize: 13,
-});
-
-const btnSmall = (bg: string, fg: string): React.CSSProperties => ({
-  padding: '4px 12px', borderRadius: 6, border: bg === 'transparent' ? '1px solid var(--ink-600)' : 'none',
-  background: bg, color: fg, fontWeight: 600,
-  fontSize: 12,
-});
 
 export default Notes;

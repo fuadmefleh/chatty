@@ -8,7 +8,7 @@ import {
   deleteTrendingSuggestion,
 } from '../chattyApi';
 import type { TrendingSuggestion, TrendingSuggestionStatus } from '../chattyApi';
-import { useToast } from '../components/ui/ToastProvider';
+import { useToast } from '../hooks/useToast';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';

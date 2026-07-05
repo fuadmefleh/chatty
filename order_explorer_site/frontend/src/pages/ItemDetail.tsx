@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import axios from 'axios';
 import { fetchItemHistory, fetchAllCategories, updateItemCategory } from '../api';
 import type { Item } from '../api';
 import {
@@ -14,9 +15,16 @@ import {
   Legend,
   Filler,
 } from 'chart.js';
+import type { TooltipItem } from 'chart.js';
 import { Line, Bar } from 'react-chartjs-2';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
+import Badge from '../components/ui/Badge';
+import StatCard from '../components/ui/StatCard';
+import Spinner from '../components/ui/Spinner';
+import EmptyState from '../components/ui/EmptyState';
+import ResponsiveTable from '../components/ui/ResponsiveTable';
+import type { TableColumn } from '../components/ui/ResponsiveTable';
 
 ChartJS.register(
   CategoryScale,
@@ -32,37 +40,41 @@ ChartJS.register(
 
 type SortField = 'date' | 'quantity' | 'price' | 'total' | 'source';
 type SortDirection = 'asc' | 'desc';
+type HistoryRow = Item & { _idx: number };
 
-const AXIS_COLOR = '#8b8f92';
-const GRID_COLOR = '#262c33';
+const FALLBACK_AXIS_COLOR = '#8b8f92';
+const FALLBACK_GRID_COLOR = '#88888833';
 
-const StatCard: React.FC<{ label: string; value: string; sub?: string }> = ({ label, value, sub }) => (
-  <Card>
-    <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 10 }}>{label}</div>
-    <div style={{ fontSize: 26, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-gold)' }}>{value}</div>
-    {sub && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>{sub}</div>}
-  </Card>
-);
+// Charts render to a <canvas>, so they can't pick up Tailwind classes — read
+// the current theme's actual token values instead, and keep them in sync
+// when the user flips light/dark mode.
+const readChartColors = () => {
+  if (typeof window === 'undefined') {
+    return { axis: FALLBACK_AXIS_COLOR, grid: FALLBACK_GRID_COLOR };
+  }
+  const styles = getComputedStyle(document.documentElement);
+  return {
+    axis: styles.getPropertyValue('--muted').trim() || FALLBACK_AXIS_COLOR,
+    grid: styles.getPropertyValue('--line').trim() || FALLBACK_GRID_COLOR,
+  };
+};
+
+const useChartColors = () => {
+  const [colors, setColors] = useState(readChartColors);
+  useEffect(() => {
+    const observer = new MutationObserver(() => setColors(readChartColors()));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
+  return colors;
+};
 
 const ChartCard: React.FC<React.PropsWithChildren<{ title: string }>> = ({ title, children }) => (
   <Card>
-    <h3 style={{ fontSize: 13, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 16, color: 'var(--muted)' }}>{title}</h3>
-    <div style={{ height: '300px' }}>{children}</div>
+    <h3 className="mb-4 font-mono text-[13px] uppercase tracking-wider text-muted">{title}</h3>
+    <div className="h-[300px]">{children}</div>
   </Card>
 );
-
-const thStyle = (align: 'left' | 'right' | 'center'): React.CSSProperties => ({
-  padding: '12px 14px',
-  textAlign: align,
-  fontWeight: 600,
-  fontSize: 11,
-  fontFamily: 'var(--font-mono)',
-  textTransform: 'uppercase',
-  letterSpacing: '0.05em',
-  color: 'var(--muted)',
-  cursor: 'pointer',
-  userSelect: 'none',
-});
 
 const ItemDetail: React.FC = () => {
   const { name } = useParams<{ name: string }>();
@@ -74,6 +86,7 @@ const ItemDetail: React.FC = () => {
   const [editingRow, setEditingRow] = useState<number | null>(null);
   const [tempCategory, setTempCategory] = useState<string>('');
   const [updating, setUpdating] = useState(false);
+  const chartColors = useChartColors();
 
   useEffect(() => {
     if (name) {
@@ -86,23 +99,6 @@ const ItemDetail: React.FC = () => {
       });
     }
   }, [name]);
-
-  const handleSort = useCallback((field: SortField) => {
-    setSortField(prevField => {
-      if (prevField === field) {
-        setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
-        return field;
-      } else {
-        setSortDirection('desc');
-        return field;
-      }
-    });
-  }, []);
-
-  const getSortIcon = useCallback((field: SortField) => {
-    if (sortField !== field) return ' ⇅';
-    return sortDirection === 'asc' ? ' ↑' : ' ↓';
-  }, [sortField, sortDirection]);
 
   const handleEditCategory = useCallback((index: number, currentCategory: string) => {
     setEditingRow(index);
@@ -137,9 +133,10 @@ const ItemDetail: React.FC = () => {
       setEditingRow(null);
       setTempCategory('');
       alert(`Category updated to "${tempCategory}" for all instances of this item`);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to update category:', error);
-      alert(`Failed to update category: ${error.response?.data?.detail || error.message}`);
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : undefined;
+      alert(`Failed to update category: ${detail || (error instanceof Error ? error.message : String(error))}`);
     } finally {
       setUpdating(false);
     }
@@ -185,6 +182,11 @@ const ItemDetail: React.FC = () => {
     }
     return sortDirection === 'asc' ? comparison : -comparison;
   }), [history, sortField, sortDirection]);
+
+  const rows: HistoryRow[] = useMemo(
+    () => sortedHistory.map((h, i) => ({ ...h, _idx: i })),
+    [sortedHistory]
+  );
 
   const { priceChartData, qtyChartData } = useMemo(() => {
     const priceData = {
@@ -241,21 +243,21 @@ const ItemDetail: React.FC = () => {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: { display: true, position: 'top' as const, labels: { color: AXIS_COLOR } },
+      legend: { display: true, position: 'top' as const, labels: { color: chartColors.axis } },
       tooltip: {
         callbacks: {
-          label: function (context: any) {
+          label: function (context: TooltipItem<'line'>) {
             return `Price: $${context.parsed.y?.toFixed(2)}`;
           }
         }
       }
     },
     scales: {
-      x: { ticks: { color: AXIS_COLOR }, grid: { color: GRID_COLOR } },
+      x: { ticks: { color: chartColors.axis }, grid: { color: chartColors.grid } },
       y: {
         beginAtZero: true,
-        ticks: { color: AXIS_COLOR, callback: function (value: any) { return '$' + value; } },
-        grid: { color: GRID_COLOR },
+        ticks: { color: chartColors.axis, callback: function (value: number | string) { return '$' + value; } },
+        grid: { color: chartColors.grid },
       }
     }
   };
@@ -264,11 +266,11 @@ const ItemDetail: React.FC = () => {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: { display: true, position: 'top' as const, labels: { color: AXIS_COLOR } },
+      legend: { display: true, position: 'top' as const, labels: { color: chartColors.axis } },
     },
     scales: {
-      x: { ticks: { color: AXIS_COLOR }, grid: { color: GRID_COLOR } },
-      y: { beginAtZero: true, ticks: { color: AXIS_COLOR }, grid: { color: GRID_COLOR } },
+      x: { ticks: { color: chartColors.axis }, grid: { color: chartColors.grid } },
+      y: { beginAtZero: true, ticks: { color: chartColors.axis }, grid: { color: chartColors.grid } },
     }
   };
 
@@ -358,49 +360,154 @@ const ItemDetail: React.FC = () => {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: { display: true, position: 'top' as const, labels: { color: AXIS_COLOR } },
+      legend: { display: true, position: 'top' as const, labels: { color: chartColors.axis } },
       tooltip: {
         callbacks: {
-          label: function (context: any) {
+          label: function (context: TooltipItem<'bar'>) {
             return `Spending: $${context.parsed.y?.toFixed(2)}`;
           }
         }
       }
     },
     scales: {
-      x: { ticks: { color: AXIS_COLOR }, grid: { color: GRID_COLOR } },
+      x: { ticks: { color: chartColors.axis }, grid: { color: chartColors.grid } },
       y: {
         beginAtZero: true,
-        ticks: { color: AXIS_COLOR, callback: function (value: any) { return '$' + value; } },
-        grid: { color: GRID_COLOR },
+        ticks: { color: chartColors.axis, callback: function (value: number | string) { return '$' + value; } },
+        grid: { color: chartColors.grid },
       }
     }
   };
 
-  if (loading) return <div style={{ padding: 24, color: 'var(--muted)' }}>Loading history…</div>;
-  if (!history.length) return <div style={{ padding: 24, color: 'var(--muted)' }}>No history found for {name}</div>;
+  const columns: TableColumn<HistoryRow>[] = [
+    {
+      key: 'date',
+      header: 'Date',
+      primary: true,
+      render: (row) => <span className="font-mono text-sm text-ink">{row.date}</span>,
+    },
+    {
+      key: 'category',
+      header: 'Category',
+      render: (row) => {
+        const isEditing = editingRow === row._idx;
+        if (isEditing) {
+          return (
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  list={`categories-${row._idx}`}
+                  value={tempCategory}
+                  onChange={(e) => setTempCategory(e.target.value)}
+                  disabled={updating}
+                  placeholder="Type or select category"
+                  className="w-full rounded-md border border-line bg-surface px-2 py-1 text-sm"
+                />
+                <datalist id={`categories-${row._idx}`}>
+                  {availableCategories.map(cat => (
+                    <option key={cat} value={cat} />
+                  ))}
+                </datalist>
+              </div>
+              <button
+                type="button"
+                onClick={() => { handleSaveCategory(row); }}
+                disabled={updating || !tempCategory.trim()}
+                className="rounded-md bg-alert-green px-2.5 py-1 text-xs font-semibold text-white"
+              >
+                {updating ? '…' : '✓'}
+              </button>
+              <button
+                type="button"
+                onClick={handleCancelEdit}
+                disabled={updating}
+                className="rounded-md bg-alert-red px-2.5 py-1 text-xs font-semibold text-white"
+              >
+                ✕
+              </button>
+            </div>
+          );
+        }
+        return (
+          <div className="flex items-center gap-2">
+            <Badge tone="ember">{row.category || 'Uncategorized'}</Badge>
+            <button
+              type="button"
+              onClick={() => handleEditCategory(row._idx, row.category || '')}
+              className="rounded-md border border-line px-2 py-0.5 text-[11px] font-semibold text-ink-dim hover:text-ink"
+            >
+              Edit
+            </button>
+          </div>
+        );
+      },
+    },
+    {
+      key: 'quantity',
+      header: 'Quantity',
+      className: 'text-center',
+      render: (row) => <Badge tone="gold">{row.quantity}</Badge>,
+    },
+    {
+      key: 'price',
+      header: 'Price',
+      className: 'text-right',
+      render: (row) => <span className="font-mono text-sm text-ink-dim">${row.price?.toFixed(2)}</span>,
+    },
+    {
+      key: 'total',
+      header: 'Total',
+      className: 'text-right',
+      render: (row) => (
+        <span className="font-mono text-sm font-semibold text-ink">
+          ${((row.price || 0) * (row.quantity || 1)).toFixed(2)}
+        </span>
+      ),
+    },
+    {
+      key: 'source',
+      header: 'Source',
+      render: (row) => <Badge tone="neutral">{row.source}</Badge>,
+    },
+  ];
+
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-[900px] px-4 py-10 md:px-6">
+        <Spinner label="Loading history…" />
+      </div>
+    );
+  }
+  if (!history.length) {
+    return (
+      <div className="mx-auto max-w-[900px] px-4 py-10 md:px-6">
+        <EmptyState title="No history found" description={`No purchase history found for ${name}.`} />
+      </div>
+    );
+  }
 
   return (
-    <div style={{ padding: '24px 24px 48px' }}>
-      <Link to="/items" style={{ color: 'var(--stamp-teal)', fontSize: '13px', fontWeight: 500, marginBottom: '16px', display: 'inline-block' }}>
+    <div className="mx-auto max-w-[900px] px-4 py-6 md:px-6">
+      <Link to="/items" className="mb-4 inline-block text-sm font-medium text-signal">
         ← Back to items
       </Link>
       <PageHeader eyebrow="Ledger / Items" title={decodeURIComponent(name || '')} />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '16px', marginBottom: '24px' }}>
-        <StatCard label="This month" value={`$${monthSpending.toFixed(2)}`} sub={`${monthPurchasesCount} purchase${monthPurchasesCount !== 1 ? 's' : ''}`} />
-        <StatCard label="This year" value={`$${yearSpending.toFixed(2)}`} sub={`${yearPurchasesCount} purchase${yearPurchasesCount !== 1 ? 's' : ''}`} />
-        <StatCard label="All time" value={`$${allTimeSpending.toFixed(2)}`} sub={`${history.length} purchase${history.length !== 1 ? 's' : ''}`} />
-        <StatCard label="Avg price" value={`$${avgPrice.toFixed(2)}`} />
+      <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <StatCard label="This month" value={`$${monthSpending.toFixed(2)}`} detail={`${monthPurchasesCount} purchase${monthPurchasesCount !== 1 ? 's' : ''}`} tone="amber" />
+        <StatCard label="This year" value={`$${yearSpending.toFixed(2)}`} detail={`${yearPurchasesCount} purchase${yearPurchasesCount !== 1 ? 's' : ''}`} tone="amber" />
+        <StatCard label="All time" value={`$${allTimeSpending.toFixed(2)}`} detail={`${history.length} purchase${history.length !== 1 ? 's' : ''}`} tone="amber" />
+        <StatCard label="Avg price" value={`$${avgPrice.toFixed(2)}`} tone="amber" />
       </div>
 
-      <div style={{ marginBottom: 20 }}>
+      <div className="mb-5">
         <ChartCard title="Purchase timeline (price trend)">
           <Line data={priceChartData} options={priceChartOptions} />
         </ChartCard>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '20px', marginBottom: '20px' }}>
+      <div className="mb-5 grid grid-cols-1 gap-5 md:grid-cols-2">
         <ChartCard title="Spending per month">
           <Bar data={spendingMonthChartData} options={spendingChartOptions} />
         </ChartCard>
@@ -409,7 +516,7 @@ const ItemDetail: React.FC = () => {
         </ChartCard>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '20px', marginBottom: '20px' }}>
+      <div className="mb-5 grid grid-cols-1 gap-5 md:grid-cols-2">
         <ChartCard title="Quantity per month">
           <Bar data={qtyChartData} options={qtyChartOptions} />
         </ChartCard>
@@ -420,104 +527,32 @@ const ItemDetail: React.FC = () => {
 
       {/* Purchase History Table */}
       <Card>
-        <h3 style={{ fontSize: 13, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 16, color: 'var(--muted)' }}>Purchase history</h3>
-        <div style={{ overflowX: 'auto', border: '1px solid var(--ink-700)', borderRadius: '10px' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: 'var(--ink-750)' }}>
-                <th onClick={() => handleSort('date')} style={thStyle('left')}>Date{getSortIcon('date')}</th>
-                <th style={thStyle('left')}>Category</th>
-                <th onClick={() => handleSort('quantity')} style={thStyle('center')}>Quantity{getSortIcon('quantity')}</th>
-                <th onClick={() => handleSort('price')} style={thStyle('right')}>Price{getSortIcon('price')}</th>
-                <th onClick={() => handleSort('total')} style={thStyle('right')}>Total{getSortIcon('total')}</th>
-                <th onClick={() => handleSort('source')} style={thStyle('left')}>Source{getSortIcon('source')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedHistory.map((h, i) => {
-                const total = (h.price || 0) * (h.quantity || 1);
-                const isEditing = editingRow === i;
-                return (
-                  <tr
-                    key={i}
-                    style={{
-                      backgroundColor: i % 2 === 0 ? 'var(--ink-800)' : 'var(--ink-900)',
-                      transition: 'background-color 0.15s'
-                    }}
-                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--ink-750)'}
-                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = i % 2 === 0 ? 'var(--ink-800)' : 'var(--ink-900)'}
-                  >
-                    <td style={{ padding: '13px 14px', borderTop: '1px solid var(--ink-700)', fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--paper)' }}>{h.date}</td>
-                    <td style={{ padding: '13px 14px', borderTop: '1px solid var(--ink-700)' }}>
-                      {isEditing ? (
-                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                          <div style={{ flex: 1, position: 'relative' }}>
-                            <input
-                              type="text"
-                              list={`categories-${i}`}
-                              value={tempCategory}
-                              onChange={(e) => setTempCategory(e.target.value)}
-                              disabled={updating}
-                              placeholder="Type or select category"
-                              style={{ padding: '6px 8px', borderRadius: '4px', fontSize: '13px', width: '100%' }}
-                            />
-                            <datalist id={`categories-${i}`}>
-                              {availableCategories.map(cat => (
-                                <option key={cat} value={cat} />
-                              ))}
-                            </datalist>
-                          </div>
-                          <button
-                            onClick={() => { handleSaveCategory(h); }}
-                            disabled={updating || !tempCategory.trim()}
-                            style={{ background: 'var(--success)', color: 'var(--ink-900)', borderRadius: '4px', padding: '6px 12px', fontSize: '12px', fontWeight: 600 }}
-                          >
-                            {updating ? '…' : '✓'}
-                          </button>
-                          <button
-                            onClick={handleCancelEdit}
-                            disabled={updating}
-                            style={{ background: 'var(--danger)', color: 'var(--ink-900)', borderRadius: '4px', padding: '6px 12px', fontSize: '12px', fontWeight: 600 }}
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      ) : (
-                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                          <span style={{ background: 'rgba(216, 96, 63, 0.15)', color: 'var(--stamp-ember)', padding: '3px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 600 }}>
-                            {h.category || 'Uncategorized'}
-                          </span>
-                          <button
-                            onClick={() => handleEditCategory(i, h.category || '')}
-                            style={{ background: 'var(--ink-700)', color: 'var(--paper)', borderRadius: '4px', padding: '4px 8px', fontSize: '11px', fontWeight: 600 }}
-                          >
-                            Edit
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                    <td style={{ padding: '13px 14px', borderTop: '1px solid var(--ink-700)', textAlign: 'center' }}>
-                      <span style={{ background: 'rgba(200, 155, 60, 0.15)', color: 'var(--stamp-gold)', padding: '3px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
-                        {h.quantity}
-                      </span>
-                    </td>
-                    <td style={{ padding: '13px 14px', borderTop: '1px solid var(--ink-700)', textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--paper-dim)' }}>
-                      ${h.price?.toFixed(2)}
-                    </td>
-                    <td style={{ padding: '13px 14px', borderTop: '1px solid var(--ink-700)', textAlign: 'right', fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--paper)' }}>
-                      ${total.toFixed(2)}
-                    </td>
-                    <td style={{ padding: '13px 14px', borderTop: '1px solid var(--ink-700)' }}>
-                      <span style={{ background: 'var(--ink-700)', color: 'var(--muted)', padding: '3px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 600 }}>
-                        {h.source}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h3 className="font-mono text-[13px] uppercase tracking-wider text-muted">Purchase history</h3>
+          <div className="flex items-center gap-2 text-xs text-muted">
+            <label htmlFor="sort-field">Sort by</label>
+            <select
+              id="sort-field"
+              value={sortField}
+              onChange={(e) => { setSortField(e.target.value as SortField); setSortDirection('desc'); }}
+              className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink"
+            >
+              <option value="date">Date</option>
+              <option value="quantity">Quantity</option>
+              <option value="price">Price</option>
+              <option value="total">Total</option>
+              <option value="source">Source</option>
+            </select>
+            <button
+              type="button"
+              onClick={() => setSortDirection((d) => (d === 'asc' ? 'desc' : 'asc'))}
+              className="rounded-md border border-line px-2 py-1 text-xs font-semibold text-ink-dim hover:text-ink"
+            >
+              {sortDirection === 'asc' ? '↑ Asc' : '↓ Desc'}
+            </button>
+          </div>
         </div>
+        <ResponsiveTable columns={columns} rows={rows} rowKey={(row) => row._idx} />
       </Card>
     </div>
   );

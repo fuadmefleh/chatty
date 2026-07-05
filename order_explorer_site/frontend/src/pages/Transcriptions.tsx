@@ -10,7 +10,7 @@ import Badge from '../components/ui/Badge';
 import Spinner from '../components/ui/Spinner';
 import Modal from '../components/ui/Modal';
 import Checkbox from '../components/ui/form/Checkbox';
-import { useToast } from '../components/ui/ToastProvider';
+import { useToast } from '../hooks/useToast';
 
 const btnSmallClass = (border: boolean) =>
   `whitespace-nowrap rounded-md px-3 py-1 text-xs font-semibold text-signal ${border ? 'border border-line' : ''}`;

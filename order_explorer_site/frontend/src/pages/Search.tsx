@@ -3,6 +3,10 @@ import { api } from '../api';
 import { Link } from 'react-router-dom';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
+import Badge from '../components/ui/Badge';
+import FormField from '../components/ui/form/FormField';
+import Input from '../components/ui/form/Input';
+import Select from '../components/ui/form/Select';
 
 interface Item {
   name: string;
@@ -14,9 +18,6 @@ interface Item {
   source: string;
   order_id: string;
 }
-
-const fieldLabel: React.CSSProperties = { display: 'block', marginBottom: '6px', fontSize: '12px', fontWeight: 600, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--muted)' };
-const fieldInput: React.CSSProperties = { width: '100%', padding: '10px', borderRadius: '6px', fontSize: '14px' };
 
 const Search: React.FC = () => {
   const [query, setQuery] = useState('');
@@ -74,60 +75,55 @@ const Search: React.FC = () => {
   }, {} as Record<string, Item[]>);
 
   return (
-    <div style={{ padding: '24px 24px 48px' }}>
+    <div className="mx-auto max-w-[1000px] px-4 py-6 md:px-6">
       <PageHeader eyebrow="Ledger / Search" title="Advanced search" />
 
       {/* Search Filters */}
-      <Card style={{ marginBottom: 28 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px', marginBottom: '18px' }}>
-          <div>
-            <label style={fieldLabel}>Search term</label>
-            <input
+      <Card className="mb-6">
+        <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <FormField label="Search term" htmlFor="search-term">
+            <Input
+              id="search-term"
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Enter item name…"
-              style={fieldInput}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             />
-          </div>
+          </FormField>
 
-          <div>
-            <label style={fieldLabel}>Category</label>
-            <select value={category} onChange={(e) => setCategory(e.target.value)} style={fieldInput}>
+          <FormField label="Category" htmlFor="search-category">
+            <Select id="search-category" value={category} onChange={(e) => setCategory(e.target.value)}>
               <option value="">All categories</option>
               {categories.map(cat => (
                 <option key={cat} value={cat}>{cat}</option>
               ))}
-            </select>
-          </div>
+            </Select>
+          </FormField>
 
-          <div>
-            <label style={fieldLabel}>Source</label>
-            <select value={source} onChange={(e) => setSource(e.target.value)} style={fieldInput}>
+          <FormField label="Source" htmlFor="search-source">
+            <Select id="search-source" value={source} onChange={(e) => setSource(e.target.value)}>
               <option value="">All sources</option>
               {sources.map(src => (
                 <option key={src} value={src}>{src}</option>
               ))}
-            </select>
-          </div>
+            </Select>
+          </FormField>
 
-          <div>
-            <label style={fieldLabel}>Min price</label>
-            <input type="number" value={minPrice} onChange={(e) => setMinPrice(e.target.value)} placeholder="$0" step="0.01" style={fieldInput} />
-          </div>
+          <FormField label="Min price" htmlFor="search-min">
+            <Input id="search-min" type="number" value={minPrice} onChange={(e) => setMinPrice(e.target.value)} placeholder="$0" step="0.01" />
+          </FormField>
 
-          <div>
-            <label style={fieldLabel}>Max price</label>
-            <input type="number" value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)} placeholder="$999" step="0.01" style={fieldInput} />
-          </div>
+          <FormField label="Max price" htmlFor="search-max">
+            <Input id="search-max" type="number" value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)} placeholder="$999" step="0.01" />
+          </FormField>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px' }}>
+        <div className="flex flex-col gap-2.5 sm:flex-row">
           <button
             onClick={handleSearch}
             disabled={loading}
-            style={{ background: 'var(--stamp-gold)', color: 'var(--ink-900)', padding: '11px 24px', fontSize: '14px', fontWeight: 700 }}
+            className="h-10 flex-1 rounded-lg bg-alert-amber px-6 text-sm font-semibold text-white disabled:opacity-55 sm:flex-none"
           >
             {loading ? 'Searching…' : 'Search'}
           </button>
@@ -141,7 +137,7 @@ const Search: React.FC = () => {
               setMaxPrice('');
               setResults([]);
             }}
-            style={{ padding: '11px 24px', fontSize: '14px', fontWeight: 600 }}
+            className="h-10 flex-1 rounded-lg border border-line px-6 text-sm font-medium text-ink-dim sm:flex-none"
           >
             Clear
           </button>
@@ -151,11 +147,11 @@ const Search: React.FC = () => {
       {/* Results */}
       {results.length > 0 && (
         <Card>
-          <h2 style={{ fontSize: 13, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 18, color: 'var(--muted)' }}>
+          <h2 className="mb-4.5 font-mono text-[13px] uppercase tracking-wider text-muted">
             Found {results.length} items ({Object.keys(groupedResults).length} unique)
           </h2>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div className="flex flex-col gap-4">
             {Object.entries(groupedResults).map(([name, items]) => {
               const sortedItems = [...items].sort((a, b) => a.price - b.price);
               const minPriceItem = sortedItems[0];
@@ -163,101 +159,85 @@ const Search: React.FC = () => {
               const avgPrice = items.reduce((sum, i) => sum + i.price, 0) / items.length;
 
               return (
-                <div
-                  key={name}
-                  style={{
-                    border: '1px solid var(--ink-700)',
-                    borderRadius: '10px',
-                    padding: '16px',
-                    background: 'var(--ink-800)',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '12px' }}>
-                    <div style={{ flex: 1 }}>
-                      <Link to={`/items/${encodeURIComponent(name)}`} style={{ fontSize: '16px', fontWeight: 700, color: 'var(--stamp-teal)' }}>
+                <div key={name} className="rounded-xl border border-line bg-surface p-4">
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <Link to={`/items/${encodeURIComponent(name)}`} className="text-base font-bold text-signal">
                         {name}
                       </Link>
-                      <p style={{ margin: '5px 0', fontSize: '13px', color: 'var(--muted)' }}>
+                      <p className="mt-1 text-sm text-muted">
                         Category: {items[0].category || 'Unknown'}
                       </p>
                     </div>
-                    <span style={{
-                      background: 'rgba(200, 155, 60, 0.15)',
-                      color: 'var(--stamp-gold)',
-                      padding: '4px 12px',
-                      borderRadius: '12px',
-                      fontSize: '13px',
-                      fontWeight: 600,
-                      whiteSpace: 'nowrap',
-                    }}>
+                    <Badge tone="gold">
                       {items.length} purchase{items.length > 1 ? 's' : ''}
-                    </span>
+                    </Badge>
                   </div>
 
                   {/* Price Comparison */}
                   {items.length > 1 ? (
-                    <div style={{ background: 'var(--ink-900)', padding: '12px', borderRadius: '8px', marginBottom: '12px', border: '1px solid var(--ink-700)' }}>
-                      <h4 style={{ margin: '0 0 10px 0', fontSize: '12px', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--muted)' }}>
+                    <div className="mb-3 rounded-lg border border-line bg-surface-dim p-3">
+                      <h4 className="mb-2.5 font-mono text-[11px] uppercase tracking-wider text-muted">
                         Price comparison
                       </h4>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                      <div className="grid grid-cols-3 gap-2.5">
                         <div>
-                          <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Lowest</span>
-                          <p style={{ margin: '2px 0 0 0', fontSize: '16px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--success)' }}>
+                          <span className="text-[11px] text-muted">Lowest</span>
+                          <p className="mt-0.5 font-mono text-base font-bold text-alert-green">
                             ${minPriceItem.price.toFixed(2)}
                           </p>
-                          <span style={{ fontSize: '11px', color: 'var(--muted)' }}>{minPriceItem.source}</span>
+                          <span className="text-[11px] text-muted">{minPriceItem.source}</span>
                         </div>
                         <div>
-                          <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Average</span>
-                          <p style={{ margin: '2px 0 0 0', fontSize: '16px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--paper)' }}>
+                          <span className="text-[11px] text-muted">Average</span>
+                          <p className="mt-0.5 font-mono text-base font-bold text-ink">
                             ${avgPrice.toFixed(2)}
                           </p>
                         </div>
                         <div>
-                          <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Highest</span>
-                          <p style={{ margin: '2px 0 0 0', fontSize: '16px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--danger)' }}>
+                          <span className="text-[11px] text-muted">Highest</span>
+                          <p className="mt-0.5 font-mono text-base font-bold text-alert-red">
                             ${maxPriceItem.price.toFixed(2)}
                           </p>
-                          <span style={{ fontSize: '11px', color: 'var(--muted)' }}>{maxPriceItem.source}</span>
+                          <span className="text-[11px] text-muted">{maxPriceItem.source}</span>
                         </div>
                       </div>
                     </div>
                   ) : (
-                    <div style={{ marginBottom: '12px' }}>
-                      <span style={{ fontSize: '22px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--stamp-gold)' }}>
+                    <div className="mb-3">
+                      <span className="font-mono text-xl font-bold text-alert-amber">
                         ${items[0].price.toFixed(2)}
                       </span>
-                      <span style={{ fontSize: '13px', color: 'var(--muted)', marginLeft: '10px' }}>
+                      <span className="ml-2.5 text-sm text-muted">
                         from {items[0].source}
                       </span>
                     </div>
                   )}
 
                   {/* Purchase History */}
-                  <details style={{ cursor: 'pointer' }}>
-                    <summary style={{ fontSize: '13px', fontWeight: 600, color: 'var(--stamp-teal)', padding: '6px 0' }}>
+                  <details className="cursor-pointer">
+                    <summary className="py-1.5 text-sm font-semibold text-signal">
                       View purchase history
                     </summary>
-                    <div style={{ marginTop: '10px' }}>
-                      <table style={{ width: '100%', fontSize: '13px' }}>
+                    <div className="mt-2.5 overflow-x-auto">
+                      <table className="w-full text-sm">
                         <thead>
-                          <tr style={{ borderBottom: '1px solid var(--ink-700)' }}>
-                            <th style={{ padding: '8px', textAlign: 'left', color: 'var(--muted)', fontSize: 11, fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }}>Date</th>
-                            <th style={{ padding: '8px', textAlign: 'left', color: 'var(--muted)', fontSize: 11, fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }}>Source</th>
-                            <th style={{ padding: '8px', textAlign: 'right', color: 'var(--muted)', fontSize: 11, fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }}>Price</th>
-                            <th style={{ padding: '8px', textAlign: 'center', color: 'var(--muted)', fontSize: 11, fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }}>Qty</th>
+                          <tr className="border-b border-line">
+                            <th className="px-2 py-2 text-left font-mono text-[11px] uppercase text-muted">Date</th>
+                            <th className="px-2 py-2 text-left font-mono text-[11px] uppercase text-muted">Source</th>
+                            <th className="px-2 py-2 text-right font-mono text-[11px] uppercase text-muted">Price</th>
+                            <th className="px-2 py-2 text-center font-mono text-[11px] uppercase text-muted">Qty</th>
                           </tr>
                         </thead>
                         <tbody>
                           {sortedItems.map((item, idx) => (
-                            <tr key={idx} style={{ borderBottom: '1px solid var(--ink-700)' }}>
-                              <td style={{ padding: '8px', fontFamily: 'var(--font-mono)', color: 'var(--paper-dim)' }}>{item.date}</td>
-                              <td style={{ padding: '8px', color: 'var(--paper-dim)' }}>{item.source}</td>
-                              <td style={{ padding: '8px', textAlign: 'right', fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--paper)' }}>
+                            <tr key={idx} className="border-b border-line">
+                              <td className="px-2 py-2 font-mono text-ink-dim">{item.date}</td>
+                              <td className="px-2 py-2 text-ink-dim">{item.source}</td>
+                              <td className="px-2 py-2 text-right font-mono font-semibold text-ink">
                                 ${item.price.toFixed(2)}
                               </td>
-                              <td style={{ padding: '8px', textAlign: 'center', color: 'var(--paper-dim)' }}>{item.quantity}</td>
+                              <td className="px-2 py-2 text-center text-ink-dim">{item.quantity}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -272,8 +252,8 @@ const Search: React.FC = () => {
       )}
 
       {results.length === 0 && !loading && (
-        <Card style={{ textAlign: 'center', padding: 40 }}>
-          <p style={{ margin: 0, fontSize: '14px', color: 'var(--muted)' }}>
+        <Card className="py-10 text-center">
+          <p className="text-sm text-muted">
             {query || category || source || minPrice || maxPrice
               ? 'No items found. Try adjusting your search filters.'
               : 'Enter search criteria above to find items.'}

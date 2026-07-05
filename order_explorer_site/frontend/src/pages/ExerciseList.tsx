@@ -5,19 +5,13 @@ import type { Exercise } from '../api';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
+import Spinner from '../components/ui/Spinner';
+import Input from '../components/ui/form/Input';
+import ResponsiveTable from '../components/ui/ResponsiveTable';
+import type { TableColumn } from '../components/ui/ResponsiveTable';
 
-const thStyle: React.CSSProperties = {
-  padding: '12px 16px', textAlign: 'left', fontWeight: 600, fontSize: 11,
-  fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--muted)',
-};
-
-const filterBtn = (active: boolean): React.CSSProperties => ({
-  background: active ? 'var(--stamp-ember)' : 'var(--ink-700)',
-  color: active ? 'var(--ink-900)' : 'var(--paper-dim)',
-  padding: '8px 16px',
-  fontSize: 13,
-  fontWeight: 600,
-});
+const filterBtnClass = (active: boolean): string =>
+  `rounded-lg px-4 py-2 text-sm font-semibold ${active ? 'bg-alert-red text-white' : 'bg-surface-dim text-ink-dim'}`;
 
 export default function ExerciseList() {
   const [exercises, setExercises] = useState<Exercise[]>([]);
@@ -51,43 +45,73 @@ export default function ExerciseList() {
   const bfsCore = exercises.filter(e => e.is_bfs_core);
 
   if (loading) {
-    return <div style={{ padding: 24, color: 'var(--muted)' }}>Loading exercises…</div>;
+    return (
+      <div className="mx-auto max-w-[1200px] px-4 py-6 md:px-6">
+        <Spinner label="Loading exercises…" />
+      </div>
+    );
   }
 
+  const columns: TableColumn<Exercise>[] = [
+    {
+      key: 'name',
+      header: 'Exercise',
+      primary: true,
+      render: (exercise) => (
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-ink">{exercise.name}</span>
+          {exercise.is_bfs_core && <Badge tone="ember">BFS core</Badge>}
+        </div>
+      ),
+    },
+    { key: 'category', header: 'Category', render: (exercise) => <span className="text-sm text-ink-dim">{exercise.category}</span> },
+    { key: 'muscle_group', header: 'Muscle group', render: (exercise) => <span className="text-sm text-ink-dim">{exercise.muscle_group}</span> },
+    { key: 'description', header: 'Description', render: (exercise) => <span className="text-sm text-muted">{exercise.description}</span> },
+    {
+      key: 'actions',
+      header: 'Actions',
+      className: 'text-center',
+      render: (exercise) => (
+        <Link to={`/exercise/exercise/${exercise.id}`} className="text-sm font-semibold text-alert-red hover:underline">
+          View details
+        </Link>
+      ),
+    },
+  ];
+
   return (
-    <div style={{ padding: '24px 24px 48px' }}>
-      <PageHeader eyebrow="Training / Exercise" eyebrowColor="var(--stamp-ember)" title="Exercise library" />
+    <div className="mx-auto max-w-[1200px] px-4 py-6 md:px-6">
+      <PageHeader eyebrow="Training / Exercise" eyebrowColor="var(--alert-red)" title="Exercise library" />
 
       {/* BFS Core Exercises Highlight */}
-      <Card style={{ marginBottom: '28px', borderLeft: '3px solid var(--stamp-ember)' }}>
-        <h2 style={{ fontSize: 15, marginBottom: 16, color: 'var(--paper)' }}>BFS core lifts</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px' }}>
+      <Card className="mb-7 border-l-[3px] border-l-alert-red">
+        <h2 className="mb-4 text-base font-semibold text-ink">BFS core lifts</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
           {bfsCore.map((exercise) => (
             <Link
               key={exercise.id}
               to={`/exercise/exercise/${exercise.id}`}
-              style={{ background: 'var(--ink-900)', border: '1px solid var(--ink-700)', padding: '14px', borderRadius: 8, textAlign: 'center', display: 'block' }}
+              className="block rounded-lg border border-line bg-surface-dim p-3.5 text-center"
             >
-              <div style={{ fontWeight: 700, color: 'var(--paper)', fontSize: 14 }}>{exercise.name}</div>
-              <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 3 }}>{exercise.muscle_group}</div>
+              <div className="text-sm font-bold text-ink">{exercise.name}</div>
+              <div className="mt-0.5 text-xs text-muted">{exercise.muscle_group}</div>
             </Link>
           ))}
         </div>
       </Card>
 
       {/* Filters */}
-      <Card style={{ marginBottom: '20px' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
-          <input
+      <Card className="mb-5">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Input
             type="text"
             placeholder="Search exercises…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ width: '100%', padding: '10px 14px', borderRadius: 8, fontSize: 14 }}
           />
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <div className="flex flex-wrap gap-2">
             {categories.map((category) => (
-              <button key={category} onClick={() => setFilter(category)} style={filterBtn(filter === category)}>
+              <button key={category} type="button" onClick={() => setFilter(category)} className={filterBtnClass(filter === category)}>
                 {category.charAt(0).toUpperCase() + category.slice(1)}
               </button>
             ))}
@@ -96,49 +120,15 @@ export default function ExerciseList() {
       </Card>
 
       {/* Exercise List */}
-      <div style={{ border: '1px solid var(--ink-700)', borderRadius: 10, overflow: 'hidden' }}>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: 'var(--ink-750)' }}>
-                <th style={thStyle}>Exercise</th>
-                <th style={thStyle}>Category</th>
-                <th style={thStyle}>Muscle group</th>
-                <th style={thStyle}>Description</th>
-                <th style={{ ...thStyle, textAlign: 'center' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredExercises.map((exercise, idx) => (
-                <tr key={exercise.id} style={{ backgroundColor: idx % 2 === 0 ? 'var(--ink-800)' : 'var(--ink-900)', borderTop: '1px solid var(--ink-700)' }}>
-                  <td style={{ padding: '13px 16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontWeight: 600, color: 'var(--paper)', fontSize: 13.5 }}>{exercise.name}</span>
-                      {exercise.is_bfs_core && <Badge tone="ember">BFS core</Badge>}
-                    </div>
-                  </td>
-                  <td style={{ padding: '13px 16px', fontSize: 13, color: 'var(--paper-dim)' }}>{exercise.category}</td>
-                  <td style={{ padding: '13px 16px', fontSize: 13, color: 'var(--paper-dim)' }}>{exercise.muscle_group}</td>
-                  <td style={{ padding: '13px 16px', fontSize: 13, color: 'var(--muted)' }}>{exercise.description}</td>
-                  <td style={{ padding: '13px 16px', textAlign: 'center' }}>
-                    <Link to={`/exercise/exercise/${exercise.id}`} style={{ color: 'var(--stamp-ember)', fontWeight: 600, fontSize: 13 }}>
-                      View details
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <ResponsiveTable
+        columns={columns}
+        rows={filteredExercises}
+        rowKey={(exercise) => exercise.id}
+        emptyTitle="No exercises found"
+        emptyDescription="Try a different search term or filter."
+      />
 
-        {filteredExercises.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--muted)' }}>
-            No exercises found matching your criteria.
-          </div>
-        )}
-      </div>
-
-      <div style={{ marginTop: '16px', fontSize: 13, color: 'var(--muted)' }}>
+      <div className="mt-4 text-sm text-muted">
         Showing {filteredExercises.length} of {exercises.length} exercises
       </div>
     </div>

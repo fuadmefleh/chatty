@@ -1,6 +1,8 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import Sidebar from './components/Sidebar';
+import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
+import AppShell from './components/layout/AppShell';
 import AuthGate from './components/AuthGate';
+import ErrorBoundary from './components/ErrorBoundary';
+import { ToastProvider } from './components/ui/ToastProvider';
 import Dashboard from './pages/Dashboard';
 import Orders from './pages/Orders';
 import Items from './pages/Items';
@@ -23,57 +25,71 @@ import ProgressTracker from './pages/ProgressTracker';
 import Chat from './pages/Chat';
 import Notes from './pages/Notes';
 import Transcriptions from './pages/Transcriptions';
+import Speakers from './pages/Speakers';
 import Insights from './pages/Insights';
 import Reminders from './pages/Reminders';
 import MemoryViewer from './pages/MemoryViewer';
 import Requests from './pages/Requests';
+import Suggestions from './pages/Suggestions';
 import SystemStatus from './pages/SystemStatus';
 import CodeBrowser from './pages/CodeBrowser';
+import ServerHealth from './pages/ServerHealth';
+
+function RoutedApp() {
+  const { pathname } = useLocation();
+  return (
+    <AppShell>
+      <ErrorBoundary key={pathname}>
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/orders" element={<Orders />} />
+          <Route path="/items" element={<Items />} />
+          <Route path="/items/:name" element={<ItemDetail />} />
+          <Route path="/months" element={<Months />} />
+          <Route path="/years" element={<Years />} />
+          <Route path="/categories" element={<Categories />} />
+          <Route path="/vendors" element={<Vendors />} />
+          <Route path="/search" element={<Search />} />
+          <Route path="/budget" element={<Budget />} />
+          <Route path="/recurring" element={<Recurring />} />
+          <Route path="/export" element={<Export />} />
+
+          {/* Exercise Tracker Routes */}
+          <Route path="/exercise" element={<ExerciseDashboard />} />
+          <Route path="/exercise/exercises" element={<ExerciseList />} />
+          <Route path="/exercise/exercise/:id" element={<ExerciseDetail />} />
+          <Route path="/exercise/workout-logger" element={<WorkoutLogger />} />
+          <Route path="/exercise/history" element={<WorkoutHistory />} />
+          <Route path="/exercise/workout/:id" element={<WorkoutDetail />} />
+          <Route path="/exercise/progress" element={<ProgressTracker />} />
+
+          {/* Chatty Routes */}
+          <Route path="/chat" element={<Chat />} />
+          <Route path="/notes" element={<Notes />} />
+          <Route path="/transcriptions" element={<Transcriptions />} />
+          <Route path="/speakers" element={<Speakers />} />
+          <Route path="/insights" element={<Insights />} />
+          <Route path="/reminders" element={<Reminders />} />
+          <Route path="/memory" element={<MemoryViewer />} />
+          <Route path="/requests" element={<Requests />} />
+          <Route path="/suggestions" element={<Suggestions />} />
+          <Route path="/system" element={<SystemStatus />} />
+          <Route path="/server-health" element={<ServerHealth />} />
+          <Route path="/code" element={<CodeBrowser />} />
+        </Routes>
+      </ErrorBoundary>
+    </AppShell>
+  );
+}
 
 function App() {
   return (
     <Router>
-      <AuthGate>
-        <div className="app-shell">
-          <Sidebar />
-          <main className="ledger-main">
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/orders" element={<Orders />} />
-              <Route path="/items" element={<Items />} />
-              <Route path="/items/:name" element={<ItemDetail />} />
-              <Route path="/months" element={<Months />} />
-              <Route path="/years" element={<Years />} />
-              <Route path="/categories" element={<Categories />} />
-              <Route path="/vendors" element={<Vendors />} />
-              <Route path="/search" element={<Search />} />
-              <Route path="/budget" element={<Budget />} />
-              <Route path="/recurring" element={<Recurring />} />
-              <Route path="/export" element={<Export />} />
-
-              {/* Exercise Tracker Routes */}
-              <Route path="/exercise" element={<ExerciseDashboard />} />
-              <Route path="/exercise/exercises" element={<ExerciseList />} />
-              <Route path="/exercise/exercise/:id" element={<ExerciseDetail />} />
-              <Route path="/exercise/workout-logger" element={<WorkoutLogger />} />
-              <Route path="/exercise/history" element={<WorkoutHistory />} />
-              <Route path="/exercise/workout/:id" element={<WorkoutDetail />} />
-              <Route path="/exercise/progress" element={<ProgressTracker />} />
-
-              {/* Chatty Routes */}
-              <Route path="/chat" element={<Chat />} />
-              <Route path="/notes" element={<Notes />} />
-              <Route path="/transcriptions" element={<Transcriptions />} />
-              <Route path="/insights" element={<Insights />} />
-              <Route path="/reminders" element={<Reminders />} />
-              <Route path="/memory" element={<MemoryViewer />} />
-              <Route path="/requests" element={<Requests />} />
-              <Route path="/system" element={<SystemStatus />} />
-              <Route path="/code" element={<CodeBrowser />} />
-            </Routes>
-          </main>
-        </div>
-      </AuthGate>
+      <ToastProvider>
+        <AuthGate>
+          <RoutedApp />
+        </AuthGate>
+      </ToastProvider>
     </Router>
   );
 }

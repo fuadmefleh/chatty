@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { WS_CHAT_URL, getStoredApiKey, fetchChatSessions, fetchSessionMessages, type ChatSession } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
+import Badge from '../components/ui/Badge';
+import PulseDot from '../components/ui/PulseDot';
+import Spinner from '../components/ui/Spinner';
+import EmptyState from '../components/ui/EmptyState';
+import { useToast } from '../hooks/useToast';
 
 interface Message {
   id: number;
@@ -24,6 +29,7 @@ const Chat: React.FC = () => {
   const wsRef = useRef<WebSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const pendingIdRef = useRef<number | null>(null);
+  const { showToast } = useToast();
 
   const connect = useCallback((sessionId?: number, summary?: string) => {
     // Clear any previous state
@@ -52,6 +58,7 @@ const Chat: React.FC = () => {
     ws.onerror = () => {
       setConnected(false);
       setConnecting(false);
+      showToast('Chat connection error — check your link.', 'red');
     };
 
     ws.onmessage = (event) => {
@@ -94,6 +101,7 @@ const Chat: React.FC = () => {
     };
 
     return ws;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Load session messages into chat view
@@ -173,6 +181,13 @@ const Chat: React.FC = () => {
     }
   };
 
+  // iOS Safari fires its viewport resize (for the on-screen keyboard) AFTER
+  // the focus event, so we nudge the input into view once focused to avoid
+  // it being hidden behind the keyboard on first tap.
+  const handleInputFocus = (e: React.FocusEvent<HTMLTextAreaElement>) => {
+    e.target.scrollIntoView({ block: 'end', behavior: 'smooth' });
+  };
+
   // ── Session management ──────────────────────────────────────────────────
   const loadSessions = useCallback(async () => {
     setSessionsLoading(true);
@@ -222,54 +237,52 @@ const Chat: React.FC = () => {
     }
   };
 
-  const statusColor = connected ? 'var(--success)' : connecting ? 'var(--stamp-gold)' : 'var(--danger)';
-  const statusLabel = connected ? 'Connected' : connecting ? 'Connecting…' : 'Disconnected';
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', maxWidth: 880, margin: '0 auto', padding: '0 24px', position: 'relative' }}>
-      <div style={{ paddingTop: 24 }}>
+    // `h-full` fills whatever height AppShell's <main> makes available — on
+    // mobile that's already (100dvh - TopBar - bottom tab bar clearance)
+    // thanks to AppShell's own `min-h-dvh` + `pb-16 md:pb-0`, and on desktop
+    // it's the full column height. Because it's all percentage-based off a
+    // dvh root (not a hardcoded 100vh here), this reflows correctly when the
+    // mobile on-screen keyboard opens/closes. Only the message list scrolls;
+    // header and input bar stay put.
+    <div className="relative flex h-full flex-col">
+      {/* Header / session bar */}
+      <div className="shrink-0 border-b border-line px-4 pt-4 md:px-6 md:pt-5">
         <PageHeader
           eyebrow="Assistant / Chat"
-          eyebrowColor="var(--stamp-teal)"
           title={activeSessionSummary ? `Chat — ${activeSessionSummary}` : 'Chat'}
           actions={
             <>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontFamily: 'var(--font-mono)', fontSize: 12, color: statusColor }}>
-                <span style={{ width: 7, height: 7, borderRadius: '50%', background: statusColor, boxShadow: connected ? `0 0 6px ${statusColor}` : 'none' }} />
-                {statusLabel}
+              <span className="inline-flex items-center gap-1.5">
+                {connecting ? (
+                  <Spinner size="sm" label="Connecting" />
+                ) : (
+                  <>
+                    {connected && <PulseDot tone="signal" />}
+                    <Badge tone={connected ? 'teal' : 'danger'}>
+                      {connected ? 'Connected' : 'Disconnected'}
+                    </Badge>
+                  </>
+                )}
               </span>
               {!connected && !connecting && (
-                <button onClick={() => connect()} style={{ fontSize: 12, padding: '4px 12px' }}>
+                <button
+                  onClick={() => connect()}
+                  className="rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-ink-dim hover:border-signal hover:text-ink"
+                >
                   Reconnect
                 </button>
               )}
               <button
                 onClick={openSessionPicker}
-                style={{
-                  fontSize: 12,
-                  padding: '4px 12px',
-                  background: 'var(--ink-800)',
-                  border: '1px solid var(--ink-600)',
-                  borderRadius: 6,
-                  color: 'var(--paper)',
-                  cursor: 'pointer',
-                }}
+                className="rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-ink-dim hover:border-signal hover:text-ink"
               >
-                📋 History
+                History
               </button>
               {activeSessionId !== null && (
                 <button
                   onClick={startNewChat}
-                  style={{
-                    fontSize: 12,
-                    padding: '4px 12px',
-                    background: 'var(--stamp-teal)',
-                    border: 'none',
-                    borderRadius: 6,
-                    color: 'var(--ink-900)',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                  }}
+                  className="rounded-lg bg-signal px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
                 >
                   + New Chat
                 </button>
@@ -281,117 +294,55 @@ const Chat: React.FC = () => {
 
       {/* Sessions Panel (overlay) */}
       {showSessions && (
-        <div style={{
-          position: 'absolute',
-          top: 60,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          zIndex: 50,
-          background: 'rgba(0,0,0,0.7)',
-          backdropFilter: 'blur(4px)',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'flex-start',
-          paddingTop: 40,
-        }} onClick={() => setShowSessions(false)}>
+        <div
+          className="absolute inset-0 z-50 flex items-start justify-center bg-ink/40 pt-10 backdrop-blur-sm"
+          onClick={() => setShowSessions(false)}
+        >
           <div
-            style={{
-              width: '100%',
-              maxWidth: 600,
-              maxHeight: '70vh',
-              background: 'var(--ink-900)',
-              border: '1px solid var(--ink-700)',
-              borderRadius: 12,
-              overflow: 'hidden',
-              display: 'flex',
-              flexDirection: 'column',
-            }}
+            className="flex max-h-[70vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-line bg-surface"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Panel header */}
-            <div style={{
-              padding: '16px 20px',
-              borderBottom: '1px solid var(--ink-700)',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-            }}>
+            <div className="flex items-center justify-between border-b border-line px-5 py-4">
               <div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '0.08em', color: 'var(--stamp-teal)', textTransform: 'uppercase' }}>
-                  Chat History
-                </div>
-                <div style={{ fontSize: 14, color: 'var(--paper)', marginTop: 4 }}>
+                <div className="font-mono text-[11px] uppercase tracking-wider text-signal">Chat History</div>
+                <div className="mt-1 text-sm text-ink">
                   {sessionsLoading ? 'Loading…' : `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`}
                 </div>
               </div>
               <button
                 onClick={() => setShowSessions(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--muted)',
-                  fontSize: 20,
-                  cursor: 'pointer',
-                  padding: '0 4px',
-                }}
+                aria-label="Close"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg p-0 text-muted hover:bg-surface-dim hover:text-ink"
               >
                 ✕
               </button>
             </div>
 
             {/* Session list */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+            <div className="flex-1 overflow-y-auto py-2">
               {sessionsLoading && sessions.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>Loading sessions…</div>
+                <div className="flex justify-center px-6 py-10">
+                  <Spinner label="Loading sessions…" />
+                </div>
               ) : sessions.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 14 }}>
-                  No chat history yet. Start a conversation!
+                <div className="px-6 py-6">
+                  <EmptyState title="No chat history yet" description="Start a conversation to see it appear here." />
                 </div>
               ) : (
                 sessions.map((sess) => (
                   <button
                     key={sess.id}
                     onClick={() => joinSession(sess.id, sess.summary)}
-                    style={{
-                      display: 'block',
-                      width: '100%',
-                      padding: '12px 20px',
-                      background: 'transparent',
-                      border: 'none',
-                      borderBottom: '1px solid var(--ink-800)',
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      color: 'var(--paper)',
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--ink-800)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                    className="block w-full border-b border-line px-5 py-3 text-left hover:bg-surface-dim"
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                      <span style={{
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: 'var(--stamp-teal)',
-                        fontFamily: 'var(--font-mono)',
-                      }}>
-                        #{sess.id}
-                      </span>
-                      <span style={{
-                        fontSize: 11,
-                        color: 'var(--muted)',
-                        fontFamily: 'var(--font-mono)',
-                      }}>
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <span className="font-mono text-[13px] font-semibold text-signal">#{sess.id}</span>
+                      <span className="whitespace-nowrap font-mono text-[11px] text-muted">
                         {formatSessionTime(sess.last_ts)} · {sess.message_count} msgs
                       </span>
                     </div>
-                    <div style={{
-                      fontSize: 13,
-                      color: 'var(--paper-dim)',
-                      lineHeight: 1.4,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}>
+                    <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-ink-dim">
                       {sess.summary || '(empty session)'}
                     </div>
                   </button>
@@ -400,38 +351,16 @@ const Chat: React.FC = () => {
             </div>
 
             {/* Panel footer */}
-            <div style={{
-              padding: '12px 20px',
-              borderTop: '1px solid var(--ink-700)',
-              display: 'flex',
-              justifyContent: 'space-between',
-            }}>
+            <div className="flex items-center justify-between border-t border-line px-5 py-3">
               <button
                 onClick={startNewChat}
-                style={{
-                  fontSize: 13,
-                  padding: '8px 16px',
-                  background: 'var(--stamp-teal)',
-                  border: 'none',
-                  borderRadius: 6,
-                  color: 'var(--ink-900)',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                }}
+                className="rounded-lg bg-signal px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
               >
                 + New Chat
               </button>
               <button
                 onClick={loadSessions}
-                style={{
-                  fontSize: 12,
-                  padding: '6px 12px',
-                  background: 'var(--ink-800)',
-                  border: '1px solid var(--ink-600)',
-                  borderRadius: 6,
-                  color: 'var(--paper)',
-                  cursor: 'pointer',
-                }}
+                className="rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-ink-dim hover:border-signal hover:text-ink"
               >
                 ↻ Refresh
               </button>
@@ -441,106 +370,66 @@ const Chat: React.FC = () => {
       )}
 
       {/* Messages */}
-      <div style={{
-        flex: 1,
-        overflowY: 'auto',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 14,
-        padding: '4px 2px 16px',
-      }}>
-        {messages.length === 0 && (
-          <div style={{ textAlign: 'center', color: 'var(--muted)', marginTop: 80, fontSize: 14 }}>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10, color: 'var(--stamp-teal)' }}>
-              — awaiting input —
-            </div>
-            Start a conversation with Chatty.<br />
-            <span style={{ fontSize: 12 }}>Press Enter to send · Shift+Enter for new line</span>
+      <div className="flex-1 overflow-y-auto px-4 py-4 md:px-6">
+        {messages.length === 0 ? (
+          <div className="mt-16">
+            <EmptyState
+              title="Start a conversation with Chatty"
+              description="Press Enter to send · Shift+Enter for new line"
+            />
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3.5">
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex ${
+                  msg.role === 'user' ? 'justify-end' : msg.role === 'system' ? 'justify-center' : 'justify-start'
+                }`}
+              >
+                {msg.role === 'system' ? (
+                  <div className="rounded-md border border-line bg-surface-dim px-3 py-1 text-center font-mono text-[11px] text-signal">
+                    {msg.content}
+                  </div>
+                ) : (
+                  <div
+                    className={`max-w-[78%] whitespace-pre-wrap break-words rounded-[10px] px-4 py-2.5 text-[14.5px] leading-relaxed ${
+                      msg.role === 'user'
+                        ? 'bg-signal text-white'
+                        : msg.role === 'error'
+                        ? 'border-l-[3px] border-alert-red bg-surface-dim text-alert-red'
+                        : 'border-l-[3px] border-signal bg-surface-dim text-ink'
+                    }`}
+                  >
+                    {msg.content || (msg.streaming ? <BlinkingCursor /> : null)}
+                    {msg.streaming && msg.content && <BlinkingCursor />}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            style={{
-              display: 'flex',
-              justifyContent: msg.role === 'user' ? 'flex-end' : msg.role === 'system' ? 'center' : 'flex-start',
-            }}
-          >
-            {msg.role === 'system' ? (
-              <div style={{
-                fontSize: 11,
-                fontFamily: 'var(--font-mono)',
-                color: 'var(--stamp-teal)',
-                background: 'var(--ink-800)',
-                border: '1px solid var(--ink-700)',
-                borderRadius: 6,
-                padding: '4px 12px',
-                textAlign: 'center',
-              }}>
-                {msg.content}
-              </div>
-            ) : (
-              <div style={{
-                maxWidth: '78%',
-                padding: '11px 16px',
-                borderRadius: 10,
-                background: msg.role === 'user' ? 'var(--ink-700)' : 'var(--ink-800)',
-                borderLeft: msg.role === 'assistant' ? '3px solid var(--stamp-teal)' : msg.role === 'error' ? '3px solid var(--danger)' : 'none',
-                color: msg.role === 'error' ? 'var(--danger)' : 'var(--paper)',
-                fontSize: 14.5,
-                lineHeight: 1.6,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-              }}>
-                {msg.content || (msg.streaming ? <BlinkingCursor /> : null)}
-                {msg.streaming && msg.content && <BlinkingCursor />}
-              </div>
-            )}
-          </div>
-        ))}
         <div ref={bottomRef} />
       </div>
 
       {/* Input */}
-      <div style={{ padding: '10px 0 20px', display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+      <div className="flex shrink-0 items-end gap-2.5 border-t border-line bg-surface px-4 py-3 md:px-6">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
+          onFocus={handleInputFocus}
           placeholder={activeSessionId !== null ? 'Continue the conversation…' : 'Message Chatty…'}
           disabled={!connected}
           rows={1}
-          style={{
-            flex: 1,
-            padding: '11px 16px',
-            borderRadius: 8,
-            border: '1px solid var(--ink-600)',
-            fontSize: 14.5,
-            resize: 'none',
-            outline: 'none',
-            fontFamily: 'inherit',
-            background: connected ? 'var(--ink-800)' : 'var(--ink-900)',
-            color: 'var(--paper)',
-            boxSizing: 'border-box',
-            minHeight: 46,
-            maxHeight: 160,
-            overflowY: 'auto',
-          }}
+          className="min-h-[46px] max-h-40 flex-1 resize-none rounded-lg border border-line bg-bg px-4 py-2.5 text-[14.5px] text-ink outline-none focus:border-signal disabled:opacity-60"
         />
         <button
           onClick={sendMessage}
           disabled={!connected || !input.trim()}
-          style={{
-            padding: '11px 22px',
-            borderRadius: 8,
-            border: 'none',
-            background: connected && input.trim() ? 'var(--stamp-teal)' : 'var(--ink-700)',
-            color: connected && input.trim() ? 'var(--ink-900)' : 'var(--muted)',
-            fontWeight: 700,
-            fontSize: 14,
-            height: 46,
-            whiteSpace: 'nowrap',
-          }}
+          className={`h-[46px] shrink-0 whitespace-nowrap rounded-lg px-5 text-sm font-semibold ${
+            connected && input.trim() ? 'bg-signal text-white hover:opacity-90' : 'bg-surface-dim text-muted'
+          }`}
         >
           Send
         </button>
@@ -550,23 +439,7 @@ const Chat: React.FC = () => {
 };
 
 const BlinkingCursor: React.FC = () => (
-  <span style={{
-    display: 'inline-block',
-    width: 2,
-    height: '1em',
-    background: 'var(--stamp-teal)',
-    marginLeft: 2,
-    verticalAlign: 'text-bottom',
-    animation: 'blink 1s step-end infinite',
-  }} />
+  <span className="ml-0.5 inline-block h-[1em] w-0.5 animate-pulse bg-signal align-text-bottom" />
 );
-
-// Inject blink keyframe once
-if (typeof document !== 'undefined' && !document.getElementById('chatty-blink-style')) {
-  const style = document.createElement('style');
-  style.id = 'chatty-blink-style';
-  style.textContent = '@keyframes blink { 50% { opacity: 0 } }';
-  document.head.appendChild(style);
-}
 
 export default Chat;

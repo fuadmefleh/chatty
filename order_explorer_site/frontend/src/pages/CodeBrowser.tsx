@@ -17,7 +17,8 @@ import { fetchCodeTree, fetchCodeFile } from '../chattyApi';
 import type { CodeTreeEntry, CodeFile } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
-import './CodeBrowser.css';
+import Spinner from '../components/ui/Spinner';
+import EmptyState from '../components/ui/EmptyState';
 
 const formatSize = (bytes: number | null): string => {
   if (bytes === null) return '';
@@ -53,22 +54,28 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   const isExpanded = isDir && expandedDirs.has(entry.path);
   const isLoading = isDir && loadingDirs.has(entry.path);
   const children = isDir ? treeCache[entry.path] : undefined;
+  const isSelected = selectedPath === entry.path;
 
   return (
     <div>
       <div
-        className={`code-tree-row ${isDir ? 'dir' : 'file'}${selectedPath === entry.path ? ' selected' : ''}`}
+        className={`flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border-l-2 py-[3px] px-2 font-mono text-[12.5px] hover:bg-surface-dim ${
+          isSelected ? 'border-signal bg-surface-dim' : 'border-transparent'
+        }`}
         style={{ paddingLeft: 8 + depth * 14 }}
         onClick={() => (isDir ? onToggleDir(entry.path) : onSelectFile(entry.path))}
       >
-        <span className="glyph">{isDir ? (isExpanded ? '▾' : '▸') : ''}</span>
-        <span className="name">{entry.name}</span>
-        {!isDir && <span className="file-size">{formatSize(entry.size)}</span>}
+        <span className="w-3 shrink-0 text-muted">{isDir ? (isExpanded ? '▾' : '▸') : ''}</span>
+        <span className={isDir ? 'font-semibold text-ink' : 'text-ink-dim'}>{entry.name}</span>
+        {!isDir && <span className="ml-auto pl-3 text-[11px] text-muted">{formatSize(entry.size)}</span>}
       </div>
       {isDir && isExpanded && (
         <div>
           {isLoading && (
-            <div className="code-tree-row" style={{ paddingLeft: 8 + (depth + 1) * 14, color: 'var(--muted)' }}>
+            <div
+              className="py-[3px] px-2 font-mono text-[12.5px] text-muted"
+              style={{ paddingLeft: 8 + (depth + 1) * 14 }}
+            >
               loading…
             </div>
           )}
@@ -102,6 +109,12 @@ const CodeBrowser: React.FC = () => {
   const [fileData, setFileData] = useState<CodeFile | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState('');
+
+  // Below the `lg` breakpoint the tree and the code viewer are two separate
+  // views the user switches between (list → detail) rather than two squeezed
+  // side-by-side panels. Ignored entirely at `lg:` and above, where both
+  // panels are always shown.
+  const [mobileView, setMobileView] = useState<'tree' | 'code'>('tree');
 
   useEffect(() => {
     (async () => {
@@ -148,6 +161,7 @@ const CodeBrowser: React.FC = () => {
 
   const handleSelectFile = async (path: string) => {
     setSelectedPath(path);
+    setMobileView('code');
     setFileLoading(true);
     setFileError('');
     setFileData(null);
@@ -167,16 +181,21 @@ const CodeBrowser: React.FC = () => {
   const lineNumbers = Array.from({ length: lineCount }, (_, i) => i + 1).join('\n');
 
   return (
-    <div style={{ maxWidth: 1400, margin: '0 auto', padding: '24px 24px 48px' }}>
-      <PageHeader eyebrow="Assistant / Code" eyebrowColor="var(--stamp-teal)" title="Code" />
+    <div className="mx-auto max-w-[1400px] px-4 pb-12 pt-6 md:px-6">
+      <PageHeader eyebrow="Assistant / Code" eyebrowColor="var(--signal)" title="Code" />
 
-      <div className="code-browser-layout">
-        <Card padding={0}>
-          <div className="code-tree-panel">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+        <Card
+          padding={0}
+          className={`w-full lg:block lg:w-[300px] lg:shrink-0 ${mobileView === 'tree' ? 'block' : 'hidden'}`}
+        >
+          <div className="max-h-[calc(100vh-160px)] overflow-y-auto p-2">
             {rootLoading ? (
-              <p style={{ color: 'var(--muted)', padding: 8, fontSize: 13 }}>Loading…</p>
+              <div className="flex justify-center p-3">
+                <Spinner size="sm" label="Loading tree…" />
+              </div>
             ) : rootError ? (
-              <p style={{ color: 'var(--danger)', padding: 8, fontSize: 13 }}>{rootError}</p>
+              <p className="p-2 text-[13px] text-alert-red">{rootError}</p>
             ) : (
               rootEntries.map((entry) => (
                 <TreeNode
@@ -195,24 +214,40 @@ const CodeBrowser: React.FC = () => {
           </div>
         </Card>
 
-        <Card padding={0}>
-          <div className="code-content-panel">
+        <Card
+          padding={0}
+          className={`w-full min-w-0 lg:block lg:flex-1 ${mobileView === 'code' ? 'block' : 'hidden'}`}
+        >
+          <div className="max-h-[calc(100vh-160px)] overflow-auto">
+            <button
+              type="button"
+              onClick={() => setMobileView('tree')}
+              className="block w-full border-b border-line px-4 py-2.5 text-left font-mono text-[12.5px] font-medium text-signal hover:text-alert-amber lg:hidden"
+            >
+              ← Back to files
+            </button>
             {selectedPath && (
-              <div className="code-content-header">
-                <span>{selectedPath}</span>
-                {fileData && <span className="file-size">{formatSize(fileData.size)}</span>}
+              <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-line bg-surface-dim px-4 py-2.5 font-mono text-[12.5px] text-ink-dim">
+                <span className="truncate">{selectedPath}</span>
+                {fileData && <span className="shrink-0 text-muted">{formatSize(fileData.size)}</span>}
               </div>
             )}
             {!selectedPath ? (
-              <div className="code-empty-state">Select a file to preview its contents.</div>
+              <div className="px-5 py-10">
+                <EmptyState title="No file selected" description="Select a file from the tree to preview its contents." />
+              </div>
             ) : fileLoading ? (
-              <div className="code-empty-state">Loading…</div>
+              <div className="flex justify-center px-5 py-10">
+                <Spinner label="Loading file…" />
+              </div>
             ) : fileError ? (
-              <div className="code-error-state">{fileError}</div>
+              <p className="px-5 py-10 text-center text-[13.5px] text-alert-red">{fileError}</p>
             ) : fileData ? (
-              <div className="code-viewer">
-                <pre className="line-numbers">{lineNumbers}</pre>
-                <pre className="code-body">
+              <div className="flex font-mono text-[12.5px] leading-[1.6]">
+                <pre className="m-0 shrink-0 select-none whitespace-pre border-r border-line bg-surface-dim px-2.5 py-3 text-right text-muted">
+                  {lineNumbers}
+                </pre>
+                <pre className="m-0 min-w-0 flex-1 overflow-x-auto px-4 py-3 text-ink-dim">
                   <code
                     dangerouslySetInnerHTML={{ __html: highlight(fileData.content, fileData.language) }}
                   />

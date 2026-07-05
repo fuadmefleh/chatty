@@ -2,18 +2,14 @@ import type { PropsWithChildren, CSSProperties } from 'react';
 
 interface CardProps {
   style?: CSSProperties;
+  className?: string;
   padding?: number | string;
 }
 
-const Card: React.FC<PropsWithChildren<CardProps>> = ({ children, style, padding = 20 }) => (
+const Card: React.FC<PropsWithChildren<CardProps>> = ({ children, style, className = '', padding = 20 }) => (
   <div
-    style={{
-      background: 'var(--ink-800)',
-      border: '1px solid var(--ink-700)',
-      borderRadius: 10,
-      padding,
-      ...style,
-    }}
+    className={`rounded-xl border border-line bg-surface ${className}`}
+    style={{ padding, ...style }}
   >
     {children}
   </div>

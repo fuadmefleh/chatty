@@ -14,6 +14,10 @@ import type { TooltipItem } from 'chart.js';
 import { Bar } from 'react-chartjs-2';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
+import Badge from '../components/ui/Badge';
+import Spinner from '../components/ui/Spinner';
+import ResponsiveTable from '../components/ui/ResponsiveTable';
+import type { TableColumn } from '../components/ui/ResponsiveTable';
 
 ChartJS.register(
   CategoryScale,
@@ -27,14 +31,54 @@ ChartJS.register(
 type SortField = 'date' | 'source' | 'total';
 type SortDirection = 'asc' | 'desc';
 
-const ROW_ACTIVE = 'var(--ink-750)';
-const ROW_EVEN = 'var(--ink-800)';
-const ROW_ODD = 'var(--ink-900)';
+const SORT_FIELDS: { field: SortField; label: string }[] = [
+  { field: 'date', label: 'Date' },
+  { field: 'source', label: 'Source' },
+  { field: 'total', label: 'Total' },
+];
+
+// Fetches and displays a single order's line items, lazily on first expand,
+// and caches the result in the parent's `itemsCache` so re-expanding is instant.
+const OrderItemsPanel: React.FC<{
+  order: Order;
+  itemsCache: Record<string, Item[]>;
+  onNeedItems: (orderId: string) => void;
+}> = ({ order, itemsCache, onNeedItems }) => {
+  useEffect(() => {
+    onNeedItems(order.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order.id]);
+
+  const items = itemsCache[order.id];
+
+  return (
+    <div>
+      <div className="mb-2 font-mono text-[11px] uppercase tracking-wider text-muted">Order items</div>
+      {items ? (
+        items.length > 0 ? (
+          <ul className="flex flex-col gap-1.5">
+            {items.map((item, idx) => (
+              <li key={idx} className="text-sm text-ink-dim">
+                <span className="font-medium text-ink">{item.name}</span>{' '}
+                <span className="font-mono text-muted">${item.price}</span> x {item.quantity} ={' '}
+                <span className="font-mono font-semibold text-ink">${item.total_price}</span>
+                <span className="ml-2 text-xs text-muted">({item.category})</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted">No details available.</p>
+        )
+      ) : (
+        <Spinner size="sm" label="Loading items…" />
+      )}
+    </div>
+  );
+};
 
 const Orders: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [orderItems, setOrderItems] = useState<Record<string, Item[]>>({});
   const [sortField, setSortField] = useState<SortField>('date');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
@@ -55,28 +99,23 @@ const Orders: React.FC = () => {
     }
   };
 
-  const getSortIcon = (field: SortField) => {
-    if (sortField !== field) return ' ⇅';
-    return sortDirection === 'asc' ? ' ↑' : ' ↓';
+  const handleNeedItems = (orderId: string) => {
+    setOrderItems(prev => {
+      if (prev[orderId]) return prev;
+      fetchOrderItems(orderId)
+        .then(items => setOrderItems(cur => ({ ...cur, [orderId]: items })))
+        .catch(err => console.error('Failed to fetch items', err));
+      return prev;
+    });
   };
 
-  const toggleOrder = async (orderId: string) => {
-    if (expandedOrderId === orderId) {
-      setExpandedOrderId(null);
-    } else {
-      setExpandedOrderId(orderId);
-      if (!orderItems[orderId]) {
-        try {
-          const items = await fetchOrderItems(orderId);
-          setOrderItems(prev => ({ ...prev, [orderId]: items }));
-        } catch (err) {
-          console.error("Failed to fetch items", err);
-        }
-      }
-    }
-  };
-
-  if (loading) return <div style={{ padding: 24, color: 'var(--muted)' }}>Loading orders…</div>;
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-[1200px] px-4 py-6 md:px-6">
+        <Spinner label="Loading orders…" />
+      </div>
+    );
+  }
 
   // Aggregate for timeline (Monthly)
   const monthlyData = orders.reduce((acc, order) => {
@@ -152,119 +191,74 @@ const Orders: React.FC = () => {
     return sortDirection === 'asc' ? comparison : -comparison;
   });
 
+  const columns: TableColumn<Order>[] = [
+    {
+      key: 'date',
+      header: 'Date',
+      primary: true,
+      render: (o) => <span className="font-mono">{o.date}</span>,
+    },
+    {
+      key: 'source',
+      header: 'Source',
+      render: (o) => <Badge tone="gold">{o.source}</Badge>,
+    },
+    {
+      key: 'original_id',
+      header: 'Order ID',
+      render: (o) => <span className="font-mono text-xs text-muted">{o.original_id}</span>,
+    },
+    {
+      key: 'items_summary',
+      header: 'Details',
+      render: (o) => <span className="text-ink-dim">{o.items_summary || 'View items'}</span>,
+    },
+    {
+      key: 'total',
+      header: 'Total',
+      className: 'text-right',
+      render: (o) => <span className="font-mono font-semibold text-ink">${o.total.toFixed(2)}</span>,
+    },
+  ];
+
   return (
-    <div style={{ padding: '24px 24px 48px' }}>
+    <div className="mx-auto max-w-[1200px] px-4 py-6 md:px-6">
       <PageHeader eyebrow="Ledger / Orders" title="Order timeline" />
 
-      <Card style={{ marginBottom: 32 }}>
-        <div style={{ height: '360px' }}>
+      <Card className="mb-8">
+        <div className="h-64 sm:h-80 md:h-96">
           <Bar data={chartData} options={chartOptions} />
         </div>
       </Card>
 
-      <h2 style={{ fontSize: 16, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 16 }}>
-        All orders
-      </h2>
-      <div style={{ overflowX: 'auto', border: '1px solid var(--ink-700)', borderRadius: 10 }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ background: 'var(--ink-800)' }}>
-              <th
-                onClick={() => handleSort('date')}
-                style={{ padding: '13px 14px', textAlign: 'left', fontWeight: 600, fontSize: 12, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--muted)', cursor: 'pointer', userSelect: 'none' }}
-              >
-                Date{getSortIcon('date')}
-              </th>
-              <th
-                onClick={() => handleSort('source')}
-                style={{ padding: '13px 14px', textAlign: 'left', fontWeight: 600, fontSize: 12, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--muted)', cursor: 'pointer', userSelect: 'none' }}
-              >
-                Source{getSortIcon('source')}
-              </th>
-              <th style={{ padding: '13px 14px', textAlign: 'left', fontWeight: 600, fontSize: 12, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--muted)' }}>Order ID</th>
-              <th style={{ padding: '13px 14px', textAlign: 'left', fontWeight: 600, fontSize: 12, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--muted)' }}>Details</th>
-              <th
-                onClick={() => handleSort('total')}
-                style={{ padding: '13px 14px', textAlign: 'right', fontWeight: 600, fontSize: 12, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--muted)', cursor: 'pointer', userSelect: 'none' }}
-              >
-                Total{getSortIcon('total')}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedOrders.map((order, idx) => (
-              <React.Fragment key={order.id}>
-                <tr
-                  style={{
-                    backgroundColor: expandedOrderId === order.id ? ROW_ACTIVE : idx % 2 === 0 ? ROW_EVEN : ROW_ODD,
-                    transition: 'background-color 0.15s'
-                  }}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = ROW_ACTIVE}
-                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = expandedOrderId === order.id ? ROW_ACTIVE : idx % 2 === 0 ? ROW_EVEN : ROW_ODD}
-                >
-                  <td style={{ padding: '13px 14px', borderTop: '1px solid var(--ink-700)', fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--paper)' }}>{order.date}</td>
-                  <td style={{ padding: '13px 14px', borderTop: '1px solid var(--ink-700)' }}>
-                    <span style={{
-                      background: 'rgba(200, 155, 60, 0.15)',
-                      color: 'var(--stamp-gold)',
-                      padding: '3px 10px',
-                      borderRadius: 12,
-                      fontSize: 12,
-                      fontWeight: 600
-                    }}>
-                      {order.source}
-                    </span>
-                  </td>
-                  <td style={{ padding: '13px 14px', borderTop: '1px solid var(--ink-700)', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--muted)' }}>{order.original_id}</td>
-                  <td style={{ padding: '13px 14px', borderTop: '1px solid var(--ink-700)' }}>
-                    <span
-                      onClick={() => toggleOrder(order.id)}
-                      style={{
-                        cursor: 'pointer',
-                        color: 'var(--stamp-teal)',
-                        fontWeight: 500,
-                        borderBottom: '1px solid transparent',
-                      }}
-                      onMouseEnter={(e) => e.currentTarget.style.borderBottom = '1px solid var(--stamp-teal)'}
-                      onMouseLeave={(e) => e.currentTarget.style.borderBottom = '1px solid transparent'}
-                    >
-                      {order.items_summary || "View items"}
-                    </span>
-                  </td>
-                  <td style={{ padding: '13px 14px', borderTop: '1px solid var(--ink-700)', textAlign: 'right', fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--paper)' }}>
-                    ${order.total.toFixed(2)}
-                  </td>
-                </tr>
-                {expandedOrderId === order.id && (
-                  <tr>
-                    <td colSpan={5} style={{ padding: '18px', background: 'var(--ink-900)', borderTop: '1px solid var(--ink-700)' }}>
-                      <strong style={{ color: 'var(--stamp-gold)', fontSize: 12, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Order items</strong>
-                      {orderItems[order.id] ? (
-                        <ul style={{ marginTop: '10px', marginLeft: '20px', padding: 0 }}>
-                          {orderItems[order.id].length > 0 ? (
-                            orderItems[order.id].map((item, idx) => (
-                              <li key={idx} style={{ marginBottom: '6px', color: 'var(--paper-dim)', fontSize: 13.5 }}>
-                                <span style={{ fontWeight: 500, color: 'var(--paper)' }}>{item.name}</span> -
-                                <span style={{ color: 'var(--muted)', fontFamily: 'var(--font-mono)' }}> ${item.price}</span> x {item.quantity} =
-                                <span style={{ fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--paper)' }}> ${item.total_price}</span>
-                                <span style={{ marginLeft: '8px', fontSize: '12px', color: 'var(--muted)' }}>({item.category})</span>
-                              </li>
-                            ))
-                          ) : (
-                            <li style={{ color: 'var(--muted)' }}>No details available.</li>
-                          )}
-                        </ul>
-                      ) : (
-                        <div style={{ marginTop: '10px', color: 'var(--muted)' }}>Loading items…</div>
-                      )}
-                    </td>
-                  </tr>
-                )}
-              </React.Fragment>
-            ))}
-          </tbody>
-        </table>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="font-mono text-sm uppercase tracking-wider text-muted">All orders</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-[11px] uppercase tracking-wider text-muted">Sort</span>
+          {SORT_FIELDS.map(({ field, label }) => (
+            <button
+              key={field}
+              type="button"
+              onClick={() => handleSort(field)}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                sortField === field ? 'bg-signal text-white' : 'bg-surface-dim text-muted'
+              }`}
+            >
+              {label} {sortField === field ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
+            </button>
+          ))}
+        </div>
       </div>
+
+      <ResponsiveTable
+        columns={columns}
+        rows={sortedOrders}
+        rowKey={(o) => o.id}
+        expandedContent={(o) => (
+          <OrderItemsPanel order={o} itemsCache={orderItems} onNeedItems={handleNeedItems} />
+        )}
+        emptyTitle="No orders yet"
+      />
     </div>
   );
 };

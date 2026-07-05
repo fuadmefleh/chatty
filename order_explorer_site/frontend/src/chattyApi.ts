@@ -75,6 +75,7 @@ export interface ChattyTranscription {
   source: string;
   mined: boolean;
   has_audio: boolean;
+  has_segments: boolean;
 }
 
 export const fetchTranscriptions = async (includeArchived = false): Promise<ChattyTranscription[]> => {
@@ -96,6 +97,71 @@ export const fetchTranscriptionAudioUrl = async (id: string): Promise<string> =>
     responseType: 'blob',
   });
   return URL.createObjectURL(res.data);
+};
+
+// ── Speakers (named voice roster + per-transcript labeling) ─────────────────
+// Speaker identification/labeling - like tagging faces in photos, but for
+// voices. A transcript's diarized segments start out tagged with generic
+// ids (e.g. "SPEAKER_00"); labeling one resolves it to a real name here and
+// going forward, and retroactively relabels other transcripts with the same
+// voice (see also_updated_count on labelSpeaker's response).
+export interface ChattySpeaker {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  num_samples: number;
+  sample_transcription_id: string | null;
+  sample_start: number | null;
+  sample_end: number | null;
+}
+
+export interface TranscriptSegment {
+  start: number | null;
+  end: number | null;
+  local_speaker: string | null;
+  speaker_name: string | null;
+  text: string;
+}
+
+export const fetchSpeakers = async (): Promise<ChattySpeaker[]> => {
+  const res = await chattyApi.get<ChattySpeaker[]>('/api/chatty/speakers');
+  return res.data;
+};
+
+export const renameSpeaker = async (id: string, name: string): Promise<ChattySpeaker> => {
+  const res = await chattyApi.put<ChattySpeaker>(`/api/chatty/speakers/${id}`, { name });
+  return res.data;
+};
+
+export const deleteSpeaker = async (id: string): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/speakers/${id}`);
+};
+
+export const fetchTranscriptionSegments = async (id: string): Promise<TranscriptSegment[]> => {
+  const res = await chattyApi.get<{ segments: TranscriptSegment[] }>(`/api/chatty/transcriptions/${id}/segments`);
+  return res.data.segments;
+};
+
+export const labelSpeaker = async (
+  transcriptionId: string,
+  localSpeaker: string,
+  opts: { name?: string; speakerId?: string },
+): Promise<{ speaker: ChattySpeaker; also_updated_count: number }> => {
+  const res = await chattyApi.post(`/api/chatty/transcriptions/${transcriptionId}/label`, {
+    local_speaker: localSpeaker,
+    name: opts.name,
+    speaker_id: opts.speakerId,
+  });
+  return res.data;
+};
+
+// Manually sweeps every transcript's unmatched speaker embeddings against
+// the full roster right now, rather than waiting for the next label action
+// to trigger it as a side effect - e.g. after loosening SPEAKER_MATCH_THRESHOLD.
+export const rescanSpeakers = async (): Promise<{ updated_count: number }> => {
+  const res = await chattyApi.post('/api/chatty/speakers/rescan');
+  return res.data;
 };
 
 // ── Watchlist ────────────────────────────────────────────────────────────────
@@ -179,6 +245,16 @@ export interface MemoryData {
 export const fetchChattyMemory = async (days = 7): Promise<MemoryData> => {
   const res = await chattyApi.get<MemoryData>('/api/chatty/memory', { params: { days } });
   return res.data;
+};
+
+export const searchChattyMemory = async (q: string): Promise<string> => {
+  const res = await chattyApi.get<{ results: string }>('/api/chatty/memory/search', { params: { q } });
+  return res.data.results;
+};
+
+export const triggerMemoryConsolidation = async (): Promise<string> => {
+  const res = await chattyApi.post<{ result: string }>('/api/chatty/memory/consolidate');
+  return res.data.result;
 };
 
 // ── Code Browser ─────────────────────────────────────────────────────────────
@@ -267,7 +343,7 @@ export const fetchSessionMessages = async (sessionId: number): Promise<ChatMessa
 
 // ── Feature Requests (Pi agent) ────────────────────────────────────────────────
 export type FeatureRequestStatus = 'queued' | 'running' | 'testing' | 'completed' | 'error';
-export type FeatureRequestSource = 'user' | 'self_upgrade';
+export type FeatureRequestSource = 'user' | 'self_upgrade' | 'github_trending';
 
 export interface FeatureRequest {
   id: string;
@@ -294,6 +370,112 @@ export const createFeatureRequest = async (prompt: string): Promise<FeatureReque
 
 export const deleteFeatureRequest = async (id: string): Promise<void> => {
   await chattyApi.delete(`/api/chatty/requests/${id}`);
+};
+
+// ── Trending Suggestions (GitHub trending scan, curated every few hours) ──────
+export type TrendingSuggestionStatus = 'pending' | 'implemented' | 'dismissed';
+
+export interface TrendingSuggestion {
+  id: string;
+  repo: string;
+  repo_url: string;
+  description: string;
+  language: string;
+  stars: string;
+  rationale: string;
+  integration_prompt: string;
+  status: TrendingSuggestionStatus;
+  created_at: string;
+  updated_at: string;
+  request_id: string | null;
+}
+
+export const fetchTrendingSuggestions = async (): Promise<TrendingSuggestion[]> => {
+  const res = await chattyApi.get<TrendingSuggestion[]>('/api/chatty/trending-suggestions');
+  return res.data;
+};
+
+export const scanTrendingSuggestions = async (): Promise<TrendingSuggestion[]> => {
+  const res = await chattyApi.post<TrendingSuggestion[]>('/api/chatty/trending-suggestions/scan');
+  return res.data;
+};
+
+export const implementTrendingSuggestion = async (id: string): Promise<TrendingSuggestion> => {
+  const res = await chattyApi.post<TrendingSuggestion>(`/api/chatty/trending-suggestions/${id}/implement`);
+  return res.data;
+};
+
+export const dismissTrendingSuggestion = async (id: string): Promise<TrendingSuggestion> => {
+  const res = await chattyApi.post<TrendingSuggestion>(`/api/chatty/trending-suggestions/${id}/dismiss`);
+  return res.data;
+};
+
+export const deleteTrendingSuggestion = async (id: string): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/trending-suggestions/${id}`);
+};
+
+// ── Server Health ───────────────────────────────────────────────────────────
+export interface HealthCPU {
+  logical_cores: number;
+  physical_cores: number;
+  overall_percent: number;
+  per_core_percent: number[];
+  load_average: { "1m": number; "5m": number; "15m": number };
+}
+
+export interface HealthMemory {
+  total_bytes: number;
+  used_bytes: number;
+  available_bytes: number;
+  percent: number;
+}
+
+export interface HealthDisk {
+  device: string;
+  mountpoint: string;
+  fstype: string;
+  total_bytes: number;
+  used_bytes: number;
+  free_bytes: number;
+  percent: number;
+}
+
+export interface HealthNetwork {
+  bytes_sent: number;
+  bytes_recv: number;
+  packets_sent: number;
+  packets_recv: number;
+}
+
+export interface HealthGPU {
+  name: string;
+  memory_used_miB: number;
+  memory_total_miB: number;
+  gpu_util_percent: number;
+  mem_util_percent: number;
+  temperature_c: number;
+  power_draw_w: number;
+  power_limit_w: number;
+  clock_gr_mhz: number;
+  clock_mem_mhz: number;
+  driver_version: string;
+}
+
+export interface ServerHealth {
+  cpu: HealthCPU;
+  memory: HealthMemory;
+  swap: HealthMemory;
+  disks: HealthDisk[];
+  network: HealthNetwork;
+  gpus: HealthGPU[];
+  boot_time: string;
+  uptime_seconds: number;
+  timestamp: string;
+}
+
+export const fetchServerHealth = async (): Promise<ServerHealth> => {
+  const res = await chattyApi.get<ServerHealth>('/api/chatty/health/server');
+  return res.data;
 };
 
 export default chattyApi;
