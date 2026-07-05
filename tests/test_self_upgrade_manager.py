@@ -309,6 +309,58 @@ async def test_run_self_upgrade_retries_when_commit_rejected_by_hook():
     assert mock_run.await_count == 1
 
 
+def test_is_infra_failure_detects_missing_binary():
+    assert sum_._is_infra_failure("venv/bin/ruff: No such file or directory") is True
+    assert sum_._is_infra_failure("bash: npx: command not found") is True
+    assert sum_._is_infra_failure("venv/bin/python: Permission denied") is True
+
+
+def test_is_infra_failure_false_for_real_lint_or_test_output():
+    assert sum_._is_infra_failure("foo.py:3:1: F821 undefined name 'bar'") is False
+    assert sum_._is_infra_failure("1 failed, 4 passed in 0.42s") is False
+
+
+@pytest.mark.asyncio
+async def test_run_self_upgrade_fails_fast_on_infra_failure_without_retry():
+    """A commit rejection that's actually a broken toolchain (e.g. the
+    pre-commit hook once resolving venv/ruff against the wrong worktree, see
+    .githooks/pre-commit) must not be treated as a fixable lint/test failure
+    - the Pi agent can't fix a missing binary by editing code, so retrying
+    just burns every attempt on the same doomed commit."""
+    frm, request = make_feature_requests_manager()
+    send = AsyncMock()
+    pi_call_count = 0
+
+    async def fake_run_pi_agent(prompt, cwd=None):
+        nonlocal pi_call_count
+        pi_call_count += 1
+        yield {"type": "file_change", "content": "Editing: src/foo.py"}
+        yield {"type": "completed", "content": "done"}
+
+    with patch("src.managers.self_upgrade_manager.pi_lock.acquire", return_value=True), \
+         patch("src.managers.self_upgrade_manager.pi_lock.release"), \
+         patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git, \
+         patch("src.managers.self_upgrade_manager._run", new_callable=AsyncMock) as mock_run, \
+         patch("src.managers.self_upgrade_manager.run_pi_agent", fake_run_pi_agent), \
+         patch("src.managers.self_upgrade_manager._cleanup_worktree", new_callable=AsyncMock), \
+         patch("src.managers.self_upgrade_manager._restart_services"), \
+         patch("src.managers.self_upgrade_manager.config.SELF_UPGRADE_MAX_TEST_ATTEMPTS", 3):
+
+        mock_git.side_effect = [
+            (0, ""),                                                        # worktree prune
+            (0, ""),                                                        # worktree add
+            (0, ""),                                                        # add -A
+            (1, ""),                                                        # diff --cached --quiet -> has a diff
+            (1, "venv/bin/ruff: No such file or directory\nFAILED"),        # commit rejected - infra, not lint
+        ]
+
+        result = await sum_.run_self_upgrade("fix a bug", frm, send, "user1")
+
+    assert pi_call_count == 1  # no retry attempted
+    assert result is not None and "failed" in result.lower()
+    mock_run.assert_not_awaited()  # never even got to the pytest step
+
+
 @pytest.mark.asyncio
 async def test_run_self_upgrade_retries_when_test_coverage_missing():
     """Passing tests aren't enough - a source-only change should be sent back for a test."""

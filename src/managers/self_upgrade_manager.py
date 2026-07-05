@@ -153,6 +153,25 @@ test, just to make the gate pass. Details:
 {_CONVENTIONS}"""
 
 
+# Substrings that indicate a hook/toolchain failed to even run (wrong path,
+# missing binary, permissions) rather than reporting a real lint/test
+# problem with the generated diff - e.g. the pre-commit hook once resolved
+# venv/ruff relative to the worktree instead of the shared main checkout,
+# so every commit failed with "No such file or directory" and looked like a
+# lint failure. Feeding that back to the coding agent as "fix this" just
+# burns retry attempts, since it can't fix a missing binary by editing code.
+_INFRA_FAILURE_MARKERS = (
+    "no such file or directory",
+    "permission denied",
+    "command not found",
+)
+
+
+def _is_infra_failure(hook_output: str) -> bool:
+    lowered = hook_output.lower()
+    return any(marker in lowered for marker in _INFRA_FAILURE_MARKERS)
+
+
 def _missing_test_coverage(changed_files: List[str]) -> bool:
     """True if source files changed but no tests/ file changed alongside them."""
     source_files = [
@@ -381,6 +400,11 @@ async def run_self_upgrade(
             rc, out = await _git(["commit", "-m", commit_msg], cwd=worktree_dir)
             feature_requests_manager.append_log(request.id, f"commit (attempt {attempt}):\n{out[-2000:]}")
             if rc != 0:
+                if _is_infra_failure(out):
+                    return await fail(
+                        f"Commit rejected by pre-commit hook due to what looks like a broken "
+                        f"toolchain/environment, not a problem with the generated code. Tail:\n{out[-500:]}"
+                    )
                 # The pre-commit hook (lint + full test suite) rejected this -
                 # same retry mechanism as a post-commit test failure below.
                 if attempt >= max_attempts:
@@ -397,6 +421,11 @@ async def run_self_upgrade(
             )
             feature_requests_manager.append_log(request.id, f"pytest (attempt {attempt}):\n{out[-2000:]}")
             if rc != 0:
+                if _is_infra_failure(out):
+                    return await fail(
+                        f"Test suite failed to even run due to what looks like a broken "
+                        f"toolchain/environment, not a problem with the generated code. Tail:\n{out[-500:]}"
+                    )
                 if attempt >= max_attempts:
                     return await fail(f"Test suite failed after {attempt} attempt(s) (exit {rc}). Tail:\n{out[-500:]}")
                 feature_requests_manager.update(request.id, status="running")
@@ -587,6 +616,12 @@ async def run_feature_request(
     rc, out = await _git(["commit", "-m", commit_msg], cwd=worktree_dir)
     feature_requests_manager.append_log(request_id, f"commit:\n{out[-2000:]}")
     if rc != 0:
+        if _is_infra_failure(out):
+            return await fail(
+                f"Commit rejected by pre-commit hook due to what looks like a broken "
+                f"toolchain/environment, not a problem with the generated code. "
+                f"Branch `{branch}` preserved. Tail:\n{out[-500:]}"
+            )
         return await fail(f"Commit rejected by pre-commit hook (lint/tests). Branch `{branch}` preserved. Tail:\n{out[-500:]}")
 
     feature_requests_manager.update(request_id, status="testing")
