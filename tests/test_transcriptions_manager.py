@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from skills.transcriptions.transcriptions_manager import TranscriptionsManager
+from skills.transcriptions.transcriptions_manager import TranscriptionsManager, render_segments
 
 
 def make_manager():
@@ -67,6 +67,102 @@ def test_delete_transcription():
 def test_delete_unknown_transcription_returns_false():
     mgr = make_manager()
     assert mgr.delete_transcription("user1", "no-such-id") is False
+
+
+def test_render_segments_resolves_labels_and_falls_back_to_local_speaker():
+    segments = [
+        {"start": 0.0, "end": 1.0, "local_speaker": "SPEAKER_00", "text": "hi"},
+        {"start": 1.0, "end": 2.0, "local_speaker": "SPEAKER_01", "text": "hello"},
+    ]
+    assert render_segments(segments) == "SPEAKER_00: hi\nSPEAKER_01: hello"
+    assert render_segments(segments, {"SPEAKER_00": "Fuad"}) == "Fuad: hi\nSPEAKER_01: hello"
+
+
+def test_render_segments_skips_empty_text_and_bare_lines_without_speaker():
+    segments = [
+        {"start": 0.0, "end": 1.0, "local_speaker": None, "text": "no speaker info"},
+        {"start": 1.0, "end": 2.0, "local_speaker": "SPEAKER_00", "text": ""},
+    ]
+    assert render_segments(segments) == "no speaker info"
+
+
+def test_add_transcription_with_segments_exposes_has_segments():
+    mgr = make_manager()
+    segments = [{"start": 0.0, "end": 1.0, "local_speaker": "SPEAKER_00", "text": "hi"}]
+    t = mgr.add_transcription(
+        "user1", "SPEAKER_00: hi", segments=segments,
+        speaker_embeddings={"SPEAKER_00": [0.1, 0.2]},
+    )
+    assert t.to_dict()["has_segments"] is True
+
+    plain = mgr.add_transcription("user1", "no segments here")
+    assert plain.to_dict()["has_segments"] is False
+
+
+def test_update_transcription_regenerates_content_from_labels():
+    mgr = make_manager()
+    segments = [
+        {"start": 0.0, "end": 1.0, "local_speaker": "SPEAKER_00", "text": "hi"},
+        {"start": 1.0, "end": 2.0, "local_speaker": "SPEAKER_01", "text": "hello"},
+    ]
+    t = mgr.add_transcription("user1", render_segments(segments), segments=segments)
+
+    updated = mgr.update_transcription("user1", t.id, speaker_labels={"SPEAKER_00": "Fuad"})
+
+    assert updated.content == "Fuad: hi\nSPEAKER_01: hello"
+    assert mgr.get_pending("user1")[0].content == "Fuad: hi\nSPEAKER_01: hello"
+
+
+def test_update_transcription_preserves_header_prefix():
+    mgr = make_manager()
+    segments = [{"start": 0.0, "end": 1.0, "local_speaker": "SPEAKER_00", "text": "hi"}]
+    header = "[2026-01-01T00:00:00.000Z] (device abc, 5.0s audio)"
+    t = mgr.add_transcription(
+        "user1", f"{header} SPEAKER_00: hi", segments=segments, header=header,
+    )
+
+    updated = mgr.update_transcription("user1", t.id, speaker_labels={"SPEAKER_00": "Fuad"})
+
+    assert updated.content == f"{header} Fuad: hi"
+
+
+def test_update_transcription_finds_archived_records_too():
+    mgr = make_manager()
+    segments = [{"start": 0.0, "end": 1.0, "local_speaker": "SPEAKER_00", "text": "hi"}]
+    t = mgr.add_transcription("user1", render_segments(segments), segments=segments)
+    mgr.archive("user1", [t.id])
+
+    updated = mgr.update_transcription("user1", t.id, speaker_labels={"SPEAKER_00": "Fuad"})
+
+    assert updated is not None
+    assert mgr.get_archived("user1")[0].content == "Fuad: hi"
+
+
+def test_update_transcription_unknown_id_returns_none():
+    mgr = make_manager()
+    assert mgr.update_transcription("user1", "no-such-id", speaker_labels={}) is None
+
+
+def test_update_transcriptions_batch_touches_multiple_records_across_both_files():
+    mgr = make_manager()
+    segments = [{"start": 0.0, "end": 1.0, "local_speaker": "SPEAKER_00", "text": "hi"}]
+    pending_t = mgr.add_transcription("user1", render_segments(segments), segments=segments)
+    archived_t = mgr.add_transcription("user1", render_segments(segments), segments=segments)
+    mgr.archive("user1", [archived_t.id])
+
+    touched = mgr.update_transcriptions_batch("user1", {
+        pending_t.id: {"speaker_labels": {"SPEAKER_00": "Fuad"}},
+        archived_t.id: {"speaker_labels": {"SPEAKER_00": "Sarah"}},
+    })
+
+    assert touched == 2
+    assert mgr.get_pending("user1")[0].content == "Fuad: hi"
+    assert mgr.get_archived("user1")[0].content == "Sarah: hi"
+
+
+def test_update_transcriptions_batch_empty_updates_is_noop():
+    mgr = make_manager()
+    assert mgr.update_transcriptions_batch("user1", {}) == 0
 
 
 def test_save_audio_remuxes_caf_into_playable_mp4():
