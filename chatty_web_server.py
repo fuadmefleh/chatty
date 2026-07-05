@@ -15,14 +15,18 @@ Provides REST + WebSocket endpoints for:
 import asyncio
 import base64
 import fnmatch
+import hmac
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Tuple
+import contextlib
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 from fastapi import (
@@ -122,9 +126,53 @@ async def startup_event():
 
 
 # ── Auth dependency ──────────────────────────────────────────────────────────
-async def require_api_key(x_api_key: str = Header(default="")):
-    if x_api_key != API_KEY:
+# Per-IP lockout to make the API key impractical to brute force: too many
+# wrong guesses in a short window locks that IP out for a cooldown period,
+# regardless of whether the latest guess was correct.
+AUTH_MAX_ATTEMPTS = 5
+AUTH_WINDOW_SECONDS = 60
+AUTH_LOCKOUT_SECONDS = 300
+
+_auth_failures: Dict[str, List[float]] = defaultdict(list)
+_auth_locked_until: Dict[str, float] = {}
+
+
+def _client_ip(request: Request) -> str:
+    # nginx (docker/nginx/default.conf) sets X-Real-IP for every proxied
+    # request; request.client.host would otherwise just be the nginx hop.
+    return request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+
+
+async def require_api_key(request: Request, x_api_key: str = Header(default="")):
+    ip = _client_ip(request)
+    now = time.monotonic()
+
+    locked_until = _auth_locked_until.get(ip)
+    if locked_until is not None:
+        if now < locked_until:
+            retry_after = int(locked_until - now) + 1
+            raise HTTPException(
+                status_code=429,
+                detail="Too many invalid API key attempts. Try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        del _auth_locked_until[ip]
+
+    if not hmac.compare_digest(x_api_key, API_KEY):
+        attempts = [t for t in _auth_failures[ip] if now - t < AUTH_WINDOW_SECONDS]
+        attempts.append(now)
+        _auth_failures[ip] = attempts
+        if len(attempts) >= AUTH_MAX_ATTEMPTS:
+            _auth_locked_until[ip] = now + AUTH_LOCKOUT_SECONDS
+            del _auth_failures[ip]
+            raise HTTPException(
+                status_code=429,
+                detail="Too many invalid API key attempts. Try again later.",
+                headers={"Retry-After": str(AUTH_LOCKOUT_SECONDS)},
+            )
         raise HTTPException(status_code=401, detail="Invalid API key")
+
+    _auth_failures.pop(ip, None)
 
 
 # ── Health / root ─────────────────────────────────────────────────────────────
@@ -1224,6 +1272,10 @@ async def get_system():
 
 
 # ── Chat Sessions ─────────────────────────────────────────────────────────────
+class SessionRename(BaseModel):
+    title: str
+
+
 @app.get("/api/chatty/sessions", dependencies=[Depends(require_api_key)])
 async def get_sessions():
     """List conversation sessions (newest first)."""
@@ -1239,6 +1291,7 @@ async def get_sessions():
             "last_ts": s["last_ts"],
             "message_count": s["message_count"],
             "summary": s["summary"],
+            "title": s["title"],
         })
     return result
 
@@ -1252,7 +1305,42 @@ async def get_session_messages(session_id: int):
     return messages
 
 
+@app.put("/api/chatty/sessions/{session_id}", dependencies=[Depends(require_api_key)])
+async def rename_session(session_id: int, body: SessionRename):
+    """Set a custom title for a session (stored separately from its auto-computed summary)."""
+    from src.core.memory import ConversationHistoryManager
+    mgr = ConversationHistoryManager(WEB_USER_ID)
+    sessions = await mgr.get_sessions()
+    if not (0 <= session_id < len(sessions)):
+        raise HTTPException(status_code=404, detail="Session not found")
+    await mgr.set_session_title(sessions[session_id]["first_ts"], body.title)
+    return {"id": session_id, "title": body.title}
+
+
+@app.delete("/api/chatty/sessions/{session_id}", dependencies=[Depends(require_api_key)])
+async def delete_session(session_id: int):
+    """Delete a session."""
+    from src.core.memory import ConversationHistoryManager
+    mgr = ConversationHistoryManager(WEB_USER_ID)
+    ok = await mgr.delete_session(session_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"deleted": True}
+
+
 # ── WebSocket Chat ────────────────────────────────────────────────────────────
+# Protocol (client -> server): {"type": "message", "text": ...}
+#                               {"type": "stop"}
+#                               {"type": "regenerate"}
+#                               {"type": "edit_resend", "text": ...}
+# Protocol (server -> client): {"type": "session_loaded", ...}
+#                               {"type": "chunk", "text": ...}
+#                               {"type": "done"}
+#                               {"type": "stopped"}
+#                               {"type": "error", "text": ...}
+_WS_DISCONNECT = object()  # queue sentinel: the websocket has disconnected
+
+
 @app.websocket("/api/chatty/chat")
 async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""), session_id: str = Query(default="")):
     if api_key != API_KEY:
@@ -1290,38 +1378,178 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
         "message_count": len(agent._history) if active_session_id is not None else 0,
     }))
 
+    # A dedicated receiver task decouples "read the next frame" from "consume a
+    # streaming response", so a control frame (e.g. "stop") can be observed while
+    # a generation is in flight. Frames are handed off through a queue; a sentinel
+    # marks disconnection so it can flow through the same queue as normal frames.
+    queue: "asyncio.Queue" = asyncio.Queue()
+
+    async def receiver():
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                await queue.put(raw)
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.error(f"WS receiver error for user {WEB_USER_ID}: {e}")
+        finally:
+            await queue.put(_WS_DISCONNECT)
+
+    receiver_task = asyncio.create_task(receiver())
+    stream_task: Optional[asyncio.Task] = None
+
+    async def run_agent_stream(gen, holder: Dict[str, str]):
+        """Forward chunks and accumulate full text. Never sends done/error/stopped itself."""
+        async for chunk in gen:
+            holder["text"] += chunk
+            try:
+                await websocket.send_text(json.dumps({"type": "chunk", "text": chunk}))
+            except Exception:
+                # Client socket may already be dead; keep generating so the full
+                # response still gets persisted even if the client never sees it.
+                pass
+
+    async def finalize_stream(mode: str, user_text: Optional[str], task: asyncio.Task, holder: Dict[str, str]):
+        """Await a finished/cancelled/errored stream task, persist, and send exactly
+        one control frame. This is the single place that does either, to avoid
+        concurrent send_text calls on the same socket."""
+        status = "done"
+        error_text = None
+        try:
+            await task
+        except asyncio.CancelledError:
+            status = "stopped"
+        except Exception as e:
+            status = "error"
+            error_text = str(e)
+
+        response_text = holder["text"]
+        try:
+            if mode == "message":
+                await history_mgr.append(user_text, response_text)
+            elif mode == "regenerate":
+                await history_mgr.replace_last_assistant(response_text)
+            elif mode == "edit_resend":
+                await history_mgr.replace_last_pair(user_text, response_text)
+        except Exception as e:
+            logger.error(f"Failed to persist chat history for user {WEB_USER_ID}: {e}")
+
+        try:
+            if status == "error":
+                await websocket.send_text(json.dumps({"type": "error", "text": error_text}))
+            elif status == "stopped":
+                await websocket.send_text(json.dumps({"type": "stopped"}))
+            else:
+                await websocket.send_text(json.dumps({"type": "done"}))
+        except Exception:
+            pass
+
+    def start_stream(mode: str, text: Optional[str]):
+        holder = {"text": ""}
+        if mode == "message":
+            gen = agent.stream(text)
+        elif mode == "regenerate":
+            gen = agent.regenerate()
+        elif mode == "edit_resend":
+            gen = agent.edit_last_user_message(text)
+        else:
+            return None, None
+        return asyncio.create_task(run_agent_stream(gen, holder)), holder
+
     try:
         while True:
-            raw = await websocket.receive_text()
+            raw = await queue.get()
+            if raw is _WS_DISCONNECT:
+                break
+
             try:
                 data = json.loads(raw)
-                user_message = data.get("message", "").strip()
             except json.JSONDecodeError:
-                await websocket.send_text(json.dumps({"type": "error", "text": "Invalid JSON"}))
+                with contextlib.suppress(Exception):
+                    await websocket.send_text(json.dumps({"type": "error", "text": "Invalid JSON"}))
                 continue
 
-            if not user_message:
+            msg_type = data.get("type")
+            stream_mode: Optional[str] = None
+            stream_user_text: Optional[str] = None
+
+            if msg_type == "message":
+                text = data.get("text", "").strip()
+                if not text:
+                    continue
+                stream_mode, stream_user_text = "message", text
+            elif msg_type == "regenerate":
+                stream_mode, stream_user_text = "regenerate", None
+            elif msg_type == "edit_resend":
+                text = data.get("text", "").strip()
+                if not text:
+                    continue
+                stream_mode, stream_user_text = "edit_resend", text
+            else:
+                # "stop" (or anything unrecognized) while idle: nothing to stop, ignore.
                 continue
 
-            # Stream agent response and collect full text
-            assistant_response = ""
-            try:
-                async for chunk in agent.stream(user_message):
-                    await websocket.send_text(json.dumps({"type": "chunk", "text": chunk}))
-                    assistant_response += chunk
-                await websocket.send_text(json.dumps({"type": "done"}))
+            stream_task, stream_holder = start_stream(stream_mode, stream_user_text)
+            if stream_task is None:
+                continue
 
-                # Persist to conversation history (JSON) so /sessions endpoint works
-                try:
-                    await history_mgr.append(user_message, assistant_response)
-                except Exception as e:
-                    # Don't break the chat if history save fails, but don't hide it either
-                    logger.error(f"Failed to save chat history for user {WEB_USER_ID}: {e}")
-            except Exception as e:
-                await websocket.send_text(json.dumps({"type": "error", "text": str(e)}))
+            # Keep consuming frames while this generation is in flight, so a
+            # "stop" (or disconnect) can be observed without blocking on the stream.
+            while stream_task is not None:
+                getter = asyncio.create_task(queue.get())
+                done, _pending = await asyncio.wait(
+                    {stream_task, getter}, return_when=asyncio.FIRST_COMPLETED
+                )
+
+                incoming = None
+                if getter in done:
+                    incoming = getter.result()
+                else:
+                    getter.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await getter
+
+                if stream_task in done:
+                    # Finalize the completed stream before dispatching whatever
+                    # frame just arrived, so a "stop" racing natural completion
+                    # becomes a no-op against an idle connection instead of a
+                    # lost or misapplied frame.
+                    await finalize_stream(stream_mode, stream_user_text, stream_task, stream_holder)
+                    stream_task = None
+                    if incoming is not None:
+                        await queue.put(incoming)
+                    break
+
+                if incoming is _WS_DISCONNECT:
+                    stream_task.cancel()
+                    await finalize_stream(stream_mode, stream_user_text, stream_task, stream_holder)
+                    stream_task = None
+                    await queue.put(_WS_DISCONNECT)
+                    break
+                elif incoming is not None:
+                    try:
+                        incoming_data = json.loads(incoming)
+                    except json.JSONDecodeError:
+                        incoming_data = {}
+                    if incoming_data.get("type") == "stop":
+                        stream_task.cancel()
+                        await finalize_stream(stream_mode, stream_user_text, stream_task, stream_holder)
+                        stream_task = None
+                        break
+                    # Any other frame type while busy is ignored (not requeued —
+                    # requeuing here would busy-loop against the still-running stream).
 
     except WebSocketDisconnect:
         pass
+    finally:
+        receiver_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await receiver_task
+        if stream_task is not None and not stream_task.done():
+            stream_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await stream_task
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -115,6 +115,73 @@ async def test_happy_path_actually_merges_into_real_main():
         mock_restart.assert_called_once()
 
 
+def test_pre_commit_hook_finds_shared_venv_from_a_worktree():
+    """Regression test for a bug where .githooks/pre-commit resolved its venv
+    path via `git rev-parse --show-toplevel`, which returns the *worktree's*
+    own path when committing inside a linked worktree (as every self-upgrade
+    commit does). Since the venv only exists in the main checkout, every
+    self-upgrade commit failed with "No such file or directory" - reported as
+    a lint/test failure even though nothing had actually run. This sets up a
+    real worktree off a scratch repo, with a fake venv only in the main
+    checkout, installs the actual hook, and asserts a commit made from inside
+    the worktree succeeds.
+    """
+    real_hook = Path(__file__).parent.parent / ".githooks" / "pre-commit"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        repo_dir = tmp_path / "repo"
+        worktree_dir = tmp_path / "worktree"
+        _init_scratch_repo(repo_dir)
+
+        def run(args, cwd):
+            result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+            assert result.returncode == 0, f"git {args} failed: {result.stderr}"
+            return result
+
+        # Fake venv - present in the main checkout so the hook's own pytest
+        # step can run when *this* commit lands, but deliberately untracked
+        # (like the real venv/, see .gitignore) so `git add .githooks` below
+        # doesn't sweep it in and accidentally check it out into the
+        # worktree too - which would silently defeat this test.
+        venv_bin = repo_dir / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        for name in ("python", "ruff"):
+            script = venv_bin / name
+            script.write_text("#!/usr/bin/env bash\nexit 0\n")
+            script.chmod(0o755)
+
+        # Install the real hook and point core.hooksPath at it, exactly as
+        # this repo is configured (see CONTRIBUTING.md / README). It must be
+        # committed, not just written to disk: core.hooksPath is resolved
+        # relative to each worktree's own checkout, so .githooks only shows
+        # up inside the worktree if it's part of the tracked tree - same as
+        # in the real repo, where .githooks/pre-commit is a tracked file.
+        hooks_dir = repo_dir / ".githooks"
+        hooks_dir.mkdir()
+        hook_copy = hooks_dir / "pre-commit"
+        hook_copy.write_text(real_hook.read_text())
+        hook_copy.chmod(0o755)
+        run(["config", "core.hooksPath", ".githooks"], cwd=repo_dir)
+        run(["add", ".githooks"], cwd=repo_dir)
+        run(["commit", "-m", "add pre-commit hook"], cwd=repo_dir)
+
+        run(["worktree", "add", str(worktree_dir), "-b", "feature-branch", "main"], cwd=repo_dir)
+
+        (worktree_dir / "src" / "new_feature.py").write_text("def new_feature():\n    return True\n")
+        run(["add", "-A"], cwd=worktree_dir)
+
+        result = subprocess.run(
+            ["git", "commit", "-m", "add new_feature"], cwd=worktree_dir, capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"Commit from inside the worktree was rejected - the hook likely couldn't find "
+            f"the shared venv again. stdout+stderr:\n{result.stdout}\n{result.stderr}"
+        )
+        assert "no such file or directory" not in (result.stdout + result.stderr).lower()
+
+
 @pytest.mark.asyncio
 async def test_dirty_main_blocks_merge_and_preserves_branch():
     with tempfile.TemporaryDirectory() as tmp:

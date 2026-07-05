@@ -25,8 +25,15 @@ for var in $(env | grep -oE '^GIT_[A-Z_]*' || true); do
 done
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-VENV_PYTHON="$REPO_ROOT/venv/bin/python"
-RUFF="$REPO_ROOT/venv/bin/ruff"
+# The venv is a single shared install, not per-worktree (the self-upgrade
+# pipeline never creates or symlinks one inside its worktrees - it runs its
+# own internal test gate against the main checkout's venv with cwd set to
+# the worktree). --git-common-dir resolves to the main checkout's .git even
+# when this hook is running inside a linked worktree, so use its parent to
+# find the venv instead of REPO_ROOT (which is the worktree itself there).
+MAIN_REPO_ROOT="$(cd "$(git rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"
+VENV_PYTHON="$MAIN_REPO_ROOT/venv/bin/python"
+RUFF="$MAIN_REPO_ROOT/venv/bin/ruff"
 NODE_BIN="$HOME/.nvm/versions/node/v22.12.0/bin"
 
 cd "$REPO_ROOT" || exit 1

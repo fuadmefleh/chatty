@@ -1,18 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import Prism from 'prismjs';
-import 'prismjs/components/prism-clike';
-import 'prismjs/components/prism-javascript';
-import 'prismjs/components/prism-typescript';
-import 'prismjs/components/prism-jsx';
-import 'prismjs/components/prism-tsx';
-import 'prismjs/components/prism-markup';
-import 'prismjs/components/prism-css';
-import 'prismjs/components/prism-json';
-import 'prismjs/components/prism-bash';
-import 'prismjs/components/prism-yaml';
-import 'prismjs/components/prism-markdown';
-import 'prismjs/components/prism-python';
+import { highlight } from '../lib/prismHighlight';
 import { fetchCodeTree, fetchCodeFile } from '../chattyApi';
 import type { CodeTreeEntry, CodeFile } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
@@ -25,15 +13,6 @@ const formatSize = (bytes: number | null): string => {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-};
-
-const escapeHtml = (s: string): string =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-const highlight = (content: string, language: string): string => {
-  const grammar = Prism.languages[language];
-  if (!grammar) return escapeHtml(content);
-  return Prism.highlight(content, grammar, language);
 };
 
 interface TreeNodeProps {

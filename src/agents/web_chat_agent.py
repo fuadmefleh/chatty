@@ -60,19 +60,8 @@ class WebChatAgent:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
-    async def stream(self, user_message: str) -> AsyncGenerator[str, None]:
-        """Process a user message and stream response text chunks.
-
-        Maintains conversation history across calls (within the same agent instance).
-        Saves the completed interaction to memory.
-        """
-        # Build messages
-        self._history.append({"role": "user", "content": user_message})
-
-        # Trim history to avoid token bloat
-        if len(self._history) > MAX_HISTORY:
-            self._history = self._history[-MAX_HISTORY:]
-
+    async def _build_messages(self) -> List[Dict[str, Any]]:
+        """Assemble the system prompt + memory context + conversation history."""
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + self._history
 
         # Load recent + long-term memory context and prepend as system notes
@@ -94,9 +83,13 @@ class WebChatAgent:
         except Exception:
             pass
 
-        tools = self._get_tools()
-        full_response = ""
+        return messages
 
+    async def _run_completion(self, messages: List[Dict[str, Any]], tools: List[Dict]) -> AsyncGenerator[str, None]:
+        """Run the tool-calling completion loop, yielding text deltas as they arrive.
+
+        Pure: does not touch self._history or memory_manager.
+        """
         for _ in range(MAX_TOOL_ITERATIONS):
             assistant_content = ""
             tool_calls_acc: Dict[int, Dict] = {}  # index -> {id, name, arguments}
@@ -106,7 +99,6 @@ class WebChatAgent:
             ):
                 if chunk.text_delta:
                     assistant_content += chunk.text_delta
-                    full_response += chunk.text_delta
                     yield chunk.text_delta
 
                 for tcd in chunk.tool_call_deltas:
@@ -156,11 +148,73 @@ class WebChatAgent:
         else:
             # Max iterations reached
             yield "\n[Max tool iterations reached]"
-            full_response += "\n[Max tool iterations reached]"
 
-        # Save to history and memory
-        self._history.append({"role": "assistant", "content": full_response})
+    async def stream(self, user_message: str) -> AsyncGenerator[str, None]:
+        """Process a new user message and stream response text chunks.
+
+        Maintains conversation history across calls (within the same agent instance).
+        Saves the completed interaction to memory. Persists partial output even if
+        cancelled mid-stream, so self._history stays consistent with what the caller
+        ends up persisting elsewhere.
+        """
+        self._history.append({"role": "user", "content": user_message})
+
+        # Trim history to avoid token bloat
+        if len(self._history) > MAX_HISTORY:
+            self._history = self._history[-MAX_HISTORY:]
+
+        full_response = ""
         try:
-            await self.memory_manager.add_interaction(user_message, full_response)
-        except Exception:
-            pass
+            messages = await self._build_messages()
+            tools = self._get_tools()
+            async for delta in self._run_completion(messages, tools):
+                full_response += delta
+                yield delta
+        finally:
+            self._history.append({"role": "assistant", "content": full_response})
+            try:
+                await self.memory_manager.add_interaction(user_message, full_response)
+            except Exception:
+                pass
+
+    async def regenerate(self) -> AsyncGenerator[str, None]:
+        """Re-run completion for the current last user message, replacing the last response.
+
+        Does not log to memory (the superseded response was never a genuine new turn),
+        so a stale answer doesn't linger in the markdown memory log fed to future turns.
+        """
+        if self._history and self._history[-1]["role"] == "assistant":
+            self._history.pop()
+        if not self._history or self._history[-1]["role"] != "user":
+            raise ValueError("No previous user message to regenerate a response for")
+
+        full_response = ""
+        try:
+            messages = await self._build_messages()
+            tools = self._get_tools()
+            async for delta in self._run_completion(messages, tools):
+                full_response += delta
+                yield delta
+        finally:
+            self._history.append({"role": "assistant", "content": full_response})
+
+    async def edit_last_user_message(self, new_text: str) -> AsyncGenerator[str, None]:
+        """Overwrite the last user message and re-run completion for it.
+
+        Does not log to memory, for the same reason as regenerate().
+        """
+        if self._history and self._history[-1]["role"] == "assistant":
+            self._history.pop()
+        if not self._history or self._history[-1]["role"] != "user":
+            raise ValueError("No previous user message to edit")
+        self._history[-1]["content"] = new_text
+
+        full_response = ""
+        try:
+            messages = await self._build_messages()
+            tools = self._get_tools()
+            async for delta in self._run_completion(messages, tools):
+                full_response += delta
+                yield delta
+        finally:
+            self._history.append({"role": "assistant", "content": full_response})
