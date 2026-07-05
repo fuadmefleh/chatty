@@ -18,6 +18,7 @@ import fnmatch
 import hmac
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,29 @@ trending_suggestions_manager = TrendingSuggestionsManager()
 token_usage_manager = get_token_usage_manager()
 skills_manager: Optional[SkillsManager] = None
 _pi_worker_task: Optional[asyncio.Task] = None
+
+
+class _ChatConnection:
+    """An open /api/chatty/chat WebSocket, keyed by X-Device-Id so the audio
+    pipeline can push a proactive assistant response onto it. The lock
+    serializes sends across the interactive request/response loop and any
+    background push, since Starlette WebSockets aren't safe for concurrent
+    send_text calls from multiple tasks."""
+
+    __slots__ = ("websocket", "lock")
+
+    def __init__(self, websocket: "WebSocket"):
+        self.websocket = websocket
+        self.lock = asyncio.Lock()
+
+    async def send_json(self, payload: dict) -> None:
+        async with self.lock:
+            await self.websocket.send_text(json.dumps(payload))
+
+
+# device_id -> open chat connection (only devices that sent X-Device-Id on
+# the WS handshake are tracked; at most one entry per device).
+_active_chat_connections: Dict[str, _ChatConnection] = {}
 
 
 @app.on_event("startup")
@@ -585,8 +609,54 @@ def _normalize_segments(result: TranscriptionResult) -> Optional[List[dict]]:
     ]
 
 
+# ── Assistant mode (wake-word push over the chat WebSocket) ─────────────────
+_WAKE_WORD_RE = re.compile(r"\bchatty\b", re.IGNORECASE)
+_ASSISTANT_FALLBACK_PROMPT = (
+    "The user just said your name (\"Chatty\") in this audio chunk with nothing "
+    "obvious following it. Check recent conversation context for what they might "
+    "want; if nothing fits, just give a brief, natural acknowledgment like "
+    "\"Yeah?\" or \"What's up?\" inviting them to continue."
+)
+
+
+def _extract_assistant_query(transcript: str) -> Optional[str]:
+    """Return the text after the first "chatty" mention (trimmed), or None if
+    "chatty" doesn't appear at all. An empty string (as opposed to None) means
+    "chatty" was said with nothing following it - callers should treat that as
+    a contentless wake word, not "no wake word", and fall back accordingly."""
+    match = _WAKE_WORD_RE.search(transcript)
+    if not match:
+        return None
+    return transcript[match.end():].strip()
+
+
+async def _push_assistant_response(device_id: str, query: str) -> None:
+    """Generate a response via the same agent/memory stack as the chat
+    WebSocket and stream it over that device's open connection, if any. Silently
+    drops the response (no error) when the device has no open connection, e.g.
+    the app is backgrounded."""
+    connection = _active_chat_connections.get(device_id)
+    if connection is None:
+        logger.info(f"No open chat WebSocket for device {device_id}; dropping assistant push")
+        return
+
+    from src.agents.web_chat_agent import WebChatAgent
+    from src.core.memory import MemoryManager
+
+    memory_manager = MemoryManager(WEB_USER_ID)
+    agent = WebChatAgent(skills_manager=skills_manager, memory_manager=memory_manager)
+
+    try:
+        async for chunk in agent.stream(query):
+            await connection.send_json({"type": "chunk", "content": chunk})
+        await connection.send_json({"type": "done"})
+    except Exception as e:
+        logger.error(f"Failed to push assistant response to device {device_id}: {e}")
+
+
 async def _transcribe_and_store_audio(
-    audio_bytes: bytes, device_id: str, chunk_start: str, chunk_duration: str, source: str
+    audio_bytes: bytes, device_id: str, chunk_start: str, chunk_duration: str, source: str,
+    assistant_mode: bool = False,
 ) -> None:
     try:
         result = await get_stt_provider().transcribe(audio_bytes, filename_hint="chunk.m4a")
@@ -607,6 +677,17 @@ async def _transcribe_and_store_audio(
         if not transcript:
             logger.info(f"Audio chunk from device {device_id} at {chunk_start} had no speech, skipping")
             return
+
+        if assistant_mode:
+            query = _extract_assistant_query(transcript)
+            if query is not None:
+                # Wake word detected: handle as a proactive assistant query
+                # instead of a regular transcript segment, so it's never also
+                # mined into long-term memory (the exchange itself still lands
+                # in memory via WebChatAgent.stream's own add_interaction call).
+                logger.info(f"Assistant wake word detected from device {device_id} at {chunk_start}")
+                await _push_assistant_response(device_id, query or _ASSISTANT_FALLBACK_PROMPT)
+                return
 
         audio_filename = transcriptions_manager.save_audio(audio_bytes)
         header = f"[{chunk_start}] (device {device_id}, {chunk_duration}s audio)"
@@ -630,13 +711,15 @@ async def receive_audio(
     x_chunk_start: str = Header(default=""),
     x_chunk_duration: str = Header(default=""),
     x_source: str = Header(default="ios_app"),
+    x_mode: str = Header(default=""),
 ):
     audio_bytes = await request.body()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Empty audio body")
 
     background_tasks.add_task(
-        _transcribe_and_store_audio, audio_bytes, x_device_id, x_chunk_start, x_chunk_duration, x_source
+        _transcribe_and_store_audio, audio_bytes, x_device_id, x_chunk_start, x_chunk_duration, x_source,
+        x_mode.strip().lower() == "assistant",
     )
     return {"accepted": True}
 
@@ -1338,6 +1421,9 @@ async def delete_session(session_id: int):
 #                               {"type": "done"}
 #                               {"type": "stopped"}
 #                               {"type": "error", "text": ...}
+# Proactive push (assistant mode, unprompted - see _push_assistant_response):
+#                               {"type": "chunk", "content": ...}
+#                               {"type": "done"}
 _WS_DISCONNECT = object()  # queue sentinel: the websocket has disconnected
 
 
@@ -1348,6 +1434,20 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
         return
 
     await websocket.accept()
+
+    # Register this connection so the audio pipeline can push a proactive
+    # assistant response onto it (assistant mode, wake-word detection). Only
+    # devices that send X-Device-Id on the WS handshake are reachable that way.
+    device_id = websocket.headers.get("x-device-id") or None
+    connection = _ChatConnection(websocket) if device_id else None
+    if connection is not None:
+        _active_chat_connections[device_id] = connection
+
+    async def send_json(payload: dict) -> None:
+        if connection is not None:
+            await connection.send_json(payload)
+        else:
+            await websocket.send_text(json.dumps(payload))
 
     # Import here to avoid circular deps at module load
     from src.agents.web_chat_agent import WebChatAgent
@@ -1372,11 +1472,11 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
             logger.error(f"Failed to preload session {active_session_id} for user {WEB_USER_ID}: {e}")
 
     # Notify client of active session
-    await websocket.send_text(json.dumps({
+    await send_json({
         "type": "session_loaded",
         "session_id": active_session_id,
         "message_count": len(agent._history) if active_session_id is not None else 0,
-    }))
+    })
 
     # A dedicated receiver task decouples "read the next frame" from "consume a
     # streaming response", so a control frame (e.g. "stop") can be observed while
@@ -1404,7 +1504,7 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
         async for chunk in gen:
             holder["text"] += chunk
             try:
-                await websocket.send_text(json.dumps({"type": "chunk", "text": chunk}))
+                await send_json({"type": "chunk", "text": chunk})
             except Exception:
                 # Client socket may already be dead; keep generating so the full
                 # response still gets persisted even if the client never sees it.
@@ -1437,11 +1537,11 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
 
         try:
             if status == "error":
-                await websocket.send_text(json.dumps({"type": "error", "text": error_text}))
+                await send_json({"type": "error", "text": error_text})
             elif status == "stopped":
-                await websocket.send_text(json.dumps({"type": "stopped"}))
+                await send_json({"type": "stopped"})
             else:
-                await websocket.send_text(json.dumps({"type": "done"}))
+                await send_json({"type": "done"})
         except Exception:
             pass
 
@@ -1467,7 +1567,7 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
                 data = json.loads(raw)
             except json.JSONDecodeError:
                 with contextlib.suppress(Exception):
-                    await websocket.send_text(json.dumps({"type": "error", "text": "Invalid JSON"}))
+                    await send_json({"type": "error", "text": "Invalid JSON"})
                 continue
 
             msg_type = data.get("type")
@@ -1543,6 +1643,8 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
     except WebSocketDisconnect:
         pass
     finally:
+        if device_id and _active_chat_connections.get(device_id) is connection:
+            del _active_chat_connections[device_id]
         receiver_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await receiver_task

@@ -189,6 +189,56 @@ Chunks should arrive in order per device, roughly gapless (~20s each);
 transcription is prefixed with `[<chunk_start>] (device <id>, <duration>s
 audio)`), so the client doesn't need to guarantee strict ordering on the wire.
 
+### Assistant mode (wake-word push)
+
+When the user has assistant mode enabled, send `X-Mode: assistant` on
+`POST /api/chatty/audio` chunks:
+
+```
+POST /api/chatty/audio
+Content-Type: audio/mp4
+X-API-Key: <key>
+X-Device-Id: <uuid>
+X-Chunk-Start: 2026-07-03T21:08:00.000Z
+X-Chunk-Duration: 20.00
+X-Mode: assistant
+
+<body = raw m4a bytes>
+```
+
+The server still runs STT on the chunk as usual, then checks whether the
+transcript mentions "chatty" (case-insensitive):
+
+- **No mention:** identical to a non-assistant chunk — transcribed and queued
+  for the heartbeat's memory mining, nothing pushed.
+- **Mentioned:** the text after the first "chatty" becomes the query (or, if
+  nothing follows, the server falls back to recent context/a short
+  acknowledgment). Chatty answers it using the same agent/memory context as
+  the chat WebSocket, and streams the answer over that device's **open**
+  `/api/chatty/chat` connection unprompted — the app never sends a
+  `{"message": ...}` frame to trigger it. This chunk is *not* added to the
+  transcription/mining queue (the exchange itself is saved to memory the
+  same way a normal chat turn is).
+- **No open connection for that device** (e.g. app backgrounded): the
+  response is dropped silently — no error, nothing retried.
+
+For this to work, the app must identify itself on the **chat WebSocket
+handshake** too — add an `X-Device-Id` header (matching the value sent on
+`/api/chatty/audio`) when opening the socket, e.g. via a custom `URLRequest`
+passed to `URLSession.webSocketTask(with:)` instead of a plain URL. Without
+it, the connection still works for interactive chat, it's just unreachable
+for proactive pushes.
+
+Pushed frames reuse the `chunk`/`done` types but carry the text under a
+`content` key (not `text`, which is reserved for chunks that are replies to
+a client-sent message) so the client can tell a push apart from a reply:
+
+```json
+{"type": "chunk", "content": "It's "}
+{"type": "chunk", "content": "sunny today."}
+{"type": "done"}
+```
+
 ### Swift models
 
 ```swift
@@ -297,6 +347,12 @@ Use `wss://` if the server is behind TLS. Omit `session_id` to start a new
 conversation; pass an existing session's `id` to resume it (the server preloads
 history and reports it via `session_loaded`).
 
+Also set an `X-Device-Id` header on the handshake request itself (matching
+the value sent on `/api/chatty/audio`) — this is what lets the server find
+this connection later for an assistant-mode proactive push (see [Assistant
+mode](#assistant-mode-wake-word-push) above). It's optional for plain
+interactive chat; without it, the connection just isn't reachable for pushes.
+
 **Client → server:**
 
 ```json
@@ -325,6 +381,16 @@ history and reports it via `session_loaded`).
 Responses are persisted server-side automatically; the full history for a
 session is retrievable later via `GET /api/chatty/sessions/{id}`.
 
+**Server → client, unprompted** (assistant mode wake-word push — not a reply
+to any client-sent message): the same `chunk`/`done` types, but chunks carry
+the text under `content` instead of `text`, so the client can tell a push
+apart from a reply to something it sent:
+
+```json
+{"type": "chunk", "content": "partial response..."}
+{"type": "done"}
+```
+
 ### Swift example
 
 ```swift
@@ -332,11 +398,11 @@ import Foundation
 
 enum ChattyWSEvent: Decodable {
     case sessionLoaded(sessionId: Int?, messageCount: Int)
-    case chunk(text: String)
+    case chunk(text: String, isPush: Bool) // isPush: true for an unprompted assistant-mode push
     case done
     case error(text: String)
 
-    private enum CodingKeys: String, CodingKey { case type, session_id, message_count, text }
+    private enum CodingKeys: String, CodingKey { case type, session_id, message_count, text, content }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -346,7 +412,13 @@ enum ChattyWSEvent: Decodable {
                 sessionId: try c.decodeIfPresent(Int.self, forKey: .session_id),
                 messageCount: try c.decode(Int.self, forKey: .message_count))
         case "chunk":
-            self = .chunk(text: try c.decode(String.self, forKey: .text))
+            // Replies to a client-sent message use "text"; unprompted
+            // assistant-mode pushes use "content" instead.
+            if let text = try c.decodeIfPresent(String.self, forKey: .text) {
+                self = .chunk(text: text, isPush: false)
+            } else {
+                self = .chunk(text: try c.decode(String.self, forKey: .content), isPush: true)
+            }
         case "done":
             self = .done
         case "error":
@@ -361,7 +433,7 @@ final class ChattyChatSession {
     private var task: URLSessionWebSocketTask?
     var onEvent: ((ChattyWSEvent) -> Void)?
 
-    func connect(baseURL: URL, apiKey: String, sessionId: Int? = nil) {
+    func connect(baseURL: URL, apiKey: String, deviceId: String, sessionId: Int? = nil) {
         var components = URLComponents(url: baseURL.appendingPathComponent("api/chatty/chat"),
                                         resolvingAgainstBaseURL: false)!
         components.scheme = baseURL.scheme == "https" ? "wss" : "ws"
@@ -369,7 +441,13 @@ final class ChattyChatSession {
         if let sessionId { items.append(URLQueryItem(name: "session_id", value: String(sessionId))) }
         components.queryItems = items
 
-        task = URLSession.shared.webSocketTask(with: components.url!)
+        // A plain URL loses the ability to set headers on the handshake, so
+        // use a URLRequest instead - this is what lets the server key this
+        // connection by device for assistant-mode proactive pushes.
+        var request = URLRequest(url: components.url!)
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-Id")
+
+        task = URLSession.shared.webSocketTask(with: request)
         task?.resume()
         listen()
     }
@@ -410,7 +488,12 @@ chat.onEvent = { event in
     switch event {
     case .sessionLoaded(let sessionId, let count):
         print("resumed session \(sessionId ?? -1) with \(count) messages")
-    case .chunk(let text):
+    case .chunk(let text, let isPush):
+        if isPush && currentReply.isEmpty {
+            // Unprompted assistant-mode push: start a new bubble rather than
+            // appending to whatever the user last sent.
+            beginNewAssistantBubble()
+        }
         currentReply += text // append to the in-progress assistant message
     case .done:
         break // mark message complete, ready for the next send
@@ -418,7 +501,7 @@ chat.onEvent = { event in
         print("chat error: \(text)")
     }
 }
-chat.connect(baseURL: ChattyAPIClient.shared.baseURL, apiKey: apiKey, sessionId: existingSessionId)
+chat.connect(baseURL: ChattyAPIClient.shared.baseURL, apiKey: apiKey, deviceId: deviceId, sessionId: existingSessionId)
 chat.send("What's on my calendar today?")
 ```
 

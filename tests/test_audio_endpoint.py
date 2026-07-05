@@ -130,3 +130,80 @@ def test_stt_engine_failure_still_returns_202_but_stores_nothing(client):
     # Client already got 202 before the background task ran the failing STT call.
     assert resp.status_code == 202
     assert server.transcriptions_manager.get_pending("web_user") == []
+
+
+# ── Assistant mode (X-Mode: assistant + wake-word push) ─────────────────────
+def test_assistant_mode_without_wake_word_transcribed_normally(client):
+    """X-Mode: assistant chunks that don't mention "chatty" behave exactly
+    like non-assistant chunks: mined into the pending queue, no push."""
+    mock_post = AsyncMock(return_value=_mock_stt_response({"text": "buy milk tomorrow", "segments": [], "language": "en"}))
+    mock_push = AsyncMock()
+
+    with patch("httpx.AsyncClient.post", mock_post), patch.object(server, "_push_assistant_response", mock_push):
+        resp = client.post(
+            "/api/chatty/audio",
+            content=b"fake-m4a-bytes",
+            headers=_headers(**{"X-Mode": "assistant"}),
+        )
+
+    assert resp.status_code == 202
+    mock_push.assert_not_awaited()
+    pending = server.transcriptions_manager.get_pending("web_user")
+    assert len(pending) == 1
+    assert "buy milk tomorrow" in pending[0].content
+
+
+def test_non_assistant_mode_ignores_wake_word(client):
+    """Without X-Mode: assistant, a "chatty" mention is just text - preserves
+    existing behaviour exactly."""
+    mock_post = AsyncMock(return_value=_mock_stt_response({"text": "hey chatty remind me to call mom", "segments": [], "language": "en"}))
+    mock_push = AsyncMock()
+
+    with patch("httpx.AsyncClient.post", mock_post), patch.object(server, "_push_assistant_response", mock_push):
+        resp = client.post("/api/chatty/audio", content=b"fake-m4a-bytes", headers=_headers())
+
+    assert resp.status_code == 202
+    mock_push.assert_not_awaited()
+    pending = server.transcriptions_manager.get_pending("web_user")
+    assert len(pending) == 1
+    assert "hey chatty remind me to call mom" in pending[0].content
+
+
+def test_assistant_mode_wake_word_triggers_push_and_skips_mining(client):
+    mock_post = AsyncMock(return_value=_mock_stt_response(
+        {"text": "hey Chatty what's the weather today", "segments": [], "language": "en"}
+    ))
+    mock_push = AsyncMock()
+
+    with patch("httpx.AsyncClient.post", mock_post), patch.object(server, "_push_assistant_response", mock_push):
+        resp = client.post(
+            "/api/chatty/audio",
+            content=b"fake-m4a-bytes",
+            headers=_headers(**{"X-Mode": "assistant"}),
+        )
+
+    assert resp.status_code == 202
+    mock_push.assert_awaited_once_with("device-123", "what's the weather today")
+    # Skipped mining: the wake-word chunk never enters the pending queue.
+    assert server.transcriptions_manager.get_pending("web_user") == []
+
+
+def test_assistant_mode_wake_word_alone_uses_fallback_prompt(client):
+    """Saying just "chatty" with nothing following falls back to a synthesized
+    prompt rather than an empty query."""
+    mock_post = AsyncMock(return_value=_mock_stt_response({"text": "Chatty", "segments": [], "language": "en"}))
+    mock_push = AsyncMock()
+
+    with patch("httpx.AsyncClient.post", mock_post), patch.object(server, "_push_assistant_response", mock_push):
+        resp = client.post(
+            "/api/chatty/audio",
+            content=b"fake-m4a-bytes",
+            headers=_headers(**{"X-Mode": "assistant"}),
+        )
+
+    assert resp.status_code == 202
+    mock_push.assert_awaited_once()
+    call_args = mock_push.await_args.args
+    assert call_args[0] == "device-123"
+    assert call_args[1] == server._ASSISTANT_FALLBACK_PROMPT
+    assert server.transcriptions_manager.get_pending("web_user") == []
