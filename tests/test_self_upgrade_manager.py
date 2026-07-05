@@ -1,9 +1,10 @@
 """Tests for src/managers/self_upgrade_manager.py - the safety-critical
 branches of the self-upgrade pipeline (dirty-main check, wrong-branch check,
-test-gate failure, no-op idea, lock unavailability). Git/Pi/pm2 are all
-mocked here; see tests/test_self_upgrade_git_integration.py for a real-git
-smoke test of the worktree/merge plumbing.
+test-gate failure, no-op idea, lock unavailability). Git/Pi/the restart
+signal are all mocked here; see tests/test_self_upgrade_git_integration.py
+for a real-git smoke test of the worktree/merge plumbing.
 """
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -56,6 +57,28 @@ def test_missing_test_coverage_false_for_docs_only():
 
 def test_missing_test_coverage_false_when_only_tests_changed():
     assert sum_._missing_test_coverage(["tests/test_foo.py"]) is False
+
+
+def test_restart_services_writes_signal_file(tmp_path):
+    """Under Docker there's no pm2 - _restart_services writes a JSON signal
+    file for the restarter sidecar (docker/restarter/) instead of shelling
+    out. This exercises the real function body, not a mock of it."""
+    with patch("src.managers.self_upgrade_manager.config.RESTART_REQUESTS_DIR", tmp_path):
+        sum_._restart_services(["chatty-web-server", "order-explorer-frontend"])
+
+    written = list(tmp_path.glob("*.json"))
+    assert len(written) == 1
+    payload = json.loads(written[0].read_text())
+    assert payload["services"] == ["chatty-web-server", "order-explorer-frontend"]
+    assert "requested_at" in payload
+    # No leftover temp file from the atomic write-then-rename.
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_restart_services_noop_for_empty_list(tmp_path):
+    with patch("src.managers.self_upgrade_manager.config.RESTART_REQUESTS_DIR", tmp_path):
+        sum_._restart_services([])
+    assert list(tmp_path.glob("*.json")) == []
 
 
 def make_feature_requests_manager():

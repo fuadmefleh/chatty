@@ -6,7 +6,8 @@ to prove the worktree-create -> commit -> merge -> cleanup flow - and the
 just that the mocked call sequence looks right.
 
 Only run_pi_agent (no real Pi CLI), the pytest/npm test-gate subprocess
-(_run's non-git commands), the pi_agent lock, and pm2 restart (_restart_services) are mocked.
+(_run's non-git commands), the pi_agent lock, and the restart signal
+(_restart_services) are mocked.
 """
 import subprocess
 import sys
@@ -110,7 +111,7 @@ async def test_happy_path_actually_merges_into_real_main():
         branches = subprocess.run(["git", "branch", "--list"], cwd=repo_dir, capture_output=True, text=True)
         assert "self-upgrade/" not in branches.stdout
 
-        # pm2 restart was issued (detached), not awaited.
+        # Restart was requested for the affected services.
         mock_restart.assert_called_once()
 
 

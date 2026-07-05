@@ -20,6 +20,11 @@ export default defineConfig({
     },
   },
   preview: {
-    allowedHosts: ['fuadmefleh.fyi', 'www.fuadmefleh.fyi'],
+    // Trusts all Host headers rather than hardcoding one deployer's domain.
+    // Safe here: in the Docker Compose deployment (see ../../docker-compose.yml)
+    // `vite preview`'s dev-only use is superseded by a dedicated nginx image,
+    // and this config's own `npm run preview` is only ever reached through a
+    // trusted reverse proxy on an internal network, never exposed directly.
+    allowedHosts: true,
   },
 })

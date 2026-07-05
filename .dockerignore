@@ -1,0 +1,38 @@
+# Trims the build context sent to the Docker daemon. Doesn't affect runtime
+# bind mounts (several services mount the live repo directly - see
+# docker-compose.yml) - this only speeds up `docker compose build`.
+
+.git/
+venv/
+env/
+ENV/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.vite/
+
+# Runtime state - not needed at build time, and large (data/transcriptions
+# is ~48MB). Volumes/bind mounts provide these at runtime instead.
+data/
+memory/
+logs/
+reminders/
+restart_requests/
+
+# Node
+node_modules/
+**/node_modules/
+order_explorer_site/frontend/dist/
+.opencode/node_modules/
+
+# Editor/dev tooling
+.vscode/
+.idea/
+vscode-chatty-bridge/*.vsix
+
+# Secrets that must never be baked into an image layer
+.env
+skills/gmail/credentials.json
+data/*_token*.json
+data/*_tokens.json

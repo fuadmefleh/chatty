@@ -1,0 +1,6 @@
+# Optional: only needed for skills/facial_recognition/. Pulls in dlib, which
+# compiles from source (requires cmake + a C++ toolchain + BLAS/LAPACK) and
+# adds several minutes to a fresh install. Skip this file if you don't need
+# face recognition/identification.
+# pip install -r requirements-face.txt
+face-recognition>=1.3.0

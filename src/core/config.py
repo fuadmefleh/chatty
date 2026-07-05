@@ -104,6 +104,13 @@ SELF_UPGRADE_TEST_TIMEOUT_SECONDS = int(os.getenv("SELF_UPGRADE_TEST_TIMEOUT_SEC
 # test suite pass before the branch is left for manual review.
 SELF_UPGRADE_MAX_TEST_ATTEMPTS = int(os.getenv("SELF_UPGRADE_MAX_TEST_ATTEMPTS", "3"))
 
+# Directory _restart_services() (self_upgrade_manager.py) writes restart
+# signal files into. Under Docker (see docker-compose.yml), a sidecar
+# container (docker/restarter/) polls this directory and translates requests
+# into `docker restart <container>` calls, since there's no pm2 inside a
+# container. Outside Docker this directory is effectively unused.
+RESTART_REQUESTS_DIR = Path(os.getenv("RESTART_REQUESTS_DIR", str(BASE_DIR / "restart_requests")))
+
 # Trending Suggestions Configuration: Chatty periodically scans GitHub's
 # trending repos (see src/managers/trending_manager.py) and curates a short
 # list of ideas worth considering. Unlike self-upgrade, nothing here is ever

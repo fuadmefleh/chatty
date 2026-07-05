@@ -6,7 +6,9 @@ python-dotenv>=1.0.0
 pytz>=2024.1
 aiofiles>=23.2.1
 setuptools>=65.0.0
-face-recognition>=1.3.0
+# face-recognition split into requirements-face.txt (needs dlib, a slow
+# from-source C++ build) - see the Docker image's INSTALL_FACE_RECOGNITION
+# build-arg for how it's conditionally installed there.
 Pillow>=10.0.0
 numpy>=1.24.0
 PyPDF2>=3.0.0
@@ -24,6 +26,18 @@ openpyxl>=3.1.0
 aiohttp>=3.9.0
 websockets>=12.0
 psutil>=5.9.0
+# fastapi/uvicorn/pydantic - chatty_web_server.py's dashboard/iOS API.
+# python-dateutil - used by skills/walmart_orders/walmart_parser.py.
+# These were previously only present in this host's venv by transitive
+# happenstance (pulled in by other packages) and missing here - a fresh
+# `pip install -r requirements.txt` would have failed to run
+# chatty_web_server.py at all. Listed explicitly now that Docker surfaced it.
+fastapi>=0.110.0
+uvicorn>=0.27.0
+pydantic>=2.5.0
+python-dateutil>=2.8.2
+# yfinance - skills/stocks/yahoo_client.py's stock-quote lookups.
+yfinance>=0.2.36
 
 # Testing / linting - used by tests/, the git pre-commit hook, and the
 # self-upgrade pipeline's test/lint gate

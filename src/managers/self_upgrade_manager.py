@@ -22,11 +22,12 @@ running the `pi` CLI at the same time as the dashboard's manual feature
 request queue (chatty_web_server.py), since they're separate OS processes.
 """
 import asyncio
+import json
 import os
 import re
-import subprocess
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -182,18 +183,29 @@ def _affected_services(changed_files: List[str]) -> List[str]:
 
 
 def _restart_services(services: List[str]) -> None:
-    """Issue `pm2 restart` for the given services, detached and fire-and-forget.
+    """Request a restart of the given services.
 
-    This may restart the very process calling it (chatty-bot), so it must
-    never be awaited. Kept as its own function (rather than an inline
-    subprocess.Popen call) so tests can mock exactly this and nothing else -
-    mocking subprocess.Popen directly would also break asyncio's own
-    subprocess machinery, which uses subprocess.Popen internally.
+    Under Docker (see docker-compose.yml), there's no pm2 - instead this
+    writes an atomic signal file into config.RESTART_REQUESTS_DIR, which a
+    sidecar container (docker/restarter/restart_watcher.py) polls and
+    translates into `docker restart <container>` calls. That sidecar is the
+    only container with the Docker socket mounted, deliberately kept out of
+    the codebase self-upgrade can modify.
+
+    This may indirectly cause the very process calling it (chatty-bot) to be
+    restarted, but does so asynchronously via the sidecar - this function
+    itself just writes a file and returns immediately. Kept as its own
+    function so tests can assert on the written file instead of mocking
+    subprocess/filesystem calls inline.
     """
-    subprocess.Popen(
-        ["pm2", "restart"] + services,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-    )
+    if not services:
+        return
+    config.RESTART_REQUESTS_DIR.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"services": services, "requested_at": time.time()})
+    tmp_path = config.RESTART_REQUESTS_DIR / f".{uuid.uuid4().hex}.tmp"
+    final_path = config.RESTART_REQUESTS_DIR / f"{uuid.uuid4().hex}.json"
+    tmp_path.write_text(payload)
+    tmp_path.rename(final_path)  # atomic on the same filesystem
 
 
 async def _cleanup_worktree(worktree_dir: Path, branch: str, delete_branch: bool) -> None:

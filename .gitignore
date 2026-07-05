@@ -58,3 +58,13 @@ node_modules/
 .vite/
 .opencode/
 *.vsix
+
+# Docker: restart-signal files and deployer-supplied pi CLI/config are
+# runtime state, not source - keep the directories (.gitkeep) but not their
+# contents.
+restart_requests/*.json
+restart_requests/processed/
+docker/pi-bin/*
+!docker/pi-bin/.gitkeep
+docker/pi-config/*
+!docker/pi-config/.gitkeep
