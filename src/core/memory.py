@@ -3,7 +3,7 @@ import json
 import aiofiles
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 from src.core import config
 from src.core.logging_config import get_memory_logger
 
@@ -79,6 +79,27 @@ class ConversationHistoryManager:
         history.append({"role": "assistant", "content": assistant_msg, "ts": datetime.now().isoformat()})
         await self.save(history)
 
+    async def replace_last_assistant(self, new_text: str):
+        """Replace the last assistant message's content (used by regenerate)."""
+        history = await self.load()
+        if history and history[-1]["role"] == "assistant":
+            history[-1]["content"] = new_text
+            history[-1]["ts"] = datetime.now().isoformat()
+        else:
+            history.append({"role": "assistant", "content": new_text, "ts": datetime.now().isoformat()})
+        await self.save(history)
+
+    async def replace_last_pair(self, new_user: str, new_assistant: str):
+        """Replace the last user+assistant exchange (used by edit-and-resend)."""
+        history = await self.load()
+        if history and history[-1]["role"] == "assistant":
+            history.pop()
+        if history and history[-1]["role"] == "user":
+            history.pop()
+        history.append({"role": "user", "content": new_user, "ts": datetime.now().isoformat()})
+        history.append({"role": "assistant", "content": new_assistant, "ts": datetime.now().isoformat()})
+        await self.save(history)
+
     # -- Queries -------------------------------------------------------------
 
     async def get_messages(self, window: int = CONVERSATION_WINDOW) -> List[Dict]:
@@ -113,22 +134,14 @@ class ConversationHistoryManager:
 
     # -- Sessions ------------------------------------------------------------
 
-    async def get_sessions(self) -> List[Dict]:
-        """Detect conversation sessions based on time gaps.
+    def _group_into_sessions(self, history: List[Dict]) -> List[List[Dict]]:
+        """Group a flat message list into sessions based on time gaps.
 
         Groups consecutive messages into sessions when the gap between them
-        is less than SESSION_GAP_SECONDS.  Returns a list of session dicts
-        sorted newest-first:
-
-            [{
-                "id": int,           # 0-based index
-                "messages": List[Dict],  # full messages with ts
-                "first_ts": str,      # ISO timestamp of first message
-                "last_ts": str,       # ISO timestamp of last message
-                "summary": str,       # first user message (truncated)
-            }, ...]
+        is less than SESSION_GAP_SECONDS. Returns groups in chronological
+        order (oldest session first). The returned lists reference the same
+        dict objects as `history`, not copies.
         """
-        history = await self.load()
         if not history:
             return []
 
@@ -153,6 +166,30 @@ class ConversationHistoryManager:
         if current_session:
             sessions.append(current_session)
 
+        return sessions
+
+    async def get_sessions(self) -> List[Dict]:
+        """Detect conversation sessions based on time gaps.
+
+        Returns a list of session dicts sorted newest-first:
+
+            [{
+                "id": int,           # 0-based index, NOT stable across calls
+                                     # (shifts whenever a new session appears)
+                "messages": List[Dict],  # full messages with ts
+                "first_ts": str,      # ISO timestamp of first message (stable key)
+                "last_ts": str,       # ISO timestamp of last message
+                "summary": str,       # first user message (truncated)
+                "title": Optional[str],  # user-assigned custom title, if any
+            }, ...]
+        """
+        history = await self.load()
+        if not history:
+            return []
+
+        sessions = self._group_into_sessions(history)
+        titles = await self._load_titles()
+
         # Build session summary, newest first
         result: List[Dict] = []
         for idx, sess_msgs in enumerate(reversed(sessions)):
@@ -160,13 +197,15 @@ class ConversationHistoryManager:
                 (m["content"] for m in sess_msgs if m["role"] == "user"),
                 "",
             )
+            first_ts = sess_msgs[0].get("ts", "")
             result.append({
                 "id": idx,
                 "messages": sess_msgs,
-                "first_ts": sess_msgs[0].get("ts", ""),
+                "first_ts": first_ts,
                 "last_ts": sess_msgs[-1].get("ts", ""),
                 "message_count": len(sess_msgs),
                 "summary": (first_user_msg[:100] + "...") if len(first_user_msg) > 100 else first_user_msg,
+                "title": titles.get(first_ts),
             })
         return result
 
@@ -177,6 +216,61 @@ class ConversationHistoryManager:
             sess = sessions[session_id]
             return [{"role": m["role"], "content": m["content"]} for m in sess["messages"]]
         return []
+
+    async def delete_session(self, session_id: int) -> bool:
+        """Delete a session by its (positionally-derived) id. Returns True if found."""
+        history = await self.load()
+        groups = self._group_into_sessions(history)
+        reversed_groups = list(reversed(groups))
+        if not (0 <= session_id < len(reversed_groups)):
+            return False
+
+        target = reversed_groups[session_id]
+        target_ids = {id(m) for m in target}
+        remaining = [m for m in history if id(m) not in target_ids]
+        await self.save(remaining)
+
+        first_ts = target[0].get("ts", "") if target else ""
+        if first_ts:
+            titles = await self._load_titles()
+            if first_ts in titles:
+                del titles[first_ts]
+                await self._save_titles(titles)
+
+        return True
+
+    # -- Session titles --------------------------------------------------------
+
+    def _titles_path(self) -> Path:
+        return self._path.parent / "session_titles.json"
+
+    async def _load_titles(self) -> Dict[str, str]:
+        path = self._titles_path()
+        if not path.exists():
+            return {}
+        try:
+            async with aiofiles.open(path, "r") as f:
+                data = await f.read()
+            return json.loads(data)
+        except Exception as e:
+            memory_logger.error(f"Error loading session titles for {self.user_id}: {e}")
+            return {}
+
+    async def _save_titles(self, titles: Dict[str, str]):
+        try:
+            async with aiofiles.open(self._titles_path(), "w") as f:
+                await f.write(json.dumps(titles, indent=2))
+        except Exception as e:
+            memory_logger.error(f"Error saving session titles for {self.user_id}: {e}")
+
+    async def get_session_title(self, first_ts: str) -> Optional[str]:
+        titles = await self._load_titles()
+        return titles.get(first_ts)
+
+    async def set_session_title(self, first_ts: str, title: str):
+        titles = await self._load_titles()
+        titles[first_ts] = title
+        await self._save_titles(titles)
 
 
 class MemoryManager:

@@ -324,6 +324,7 @@ export interface ChatSession {
   last_ts: string;
   message_count: number;
   summary: string;
+  title: string | null;
 }
 
 export const fetchChatSessions = async (): Promise<ChatSession[]> => {
@@ -339,6 +340,14 @@ export interface ChatMessage {
 export const fetchSessionMessages = async (sessionId: number): Promise<ChatMessage[]> => {
   const res = await chattyApi.get<ChatMessage[]>(`/api/chatty/sessions/${sessionId}`);
   return res.data;
+};
+
+export const deleteSession = async (sessionId: number): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/sessions/${sessionId}`);
+};
+
+export const renameSession = async (sessionId: number, title: string): Promise<void> => {
+  await chattyApi.put(`/api/chatty/sessions/${sessionId}`, { title });
 };
 
 // ── Feature Requests (Pi agent) ────────────────────────────────────────────────
