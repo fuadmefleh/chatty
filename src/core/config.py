@@ -13,16 +13,33 @@ BASE_DIR = Path(__file__).parent.parent.parent
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4-turbo-preview")
 
-# Chat LLM provider — "openai" (default) or "local" (a local OpenAI-compatible
-# server, e.g. llama.cpp serving qwen). Used by both the Telegram bot
-# (StagedReACTAgent) and the web dashboard (WebChatAgent).
+# Chat LLM provider — "openai" (default), "local" (a local OpenAI-compatible
+# server, e.g. llama.cpp serving qwen), or "anthropic" (Claude API). Used by
+# both the Telegram bot (StagedReACTAgent) and the web dashboard (WebChatAgent).
 CHAT_PROVIDER = os.getenv("CHAT_PROVIDER", "openai")
 LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://192.168.18.150:8080/v1")
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen3.6-27b")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
 
-CHAT_MODEL = LOCAL_LLM_MODEL if CHAT_PROVIDER == "local" else OPENAI_MODEL
-CHAT_BASE_URL = LOCAL_LLM_BASE_URL if CHAT_PROVIDER == "local" else None
-CHAT_API_KEY = "not-needed" if CHAT_PROVIDER == "local" else OPENAI_API_KEY
+if CHAT_PROVIDER == "local":
+    CHAT_MODEL, CHAT_BASE_URL, CHAT_API_KEY = LOCAL_LLM_MODEL, LOCAL_LLM_BASE_URL, "not-needed"
+elif CHAT_PROVIDER == "anthropic":
+    CHAT_MODEL, CHAT_BASE_URL, CHAT_API_KEY = ANTHROPIC_MODEL, None, ANTHROPIC_API_KEY
+else:
+    CHAT_MODEL, CHAT_BASE_URL, CHAT_API_KEY = OPENAI_MODEL, None, OPENAI_API_KEY
+
+# STT (speech-to-text) provider — used by the iOS-companion audio ingestion
+# endpoint (POST /api/chatty/audio); the Telegram bot has no voice-message
+# handling. "whisperx_http" (default) talks to an external WhisperX server
+# (diarization + speaker embeddings); "openai" uses OpenAI's transcription
+# API (no diarization); "local_whisper" runs faster-whisper in-process (no
+# external server/API key, no diarization) - see requirements-local-stt.txt.
+STT_PROVIDER = os.getenv("STT_PROVIDER", "whisperx_http")
+STT_ENGINE_URL = os.getenv("STT_ENGINE_URL", "http://127.0.0.1:8003")
+STT_OPENAI_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
+STT_LOCAL_MODEL_SIZE = os.getenv("STT_LOCAL_MODEL_SIZE", "base")
+STT_LOCAL_DEVICE = os.getenv("STT_LOCAL_DEVICE", "cpu")
 
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -86,6 +103,17 @@ SELF_UPGRADE_TEST_TIMEOUT_SECONDS = int(os.getenv("SELF_UPGRADE_TEST_TIMEOUT_SEC
 # How many total attempts (1 initial + N-1 fix retries) Pi gets to make its own
 # test suite pass before the branch is left for manual review.
 SELF_UPGRADE_MAX_TEST_ATTEMPTS = int(os.getenv("SELF_UPGRADE_MAX_TEST_ATTEMPTS", "3"))
+
+# Trending Suggestions Configuration: Chatty periodically scans GitHub's
+# trending repos (see src/managers/trending_manager.py) and curates a short
+# list of ideas worth considering. Unlike self-upgrade, nothing here is ever
+# implemented automatically - it's just a menu on the dashboard the user picks
+# from ("Implement" routes the idea through the same feature-request pipeline
+# as a manually-typed request).
+TRENDING_LANGUAGES = os.getenv("TRENDING_LANGUAGES", "python,typescript,javascript")
+TRENDING_SCAN_INTERVAL_HOURS = int(os.getenv("TRENDING_SCAN_INTERVAL_HOURS", "6"))
+TRENDING_REPOS_PER_LANGUAGE = int(os.getenv("TRENDING_REPOS_PER_LANGUAGE", "10"))
+TRENDING_MAX_SUGGESTIONS_PER_SCAN = int(os.getenv("TRENDING_MAX_SUGGESTIONS_PER_SCAN", "4"))
 
 # System Prompt
 SYSTEM_PROMPT = """You are a helpful and friendly AI companion. You have access to your memory 

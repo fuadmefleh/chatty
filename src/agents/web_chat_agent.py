@@ -1,9 +1,9 @@
 """Web Chat Agent - a simplified agent for the Chatty web dashboard.
 
 Unlike StagedReACTAgent (which has 7 stages and Telegram-specific code),
-this agent uses a direct OpenAI function-calling loop:
+this agent uses a direct function-calling loop:
 1. Send user message + conversation history + available tools
-2. If OpenAI requests tool calls, execute them and feed results back
+2. If the LLM requests tool calls, execute them and feed results back
 3. Yield text chunks as they arrive (streaming)
 4. Save interaction to memory when done
 
@@ -14,8 +14,8 @@ Usage:
 """
 import json
 from typing import AsyncGenerator, List, Dict, Any
-from openai import AsyncOpenAI
 from src.core import config
+from src.core.llm import get_llm_provider
 from src.core.memory import MemoryManager
 from src.core.skills_manager import SkillsManager
 
@@ -28,10 +28,10 @@ When using tools, act on the results and provide a clear, direct answer."""
 
 
 class WebChatAgent:
-    """Direct OpenAI function-calling agent with streaming, for the web UI."""
+    """Direct function-calling agent with streaming, for the web UI."""
 
     def __init__(self, skills_manager: SkillsManager, memory_manager: MemoryManager):
-        self.client = AsyncOpenAI(api_key=config.CHAT_API_KEY, base_url=config.CHAT_BASE_URL)
+        self.llm = get_llm_provider()
         self.skills_manager = skills_manager
         self.memory_manager = memory_manager
         self._history: List[Dict[str, Any]] = []
@@ -75,13 +75,21 @@ class WebChatAgent:
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + self._history
 
-        # Load recent memory context and prepend as a system note
+        # Load recent + long-term memory context and prepend as system notes
         try:
+            max_chars = config.MAX_MEMORY_TOKENS // 2
+            long_term_memory = await self.memory_manager.get_long_term_memory()
+            if long_term_memory:
+                messages.insert(1, {
+                    "role": "system",
+                    "content": f"Long-term memory about this user:\n{long_term_memory[:max_chars]}"
+                })
+
             recent_memory = await self.memory_manager.get_recent_memory(days=3)
             if recent_memory:
                 messages.insert(1, {
                     "role": "system",
-                    "content": f"Recent conversation memory:\n{recent_memory[:3000]}"
+                    "content": f"Recent conversation memory:\n{recent_memory[:max_chars]}"
                 })
         except Exception:
             pass
@@ -89,57 +97,28 @@ class WebChatAgent:
         tools = self._get_tools()
         full_response = ""
 
-        # Only set temperature for models that support it — o1, o1-mini,
-        # o3-mini, and some newer OpenAI models reject a custom temperature.
-        model_lower = config.CHAT_MODEL.lower()
-        unsupported_temp_models = ['o1', 'o3', 'gpt-5']
-        supports_temperature = not any(x in model_lower for x in unsupported_temp_models)
-
         for _ in range(MAX_TOOL_ITERATIONS):
-            # Call OpenAI with streaming
-            stream_kwargs = dict(
-                model=config.CHAT_MODEL,
-                messages=messages,
-                stream=True,
-            )
-            if supports_temperature:
-                stream_kwargs["temperature"] = 0.7
-            if tools:
-                stream_kwargs["tools"] = tools
-                stream_kwargs["tool_choice"] = "auto"
-
             assistant_content = ""
             tool_calls_acc: Dict[int, Dict] = {}  # index -> {id, name, arguments}
 
-            async with await self.client.chat.completions.create(**stream_kwargs) as stream:
-                async for chunk in stream:
-                    delta = chunk.choices[0].delta if chunk.choices else None
-                    if delta is None:
-                        continue
+            async for chunk in self.llm.stream_with_tools(
+                messages, tools, tool_choice="auto" if tools else "none",
+            ):
+                if chunk.text_delta:
+                    assistant_content += chunk.text_delta
+                    full_response += chunk.text_delta
+                    yield chunk.text_delta
 
-                    # Accumulate text
-                    if delta.content:
-                        assistant_content += delta.content
-                        full_response += delta.content
-                        yield delta.content
-
-                    # Accumulate tool calls
-                    if delta.tool_calls:
-                        for tc in delta.tool_calls:
-                            idx = tc.index
-                            if idx not in tool_calls_acc:
-                                tool_calls_acc[idx] = {
-                                    "id": tc.id or "",
-                                    "name": tc.function.name if tc.function else "",
-                                    "arguments": "",
-                                }
-                            if tc.id:
-                                tool_calls_acc[idx]["id"] = tc.id
-                            if tc.function:
-                                if tc.function.name:
-                                    tool_calls_acc[idx]["name"] = tc.function.name
-                                if tc.function.arguments:
-                                    tool_calls_acc[idx]["arguments"] += tc.function.arguments
+                for tcd in chunk.tool_call_deltas:
+                    idx = tcd.index
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                    if tcd.id:
+                        tool_calls_acc[idx]["id"] = tcd.id
+                    if tcd.name:
+                        tool_calls_acc[idx]["name"] = tcd.name
+                    if tcd.arguments_delta:
+                        tool_calls_acc[idx]["arguments"] += tcd.arguments_delta
 
             # If no tool calls, we're done
             if not tool_calls_acc:

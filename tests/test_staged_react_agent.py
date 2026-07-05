@@ -2,17 +2,32 @@
 transient-error retries, and backgrounded REFLECT/MEMORIZE stages."""
 import asyncio
 import json
-import httpx
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from openai import APIConnectionError
+from src.agents.staged_react_agent import StagedReACTAgent, ReACTState
+from src.core.llm import LLMResponse, LLMRetryableError, MAX_LLM_RETRIES
 
-from src.agents.staged_react_agent import (
-    StagedReACTAgent,
-    ReACTState,
-    MAX_LLM_RETRIES,
-)
+
+class FakeLLMProvider:
+    """Minimal LLMProvider stand-in for tests that don't care about the
+    real OpenAI/Anthropic wire format, only that StagedReACTAgent calls
+    through self.llm correctly."""
+    model = "fake-model"
+
+    def __init__(self):
+        self.complete = AsyncMock(return_value=LLMResponse(content=""))
+        self.complete_with_tools = AsyncMock(return_value=LLMResponse(content="", tool_calls=[]))
+
+    @property
+    def supports_vision(self) -> bool:
+        return False
+
+    async def complete_vision(self, prompt, image_b64, *, max_tokens=800) -> str:
+        return ""
+
+    def stream_with_tools(self, *args, **kwargs):
+        raise NotImplementedError
 
 
 @pytest.fixture
@@ -27,11 +42,7 @@ def agent():
     skills_manager.get_openai_tools.return_value = []
     skills_manager.get_all_skills.return_value = []
 
-    return StagedReACTAgent(memory_manager, skills_manager)
-
-
-def _connection_error() -> APIConnectionError:
-    return APIConnectionError(request=httpx.Request("POST", "http://test.local"))
+    return StagedReACTAgent(memory_manager, skills_manager, llm_provider=FakeLLMProvider())
 
 
 class TestConversationHistoryInPrompts:
@@ -91,43 +102,28 @@ class TestConversationHistoryInPrompts:
 
 class TestTransientErrorRetries:
     @pytest.mark.asyncio
-    async def test_create_completion_retries_then_succeeds(self, agent, monkeypatch):
-        monkeypatch.setattr("src.agents.staged_react_agent.asyncio.sleep", AsyncMock())
+    async def test_call_llm_retries_then_succeeds(self, agent, monkeypatch):
+        monkeypatch.setattr("src.core.llm.retry.asyncio.sleep", AsyncMock())
 
-        success = MagicMock()
-        success.choices = [MagicMock(message=MagicMock(content="ok"))]
+        success = LLMResponse(content="ok")
+        agent.llm.complete = AsyncMock(side_effect=[LLMRetryableError("boom"), success])
 
-        agent.client.chat.completions.create = AsyncMock(
-            side_effect=[_connection_error(), success]
-        )
+        result = await agent._call_llm("prompt")
 
-        response = await agent._create_completion(model="x", messages=[])
-
-        assert response is success
-        assert agent.client.chat.completions.create.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_create_completion_raises_after_max_retries(self, agent, monkeypatch):
-        monkeypatch.setattr("src.agents.staged_react_agent.asyncio.sleep", AsyncMock())
-
-        errors = [_connection_error() for _ in range(MAX_LLM_RETRIES + 1)]
-        agent.client.chat.completions.create = AsyncMock(side_effect=errors)
-
-        with pytest.raises(APIConnectionError):
-            await agent._create_completion(model="x", messages=[])
-
-        assert agent.client.chat.completions.create.call_count == MAX_LLM_RETRIES + 1
+        assert result == "ok"
+        assert agent.llm.complete.call_count == 2
 
     @pytest.mark.asyncio
     async def test_call_llm_falls_back_on_persistent_failure(self, agent, monkeypatch):
-        monkeypatch.setattr("src.agents.staged_react_agent.asyncio.sleep", AsyncMock())
+        monkeypatch.setattr("src.core.llm.retry.asyncio.sleep", AsyncMock())
 
-        errors = [_connection_error() for _ in range(MAX_LLM_RETRIES + 1)]
-        agent.client.chat.completions.create = AsyncMock(side_effect=errors)
+        errors = [LLMRetryableError("boom") for _ in range(MAX_LLM_RETRIES + 1)]
+        agent.llm.complete = AsyncMock(side_effect=errors)
 
         result = await agent._call_llm("prompt")
 
         assert result == ""
+        assert agent.llm.complete.call_count == MAX_LLM_RETRIES + 1
 
 
 class TestBackgroundedReflectAndMemorize:

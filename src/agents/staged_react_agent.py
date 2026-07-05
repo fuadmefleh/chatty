@@ -14,9 +14,9 @@ import json
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
-from openai import AsyncOpenAI, RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 import tiktoken
 from src.core import config
+from src.core.llm import LLMProvider, get_llm_provider, with_retries
 from src.core.memory import MemoryManager
 from src.core.skills_manager import SkillsManager
 from src.core.memory_tools import MemoryTools
@@ -26,11 +26,6 @@ from src.core.logging_config import get_agent_logger, get_api_logger, get_tools_
 agent_logger = get_agent_logger()
 api_logger = get_api_logger()
 tools_logger = get_tools_logger()
-
-# Transient errors worth retrying with backoff before giving up
-RETRYABLE_ERRORS = (RateLimitError, APIConnectionError, APITimeoutError, InternalServerError)
-MAX_LLM_RETRIES = 2
-RETRY_BASE_DELAY = 1.0  # seconds; doubles each retry
 
 
 class ReACTStage(Enum):
@@ -101,14 +96,19 @@ class StagedReACTAgent:
     MAX_SYNTHESIS_CONTEXT_CHARS = 8000  # Max context for synthesis
     MAX_HISTORY_CONTEXT_CHARS = 2000  # Max conversation history included in prompts
     
-    def __init__(self, memory_manager: MemoryManager, skills_manager: SkillsManager):
+    def __init__(
+        self, memory_manager: MemoryManager, skills_manager: SkillsManager,
+        llm_provider: Optional[LLMProvider] = None,
+    ):
         """Initialize the staged ReACT agent.
-        
+
         Args:
             memory_manager: Memory manager instance
             skills_manager: Skills manager instance (with dynamic tool loading)
+            llm_provider: Optional LLM backend override (defaults to the
+                configured CHAT_PROVIDER); mainly used to inject a fake in tests
         """
-        self.client = AsyncOpenAI(api_key=config.CHAT_API_KEY, base_url=config.CHAT_BASE_URL)
+        self.llm = llm_provider or get_llm_provider()
         self.memory_manager = memory_manager
         self.skills_manager = skills_manager
         self.max_iterations = config.MAX_ITERATIONS
@@ -413,39 +413,38 @@ If no tools needed, return empty arrays."""
                     agent_logger.warning(f"Token count too high: {estimated_tokens}, compressing context")
                     messages = self._compress_messages(messages)
                 
-                response = await self._create_completion(
-                    model=config.CHAT_MODEL,
-                    messages=messages,
-                    tools=needed_tools if needed_tools else None,
-                    tool_choice="auto" if needed_tools else None
+                response = await with_retries(
+                    lambda: self.llm.complete_with_tools(
+                        messages, needed_tools,
+                        tool_choice="auto" if needed_tools else "none",
+                    ),
+                    logger=api_logger,
                 )
-                
-                message = response.choices[0].message
-                
-                if message.tool_calls:
-                    messages.append(message)
-                    
-                    for tool_call in message.tool_calls:
-                        function_name = tool_call.function.name
+
+                if response.tool_calls:
+                    messages.append(response.to_openai_message())
+
+                    for tool_call in response.tool_calls:
+                        function_name = tool_call.name
                         try:
-                            function_args = json.loads(tool_call.function.arguments)
+                            function_args = json.loads(tool_call.arguments)
                         except json.JSONDecodeError:
                             function_args = {}
-                        
+
                         tools_logger.info(f"Executing: {function_name}({function_args})")
-                        
+
                         # Execute the tool
                         result = await self._execute_tool(function_name, function_args)
-                        
+
                         # Truncate large results to prevent token bloat
                         truncated_result = self._truncate_tool_result(result, function_name)
-                        
+
                         state.tool_results.append({
                             "tool": function_name,
                             "args": function_args,
                             "result": truncated_result
                         })
-                        
+
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
@@ -607,59 +606,26 @@ If nothing important to remember, return empty array."""
         state.stage = ReACTStage.COMPLETE
         return state
 
-    async def _create_completion(self, **kwargs):
-        """Call chat.completions.create with bounded retries on transient errors.
-
-        Retries RateLimitError/APIConnectionError/APITimeoutError/InternalServerError
-        with exponential backoff before giving up. Callers keep their existing
-        fallback behavior (e.g. returning "{}"/"" or breaking a loop) once this
-        raises after exhausting retries.
-        """
-        last_exc: Optional[Exception] = None
-        for attempt in range(MAX_LLM_RETRIES + 1):
-            try:
-                return await self.client.chat.completions.create(**kwargs)
-            except RETRYABLE_ERRORS as e:
-                last_exc = e
-                if attempt < MAX_LLM_RETRIES:
-                    delay = RETRY_BASE_DELAY * (2 ** attempt)
-                    api_logger.warning(
-                        f"Transient API error ({type(e).__name__}), retrying in "
-                        f"{delay}s (attempt {attempt + 1}/{MAX_LLM_RETRIES})"
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    api_logger.error(f"Exhausted retries after {MAX_LLM_RETRIES} attempts: {e}")
-        raise last_exc
-
     async def _call_llm(self, prompt: str, response_format: str = "text") -> str:
         """Make an LLM call for internal reasoning.
-        
+
         Args:
             prompt: The prompt to send
             response_format: "text" or "json"
-            
+
         Returns:
             LLM response content
         """
         try:
-            kwargs = {
-                "model": config.CHAT_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-
-            # Only set temperature for models that support it
-            # o1, o1-mini, o3-mini, and some newer models don't support custom temperature
-            model_lower = config.CHAT_MODEL.lower()
-            unsupported_temp_models = ['o1', 'o3', 'gpt-5']
-            if not any(x in model_lower for x in unsupported_temp_models):
-                kwargs["temperature"] = 0.3  # Lower for more consistent reasoning
-            
-            if response_format == "json":
-                kwargs["response_format"] = {"type": "json_object"}
-
-            response = await self._create_completion(**kwargs)
-            return response.choices[0].message.content or ""
+            response = await with_retries(
+                lambda: self.llm.complete(
+                    [{"role": "user", "content": prompt}],
+                    response_format=response_format,
+                    temperature=0.3,  # Lower for more consistent reasoning
+                ),
+                logger=api_logger,
+            )
+            return response.content or ""
 
         except Exception as e:
             api_logger.error(f"LLM call failed: {e}")

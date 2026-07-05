@@ -19,6 +19,8 @@ from typing import Dict, List
 from src.core import config
 from src.core.memory import MemoryManager, ConversationHistoryManager, MAX_SESSIONS_SHOWN
 from src.core.skills_manager import SkillsManager  # Use the new dynamic skills manager
+from src.core.llm import get_llm_provider
+from src.core.llm.openai_provider import OpenAIProvider
 from src.agents.staged_react_agent import StagedReACTAgent  # Use staged ReACT agent
 from src.managers.reminder_manager import ReminderManager
 from skills.reminder.tools import set_reminder_manager
@@ -1284,17 +1286,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Facial recognition error (will continue with vision): {face_error}")
             face_info = "\n\n_Facial recognition not available, using vision analysis only._"
         
-        # Step 2: Use OpenAI Vision for detailed analysis
+        # Step 2: Use vision analysis via the configured LLM provider
         await safe_send_reply(update.message, "📸 Analyzing image details...")
-        
+
         # Read and encode image
         with open(file_path, "rb") as image_file:
             image_data = base64.b64encode(image_file.read()).decode('utf-8')
-        
-        # Use OpenAI to analyze the image
-        from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
-        
+
         analysis_prompt = f"""Analyze this image in detail. Focus on:
 1. **People**: Describe any people visible (physical appearance, clothing, expressions, what they're doing)
 2. **Context**: Where was this taken? What's the setting?
@@ -1304,27 +1302,25 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 User's caption: "{caption or '(no caption)'}"
 
 Provide a detailed but concise analysis."""
-        
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": analysis_prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_data}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            max_tokens=800
-        )
-        
-        analysis = response.choices[0].message.content
+
+        provider = get_llm_provider()
+        if provider.supports_vision:
+            analysis = await provider.complete_vision(analysis_prompt, image_b64=image_data, max_tokens=800)
+        elif config.OPENAI_API_KEY:
+            # Primary provider (e.g. a local llama.cpp server) lacks vision,
+            # but OpenAI creds exist - fall back to a one-off OpenAI vision call.
+            fallback = OpenAIProvider(
+                api_key=config.OPENAI_API_KEY, base_url=None, model="gpt-4o", supports_vision=True,
+            )
+            analysis = await fallback.complete_vision(analysis_prompt, image_b64=image_data, max_tokens=800)
+        else:
+            await safe_send_reply(
+                update.message,
+                "Image analysis needs OpenAI or Anthropic configured "
+                "(set OPENAI_API_KEY, or CHAT_PROVIDER=anthropic with ANTHROPIC_API_KEY)."
+            )
+            return
+
         logger.info(f"Image analysis completed: {analysis[:200]}...")
         
         # Save analysis to long-term memory

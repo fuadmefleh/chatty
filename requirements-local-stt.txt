@@ -1,0 +1,4 @@
+# Optional: only needed if STT_PROVIDER=local_whisper (in-process
+# open-source speech-to-text, no external server or API key required).
+# pip install -r requirements-local-stt.txt
+faster-whisper>=1.0.0
