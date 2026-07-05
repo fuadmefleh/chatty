@@ -11,11 +11,24 @@ from openai import (
     RateLimitError,
 )
 
+from src.core.token_usage_manager import get_token_usage_manager
+
 from .base import LLMProvider
-from .types import LLMResponse, LLMRetryableError, StreamChunk, ToolCall, ToolCallDelta
+from .types import LLMResponse, LLMRetryableError, StreamChunk, ToolCall, ToolCallDelta, Usage
 
 _RETRYABLE_ERRORS = (RateLimitError, APIConnectionError, APITimeoutError, InternalServerError)
 _UNSUPPORTED_TEMP_MODELS = ("o1", "o3", "gpt-5")
+
+
+def _usage_from_response(response) -> Optional[Usage]:
+    u = getattr(response, "usage", None)
+    if u is None:
+        return None
+    return Usage(
+        prompt_tokens=u.prompt_tokens or 0,
+        completion_tokens=u.completion_tokens or 0,
+        total_tokens=u.total_tokens or 0,
+    )
 
 
 class OpenAIProvider(LLMProvider):
@@ -25,6 +38,15 @@ class OpenAIProvider(LLMProvider):
         # o1, o1-mini, o3-mini, and some newer OpenAI models reject a custom temperature
         self.supports_temperature = not any(x in model.lower() for x in _UNSUPPORTED_TEMP_MODELS)
         self._supports_vision = supports_vision
+        # A local OpenAI-compatible server is reached via base_url; the hosted API isn't.
+        self.provider_label = "local" if base_url else "openai"
+
+    def _record_usage(self, usage: Optional[Usage]) -> None:
+        if usage is not None:
+            get_token_usage_manager().record(
+                provider=self.provider_label, model=self.model,
+                prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens,
+            )
 
     @property
     def supports_vision(self) -> bool:
@@ -47,10 +69,13 @@ class OpenAIProvider(LLMProvider):
         except _RETRYABLE_ERRORS as e:
             raise LLMRetryableError(str(e)) from e
         message = response.choices[0].message
+        usage = _usage_from_response(response)
+        self._record_usage(usage)
         return LLMResponse(
             content=message.content or "",
             stop_reason=response.choices[0].finish_reason or "stop",
             raw=response,
+            usage=usage,
         )
 
     async def complete_with_tools(
@@ -70,18 +95,24 @@ class OpenAIProvider(LLMProvider):
             ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments or "{}")
             for tc in (message.tool_calls or [])
         ]
+        usage = _usage_from_response(response)
+        self._record_usage(usage)
         return LLMResponse(
             content=message.content,
             tool_calls=tool_calls,
             stop_reason="tool_calls" if tool_calls else (response.choices[0].finish_reason or "stop"),
             raw=response,
+            usage=usage,
         )
 
     async def stream_with_tools(
         self, messages: List[Dict], tools: List[Dict], *,
         tool_choice: str = "auto", temperature: Optional[float] = None,
     ) -> AsyncIterator[StreamChunk]:
-        kwargs = dict(model=self.model, messages=messages, stream=True, **self._temperature_kwargs(temperature))
+        kwargs = dict(
+            model=self.model, messages=messages, stream=True,
+            stream_options={"include_usage": True}, **self._temperature_kwargs(temperature),
+        )
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
@@ -91,6 +122,8 @@ class OpenAIProvider(LLMProvider):
                 async for chunk in stream:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta is None:
+                        # The final chunk with `include_usage` has no choices, just usage.
+                        self._record_usage(_usage_from_response(chunk))
                         continue
                     tool_call_deltas = []
                     if delta.tool_calls:
@@ -126,4 +159,5 @@ class OpenAIProvider(LLMProvider):
             )
         except _RETRYABLE_ERRORS as e:
             raise LLMRetryableError(str(e)) from e
+        self._record_usage(_usage_from_response(response))
         return response.choices[0].message.content or ""

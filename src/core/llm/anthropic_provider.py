@@ -34,8 +34,10 @@ from anthropic import (
     RateLimitError,
 )
 
+from src.core.token_usage_manager import get_token_usage_manager
+
 from .base import LLMProvider
-from .types import LLMResponse, LLMRetryableError, StreamChunk, ToolCall, ToolCallDelta
+from .types import LLMResponse, LLMRetryableError, StreamChunk, ToolCall, ToolCallDelta, Usage
 
 _RETRYABLE_ERRORS = (RateLimitError, APIConnectionError, APITimeoutError, InternalServerError, OverloadedError)
 
@@ -121,6 +123,18 @@ def _tools_to_anthropic(tools: Optional[List[Dict]]) -> Optional[List[Dict]]:
     ]
 
 
+def _usage_from_message(message) -> Optional[Usage]:
+    u = getattr(message, "usage", None)
+    if u is None:
+        return None
+    input_tokens = getattr(u, "input_tokens", 0) or 0
+    output_tokens = getattr(u, "output_tokens", 0) or 0
+    return Usage(
+        prompt_tokens=input_tokens, completion_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+    )
+
+
 def _extract_response(message) -> LLMResponse:
     text_parts = []
     tool_calls = []
@@ -134,6 +148,7 @@ def _extract_response(message) -> LLMResponse:
         tool_calls=tool_calls,
         stop_reason="tool_calls" if tool_calls else (message.stop_reason or "stop"),
         raw=message,
+        usage=_usage_from_message(message),
     )
 
 
@@ -142,6 +157,14 @@ class AnthropicProvider(LLMProvider):
         self.client = AsyncAnthropic(api_key=api_key)
         self.model = model
         self.supports_temperature = True
+        self.provider_label = "anthropic"
+
+    def _record_usage(self, usage: Optional[Usage]) -> None:
+        if usage is not None:
+            get_token_usage_manager().record(
+                provider=self.provider_label, model=self.model,
+                prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens,
+            )
 
     @property
     def supports_vision(self) -> bool:
@@ -166,7 +189,9 @@ class AnthropicProvider(LLMProvider):
             message = await self.client.messages.create(**kwargs)
         except _RETRYABLE_ERRORS as e:
             raise LLMRetryableError(str(e)) from e
-        return _extract_response(message)
+        response = _extract_response(message)
+        self._record_usage(response.usage)
+        return response
 
     async def _complete_json(self, messages: List[Dict], *, temperature: Optional[float]) -> LLMResponse:
         """No native JSON mode - append an instruction to the last user turn
@@ -194,7 +219,9 @@ class AnthropicProvider(LLMProvider):
             raise LLMRetryableError(str(e)) from e
 
         text = "".join(b.text for b in message.content if b.type == "text")
-        return LLMResponse(content=_strip_json_fences(text), stop_reason="stop", raw=message)
+        usage = _usage_from_message(message)
+        self._record_usage(usage)
+        return LLMResponse(content=_strip_json_fences(text), stop_reason="stop", raw=message, usage=usage)
 
     async def complete_with_tools(
         self, messages: List[Dict], tools: List[Dict], *,
@@ -219,7 +246,9 @@ class AnthropicProvider(LLMProvider):
             message = await self.client.messages.create(**kwargs)
         except _RETRYABLE_ERRORS as e:
             raise LLMRetryableError(str(e)) from e
-        return _extract_response(message)
+        response = _extract_response(message)
+        self._record_usage(response.usage)
+        return response
 
     async def stream_with_tools(
         self, messages: List[Dict], tools: List[Dict], *,
@@ -242,10 +271,16 @@ class AnthropicProvider(LLMProvider):
             kwargs["temperature"] = temperature
 
         block_index_to_name: Dict[int, str] = {}
+        input_tokens = 0
+        output_tokens = 0
         try:
             async with self.client.messages.stream(**kwargs) as stream:
                 async for event in stream:
-                    if event.type == "content_block_start":
+                    if event.type == "message_start":
+                        usage = getattr(event.message, "usage", None)
+                        if usage is not None:
+                            input_tokens = getattr(usage, "input_tokens", 0) or 0
+                    elif event.type == "content_block_start":
                         if event.content_block.type == "tool_use":
                             block_index_to_name[event.index] = event.content_block.name
                             yield StreamChunk(tool_call_deltas=[
@@ -260,10 +295,18 @@ class AnthropicProvider(LLMProvider):
                             ])
                     elif event.type == "message_delta":
                         stop_reason = getattr(event.delta, "stop_reason", None)
+                        usage = getattr(event, "usage", None)
+                        if usage is not None:
+                            output_tokens = getattr(usage, "output_tokens", 0) or 0
                         if stop_reason:
                             yield StreamChunk(is_final=True, stop_reason=stop_reason)
         except _RETRYABLE_ERRORS as e:
             raise LLMRetryableError(str(e)) from e
+        if input_tokens or output_tokens:
+            self._record_usage(Usage(
+                prompt_tokens=input_tokens, completion_tokens=output_tokens,
+                total_tokens=input_tokens + output_tokens,
+            ))
 
     async def complete_vision(self, prompt: str, image_b64: str, *, max_tokens: int = 800) -> str:
         try:
@@ -280,5 +323,6 @@ class AnthropicProvider(LLMProvider):
             )
         except _RETRYABLE_ERRORS as e:
             raise LLMRetryableError(str(e)) from e
+        self._record_usage(_usage_from_message(message))
         text_parts = [b.text for b in message.content if b.type == "text"]
         return "".join(text_parts)

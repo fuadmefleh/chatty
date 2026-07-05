@@ -26,6 +26,7 @@ def _make_provider(**kwargs) -> OpenAIProvider:
 async def test_complete_returns_normalized_response():
     provider = _make_provider()
     fake_response = MagicMock()
+    fake_response.usage = None
     fake_response.choices = [MagicMock(message=MagicMock(content="hi there"), finish_reason="stop")]
     provider.client.chat.completions.create = AsyncMock(return_value=fake_response)
 
@@ -40,6 +41,7 @@ async def test_complete_returns_normalized_response():
 async def test_complete_json_mode_sets_response_format():
     provider = _make_provider()
     fake_response = MagicMock()
+    fake_response.usage = None
     fake_response.choices = [MagicMock(message=MagicMock(content="{}"), finish_reason="stop")]
     provider.client.chat.completions.create = AsyncMock(return_value=fake_response)
 
@@ -56,6 +58,7 @@ async def test_complete_with_tools_normalizes_tool_calls():
     fake_function.name = "get_weather"  # MagicMock(name=...) sets the mock's repr, not an attribute
     fake_tool_call = MagicMock(id="call_1", function=fake_function)
     fake_response = MagicMock()
+    fake_response.usage = None
     fake_response.choices = [MagicMock(
         message=MagicMock(content=None, tool_calls=[fake_tool_call]),
         finish_reason="tool_calls",
@@ -92,6 +95,7 @@ async def test_with_retries_recovers_from_transient_openai_error(monkeypatch):
     monkeypatch.setattr("src.core.llm.retry.asyncio.sleep", AsyncMock())
     provider = _make_provider()
     fake_response = MagicMock()
+    fake_response.usage = None
     fake_response.choices = [MagicMock(message=MagicMock(content="ok"), finish_reason="stop")]
     provider.client.chat.completions.create = AsyncMock(
         side_effect=[_connection_error(), fake_response]

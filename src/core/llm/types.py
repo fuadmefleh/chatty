@@ -32,11 +32,19 @@ class ToolCall:
 
 
 @dataclass
+class Usage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+@dataclass
 class LLMResponse:
     content: Optional[str]
     tool_calls: List[ToolCall] = field(default_factory=list)
     stop_reason: str = "stop"
     raw: Any = None  # escape hatch for debug logging only
+    usage: Optional[Usage] = None
 
     def to_openai_message(self) -> Dict[str, Any]:
         msg: Dict[str, Any] = {"role": "assistant", "content": self.content}

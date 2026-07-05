@@ -54,6 +54,7 @@ from skills.pi_agent.requests_manager import FeatureRequestsManager
 from skills.pi_agent import lock as pi_lock
 from src.managers.self_upgrade_manager import run_feature_request
 from src.managers.trending_manager import TrendingSuggestionsManager, run_trending_scan
+from src.core.token_usage_manager import get_token_usage_manager
 
 logger = get_api_logger()
 
@@ -106,6 +107,7 @@ watchlist_manager = WatchlistManager()
 insights_manager = InsightsManager()
 feature_requests_manager = FeatureRequestsManager()
 trending_suggestions_manager = TrendingSuggestionsManager()
+token_usage_manager = get_token_usage_manager()
 skills_manager: Optional[SkillsManager] = None
 _pi_worker_task: Optional[asyncio.Task] = None
 
@@ -272,6 +274,18 @@ async def server_health():
         "uptime_seconds": uptime_seconds,
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+@app.get("/api/chatty/token-usage/summary", dependencies=[Depends(require_api_key)])
+async def token_usage_summary(days: int = 30):
+    """Return aggregate LLM token usage: totals, per-model/provider breakdown, daily series."""
+    return token_usage_manager.get_summary(days=days)
+
+
+@app.get("/api/chatty/token-usage/recent", dependencies=[Depends(require_api_key)])
+async def token_usage_recent(limit: int = 50):
+    """Return the most recent individual LLM requests logged."""
+    return token_usage_manager.get_recent(limit=limit)
 
 
 # ── Notes ────────────────────────────────────────────────────────────────────

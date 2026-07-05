@@ -478,4 +478,55 @@ export const fetchServerHealth = async (): Promise<ServerHealth> => {
   return res.data;
 };
 
+// ── Token usage ──────────────────────────────────────────────────────────────
+export interface TokenUsageByModel {
+  provider: string;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  request_count: number;
+  estimated_cost_usd: number | null;
+}
+
+export interface TokenUsageByDay {
+  day: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+export interface TokenUsageSummary {
+  range_days: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_tokens: number;
+  request_count: number;
+  today_total_tokens: number;
+  today_request_count: number;
+  total_estimated_cost_usd: number;
+  unpriced_model_count: number;
+  by_model: TokenUsageByModel[];
+  by_day: TokenUsageByDay[];
+}
+
+export interface TokenUsageEntry {
+  timestamp: string;
+  provider: string;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+export const fetchTokenUsageSummary = async (days = 30): Promise<TokenUsageSummary> => {
+  const res = await chattyApi.get<TokenUsageSummary>('/api/chatty/token-usage/summary', { params: { days } });
+  return res.data;
+};
+
+export const fetchTokenUsageRecent = async (limit = 50): Promise<TokenUsageEntry[]> => {
+  const res = await chattyApi.get<TokenUsageEntry[]>('/api/chatty/token-usage/recent', { params: { limit } });
+  return res.data;
+};
+
 export default chattyApi;

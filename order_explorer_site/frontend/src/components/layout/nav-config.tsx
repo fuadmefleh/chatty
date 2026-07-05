@@ -60,6 +60,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/suggestions', label: 'Suggestions' },
       { to: '/system', label: 'System' },
       { to: '/server-health', label: 'Server Health' },
+      { to: '/token-usage', label: 'Token Usage' },
       { to: '/code', label: 'Code' },
     ],
   },

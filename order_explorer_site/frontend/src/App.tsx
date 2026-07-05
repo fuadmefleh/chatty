@@ -34,6 +34,7 @@ import Suggestions from './pages/Suggestions';
 import SystemStatus from './pages/SystemStatus';
 import CodeBrowser from './pages/CodeBrowser';
 import ServerHealth from './pages/ServerHealth';
+import TokenUsage from './pages/TokenUsage';
 
 function RoutedApp() {
   const { pathname } = useLocation();
@@ -75,6 +76,7 @@ function RoutedApp() {
           <Route path="/suggestions" element={<Suggestions />} />
           <Route path="/system" element={<SystemStatus />} />
           <Route path="/server-health" element={<ServerHealth />} />
+          <Route path="/token-usage" element={<TokenUsage />} />
           <Route path="/code" element={<CodeBrowser />} />
         </Routes>
       </ErrorBoundary>
