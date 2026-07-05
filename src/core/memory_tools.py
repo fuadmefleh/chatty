@@ -10,6 +10,24 @@ import logging
 logger = logging.getLogger('react')
 
 
+def _resolve_memory_path(base_dir: Path, filename: str) -> Path | None:
+    """Resolve `filename` under `base_dir`, rejecting any path that escapes it.
+
+    Mirrors the containment check used by chatty_web_server.py's
+    _resolve_code_path() - required here because `filename` can come from
+    LLM tool-call arguments (prompt injection surface), not just trusted
+    callers.
+    """
+    candidate = (base_dir / (filename or "").strip().lstrip("/")).resolve()
+    try:
+        candidate.relative_to(base_dir.resolve())
+    except ValueError:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
 class MemoryTools:
     """Tools for searching and retrieving information from memory files."""
     
@@ -44,7 +62,7 @@ class MemoryTools:
                 cmd = [
                     'grep', '-r', '-i', '-n',
                     f'-C{context_lines}',
-                    search_term,
+                    '--', search_term,
                     str(self.short_term_dir)
                 ]
                 proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -59,7 +77,7 @@ class MemoryTools:
                 cmd = [
                     'grep', '-r', '-i', '-n',
                     f'-C{context_lines}',
-                    search_term,
+                    '--', search_term,
                     str(self.long_term_dir)
                 ]
                 proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -124,15 +142,16 @@ class MemoryTools:
         logger.info(f"[TOOL] read_memory_file: reading {memory_type}/{filename}")
         
         if memory_type == "short_term":
-            file_path = self.short_term_dir / filename
+            base_dir = self.short_term_dir
         elif memory_type == "long_term":
-            file_path = self.long_term_dir / filename
+            base_dir = self.long_term_dir
         else:
             return f"Invalid memory_type '{memory_type}'. Use 'short_term' or 'long_term'"
-        
-        if not file_path.exists():
+
+        file_path = _resolve_memory_path(base_dir, filename)
+        if file_path is None:
             return f"File not found: {filename}"
-        
+
         try:
             async with aiofiles.open(file_path, 'r') as f:
                 content = await f.read()
@@ -352,29 +371,16 @@ class MemoryTools:
         
         category_clean = category.lower().replace(' ', '_')
         file_name = category_map.get(category_clean, 'important_facts')
-        
-        file_path = self.long_term_dir / f"{file_name}.md"
-        
+
         try:
-            # Create or read existing file
-            if file_path.exists():
-                async with aiofiles.open(file_path, 'r') as f:
-                    existing_content = await f.read()
-            else:
-                # Create new file with header
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                existing_content = f"# Long-Term Memory: {file_name}\n\nCreated: {timestamp}\n\n"
-            
-            # Append new content with timestamp
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            new_entry = f"\n## Update [{timestamp}]\n{content}\n"
-            
-            async with aiofiles.open(file_path, 'w') as f:
-                await f.write(existing_content + new_entry)
-            
+            from src.core.memory import MemoryManager
+
+            memory_manager = MemoryManager(self.user_id)
+            await memory_manager.add_long_term_memory(file_name, content)
+
             logger.info(f"Successfully saved to {file_name}.md")
             return f"✅ Successfully saved information to long-term memory ({file_name})"
-            
+
         except Exception as e:
             error_msg = f"Error saving to long-term memory: {e}"
             logger.error(error_msg)
