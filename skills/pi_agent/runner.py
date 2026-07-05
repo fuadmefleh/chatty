@@ -31,6 +31,27 @@ PI_AGENT_MODEL = os.environ.get("PI_AGENT_MODEL", "qwen3.6-27b")
 # Max time (seconds) before we kill a stuck pi process
 MAX_RUN_SECONDS = 300  # 5 minutes
 
+# The pm2 app name this very server runs under. `pi` runs as a plain child
+# subprocess of this process (no start_new_session), so when a request asks
+# it to restart chatty-web-server as its final verification step, pm2 sends
+# its stop signal (SIGINT by default) to the whole process tree - including
+# `pi` itself - and kills it before it can print its final "agent_end"
+# event. All file writes already happened synchronously before that point,
+# so this isn't a real failure; see the self-restart handling below.
+PM2_SELF_APP_NAME = os.environ.get("PM2_APP_NAME", "chatty-web-server")
+
+
+def _is_self_restart_command(command: str) -> bool:
+    """True if `command` looks like a pm2 restart/reload/stop/delete of this
+    very app (order-agnostic substring check - shell commands vary too much
+    in flag placement for a single strict regex)."""
+    lower = command.lower()
+    return (
+        "pm2" in lower
+        and any(verb in lower for verb in ("restart", "reload", "stop", "delete"))
+        and PM2_SELF_APP_NAME in lower
+    )
+
 # Build a clean environment for the pi subprocess.
 # pm2 may strip PATH/HOME which pi needs for its config + node.
 _HOME = os.path.expanduser("~")
@@ -104,6 +125,7 @@ async def run_pi_agent(prompt: str, cwd: Optional[Path] = None) -> AsyncGenerato
         raw_lines = []
         thinking_seconds = 0
         total_seconds = 0
+        last_bash_command = ""
 
         while True:
             try:
@@ -138,6 +160,8 @@ async def run_pi_agent(prompt: str, cwd: Optional[Path] = None) -> AsyncGenerato
                 got_events = True
                 if event.get("type") == "agent_end":
                     saw_agent_end = True
+                if event.get("type") == "tool_execution_start" and event.get("toolName") == "bash":
+                    last_bash_command = str((event.get("args") or {}).get("command", ""))
                 for parsed in parser.feed(event):
                     if not parsed.get("content"):
                         continue
@@ -169,6 +193,21 @@ async def run_pi_agent(prompt: str, cwd: Optional[Path] = None) -> AsyncGenerato
                 yield {"type": "completed", "content": "Pi agent finished successfully."}
             else:
                 yield {"type": "completed", "content": f"Pi agent finished (process exited with code {rc} during shutdown)."}
+        elif rc is not None and rc < 0 and _is_self_restart_command(last_bash_command):
+            # Killed by a signal (negative rc) right after asking pm2 to
+            # restart this very service. `pi` is an unprotected child of this
+            # process, so pm2's restart signal hit it too - see
+            # PM2_SELF_APP_NAME above. All file writes already happened
+            # synchronously before this command ran, so the work is done;
+            # only the final status report got cut off.
+            yield {
+                "type": "completed",
+                "content": (
+                    f"Pi agent finished — its last action restarted {PM2_SELF_APP_NAME}, "
+                    "which also killed the agent process before it could confirm completion "
+                    "(signal " + str(-rc) + "). File changes were already written to disk."
+                ),
+            }
         elif rc == 0 and not got_events:
             stderr_msg = "\n".join(raw_lines[:5]) if raw_lines else "No output received"
             yield {"type": "error", "content": f"Pi agent produced no output. stderr: {stderr_msg[:300]}"}

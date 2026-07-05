@@ -7,35 +7,24 @@ import {
 import type { FeatureRequest, FeatureRequestStatus } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
+import Badge from '../components/ui/Badge';
+import Spinner from '../components/ui/Spinner';
+import PulseDot from '../components/ui/PulseDot';
+import EmptyState from '../components/ui/EmptyState';
 
 const POLL_MS = 3000;
 
-const statusColor: Record<FeatureRequestStatus, string> = {
-  queued: 'var(--muted)',
-  running: 'var(--stamp-teal)',
-  testing: 'var(--stamp-gold)',
-  completed: 'var(--success)',
-  error: 'var(--danger)',
+const statusTone: Record<FeatureRequestStatus, 'neutral' | 'teal' | 'gold' | 'ember'> = {
+  queued: 'neutral',
+  running: 'teal',
+  testing: 'gold',
+  completed: 'teal',
+  error: 'ember',
 };
 
-const StatusBadge: React.FC<{ status: FeatureRequestStatus }> = ({ status }) => {
-  const color = statusColor[status];
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 6,
-      fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700,
-      textTransform: 'uppercase', letterSpacing: '0.05em', color,
-      padding: '3px 10px', borderRadius: 20,
-      background: status === 'queued' ? 'var(--ink-700)' : `${color}26`,
-    }}>
-      <span style={{
-        width: 6, height: 6, borderRadius: '50%', background: color,
-        boxShadow: status === 'running' ? `0 0 6px ${color}` : 'none',
-      }} />
-      {status}
-    </span>
-  );
-};
+const StatusBadge: React.FC<{ status: FeatureRequestStatus }> = ({ status }) => (
+  <Badge tone={statusTone[status]}>{status}</Badge>
+);
 
 const Requests: React.FC = () => {
   const [requests, setRequests] = useState<FeatureRequest[]>([]);
@@ -62,9 +51,9 @@ const Requests: React.FC = () => {
   useEffect(() => { load(); }, [load]);
 
   // Poll while anything is queued/running; stop once everything has settled.
-  useEffect(() => {
-    const pending = requests.some((r) => r.status === 'queued' || r.status === 'running' || r.status === 'testing');
+  const pending = requests.some((r) => r.status === 'queued' || r.status === 'running' || r.status === 'testing');
 
+  useEffect(() => {
     if (pending && !pollRef.current) {
       pollRef.current = setInterval(load, POLL_MS);
     } else if (!pending && pollRef.current) {
@@ -78,7 +67,7 @@ const Requests: React.FC = () => {
         pollRef.current = null;
       }
     };
-  }, [requests, load]);
+  }, [pending, load]);
 
   const handleSubmit = async () => {
     const text = prompt.trim();
@@ -127,13 +116,14 @@ const Requests: React.FC = () => {
   };
 
   return (
-    <div style={{ maxWidth: 860, margin: '0 auto', padding: '24px 24px 48px' }}>
+    <div className="mx-auto max-w-[860px] px-4 py-6 md:px-6">
       <PageHeader
         eyebrow="Assistant / Requests"
-        eyebrowColor="var(--stamp-teal)"
+        eyebrowColor="var(--signal)"
         title="Feature requests"
+        actions={pending ? <PulseDot tone="signal" label="Live" /> : undefined}
       />
-      <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: -18, marginBottom: 24 }}>
+      <p className="-mt-4 mb-6 text-sm text-muted">
         Describe a feature or fix. It's routed to the local Pi coding agent (qwen3.6-27b),
         which edits the Chatty codebase directly. Restart the affected pm2 service yourself
         once a request completes. Entries marked 🤖 self-upgrade were proposed by Chatty's own
@@ -142,90 +132,84 @@ const Requests: React.FC = () => {
       </p>
 
       {/* Submit */}
-      <Card style={{ marginBottom: 28 }}>
+      <Card className="mb-7">
         <textarea
           placeholder="e.g. Add a /weather command that shows tomorrow's forecast too…"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           rows={3}
-          style={{
-            width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--ink-600)',
-            fontSize: 14.5, resize: 'vertical', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box',
-            background: 'var(--ink-900)', color: 'var(--paper)',
-          }}
+          className="w-full resize-y rounded-lg border border-line bg-surface px-3.5 py-2.5 text-sm text-ink outline-none focus:border-signal"
           onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey) handleSubmit(); }}
         />
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+        <div className="mt-2.5 flex justify-end">
           <button
+            type="button"
             onClick={handleSubmit}
             disabled={submitting || !prompt.trim()}
-            style={{
-              padding: '9px 20px', borderRadius: 8, border: 'none',
-              background: submitting || !prompt.trim() ? 'var(--ink-700)' : 'var(--stamp-teal)',
-              color: submitting || !prompt.trim() ? 'var(--muted)' : 'var(--ink-900)',
-              fontWeight: 700, fontSize: 13,
-            }}
+            className={`rounded-lg px-5 py-2 text-sm font-bold ${
+              submitting || !prompt.trim() ? 'bg-surface-dim text-muted' : 'bg-signal text-white'
+            }`}
           >
             {submitting ? 'Submitting…' : 'Submit request'}
           </button>
         </div>
       </Card>
 
-      {error && <p style={{ color: 'var(--danger)', marginBottom: 16 }}>{error}</p>}
+      {error && <p className="mb-4 text-alert-red">{error}</p>}
 
       {loading ? (
-        <p style={{ color: 'var(--muted)' }}>Loading requests…</p>
+        <Spinner label="Loading requests…" />
       ) : requests.length === 0 ? (
-        <p style={{ color: 'var(--muted)', textAlign: 'center', marginTop: 40 }}>
-          No requests yet. Describe a feature above to get started.
-        </p>
+        <EmptyState title="No requests yet" description="Describe a feature above to get started." />
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="flex flex-col gap-3">
           {requests.map((r) => (
             <Card key={r.id}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
+              <div className="mb-2.5 flex items-start justify-between gap-3">
                 <div>
                   {r.source === 'self_upgrade' && (
-                    <div style={{
-                      display: 'inline-block', marginBottom: 6, fontSize: 10.5, fontWeight: 700,
-                      textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--stamp-ember)',
-                      fontFamily: 'var(--font-mono)',
-                    }}>
+                    <div className="mb-1.5 font-mono text-[10.5px] font-bold uppercase tracking-wider text-alert-red">
                       🤖 self-upgrade{r.branch ? ` · ${r.branch}` : ''}
                     </div>
                   )}
-                  <p style={{ margin: 0, fontSize: 14.5, color: 'var(--paper)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                  {r.source === 'github_trending' && (
+                    <div className="mb-1.5 font-mono text-[10.5px] font-bold uppercase tracking-wider text-signal">
+                      🐙 from trending scan
+                    </div>
+                  )}
+                  <p className="m-0 whitespace-pre-wrap text-sm leading-relaxed text-ink">
                     {r.prompt}
                   </p>
                 </div>
                 <StatusBadge status={r.status} />
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-                <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--muted)' }}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-mono text-xs text-muted">
                   {new Date(r.created_at).toLocaleString()}
                 </span>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div className="flex gap-2">
                   {r.log.length > 0 && (
-                    <button onClick={() => toggleExpanded(r.id)} style={{ padding: '4px 12px', fontSize: 12 }}>
+                    <button type="button" onClick={() => toggleExpanded(r.id)} className="rounded-md bg-surface-dim px-3 py-1 text-xs font-semibold text-ink-dim">
                       {expanded.has(r.id) ? 'Hide log' : 'Show log'}
                     </button>
                   )}
                   {r.status === 'error' && (
                     <button
+                      type="button"
                       onClick={() => handleRetry(r)}
                       disabled={retryingId === r.id}
-                      style={{
-                        padding: '4px 12px', fontSize: 12,
-                        background: 'var(--stamp-teal)', color: 'var(--ink-900)', fontWeight: 700,
-                        opacity: retryingId === r.id ? 0.6 : 1,
-                      }}
+                      className="rounded-md bg-signal px-3 py-1 text-xs font-bold text-white disabled:opacity-60"
                     >
                       {retryingId === r.id ? 'Retrying…' : 'Try again'}
                     </button>
                   )}
                   {r.status !== 'running' && (
-                    <button onClick={() => handleDelete(r.id)} style={{ padding: '4px 12px', fontSize: 12, background: 'transparent', color: 'var(--danger)', border: '1px solid var(--ink-600)' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(r.id)}
+                      className="rounded-md border border-line bg-transparent px-3 py-1 text-xs font-semibold text-alert-red"
+                    >
                       Delete
                     </button>
                   )}
@@ -233,18 +217,15 @@ const Requests: React.FC = () => {
               </div>
 
               {r.summary && (
-                <p style={{ margin: '10px 0 0', fontSize: 13, color: r.status === 'error' ? 'var(--danger)' : 'var(--paper-dim)' }}>
+                <p className={`mt-2.5 text-sm ${r.status === 'error' ? 'text-alert-red' : 'text-ink-dim'}`}>
                   {r.summary}
                 </p>
               )}
 
               {r.files_changed.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                <div className="mt-2.5 flex flex-wrap gap-1.5">
                   {r.files_changed.map((f) => (
-                    <span key={f} style={{
-                      fontSize: 11, padding: '2px 8px', borderRadius: 6,
-                      background: 'var(--ink-900)', color: 'var(--stamp-gold)', fontFamily: 'var(--font-mono)',
-                    }}>
+                    <span key={f} className="rounded-md bg-surface-dim px-2 py-0.5 font-mono text-xs text-alert-amber">
                       {f}
                     </span>
                   ))}
@@ -252,13 +233,7 @@ const Requests: React.FC = () => {
               )}
 
               {expanded.has(r.id) && r.log.length > 0 && (
-                <pre style={{
-                  margin: '12px 0 0', padding: '14px', fontSize: 12, lineHeight: 1.6,
-                  background: 'var(--ink-900)', color: 'var(--paper-dim)', overflowX: 'auto',
-                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                  border: '1px solid var(--ink-700)', borderRadius: 8, fontFamily: 'var(--font-mono)',
-                  maxHeight: 320, overflowY: 'auto',
-                }}>
+                <pre className="mt-3 max-h-80 overflow-y-auto overflow-x-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-surface-dim p-3.5 font-mono text-xs leading-relaxed text-ink-dim">
                   {r.log.join('\n')}
                 </pre>
               )}

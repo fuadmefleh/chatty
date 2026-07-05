@@ -115,6 +115,30 @@ def _wrap_idea_prompt(idea_prompt: str) -> str:
     return f"{idea_prompt}\n\n{_CONVENTIONS}"
 
 
+# Extra guidance for run_feature_request (web-dashboard requests), on top of
+# the same lint/test gates: Pi runs inside an isolated worktree there too, so
+# it must not try to restart or curl the live server as its own verification
+# step. That would (a) not even prove anything, since the live process is
+# running a different checkout until this worktree is tested and merged, and
+# (b) previously killed the `pi` subprocess mid-turn, since it's a plain
+# child of the very chatty-web-server process pm2 would be restarting - see
+# skills/pi_agent/runner.py's PM2_SELF_APP_NAME handling for the narrower
+# fix that covers requests made before this existed.
+_WORKTREE_NOTE = """You are working inside an isolated git worktree, not the live running
+server - chatty-web-server/chatty-bot are running a separate checkout and won't see your changes
+until this worktree is tested and merged by the platform after you finish. Because of this:
+- Do NOT run `pm2 restart`, `pm2 reload`, or `systemctl restart` on any service, and don't try to
+  curl/verify against the live server - it's running different code than what you're editing, so
+  that wouldn't prove anything anyway. The platform restarts the right services automatically once
+  your change is merged.
+- Verify your work with the test suite (`pytest tests/`) and, for frontend changes,
+  `npx tsc --noEmit` / `npm run build` - not by exercising the live server."""
+
+
+def _wrap_feature_request_prompt(prompt: str) -> str:
+    return f"{prompt}\n\n{_CONVENTIONS}\n\n{_WORKTREE_NOTE}"
+
+
 def _build_fix_prompt(idea_prompt: str, reason: str, details: str) -> str:
     return f"""You previously attempted this change:
 
@@ -468,3 +492,173 @@ async def run_self_upgrade(
     except Exception as e:
         logger.error(f"Unexpected error in self-upgrade pipeline: {e}", exc_info=True)
         return await fail(f"Unexpected error: {str(e)[:300]}")
+
+
+async def run_feature_request(
+    request_id: str,
+    prompt: str,
+    feature_requests_manager,
+) -> Optional[str]:
+    """Implement one web-dashboard feature request end-to-end, using the same
+    isolated-worktree + gated-merge pattern as run_self_upgrade (see module
+    docstring), so a request can never edit the live checkout mid-turn or
+    restart the very server it's running under.
+
+    Differences from run_self_upgrade, deliberate for a human-submitted,
+    human-watched request rather than an unsupervised weekly job:
+    - Takes the prompt as-is, no LLM idea generation.
+    - Single attempt, no automatic fix-and-retry loop - the log is visible
+      in the dashboard immediately, so a person can just resubmit with more
+      direction instead of waiting on repeated automatic retries.
+    - Missing test coverage is a warning appended to the summary, not a hard
+      gate - reasonable to demand of unsupervised heartbeat changes, too
+      strict for e.g. "add a stocks command".
+
+    Caller must already hold the pi_agent lock - chatty_web_server.py's
+    _process_pi_queue has its own bounded wait-for-lock loop (unlike
+    run_self_upgrade, which acquires/releases the lock itself), so this
+    function does not touch skills.pi_agent.lock at all.
+
+    Returns a one-line summary, or None if it was a clean no-op.
+    """
+    slug = _slugify(prompt)
+    unique = int(time.time())
+    branch = f"feature-request/{slug}-{unique}"
+    worktree_dir = config.SELF_UPGRADE_WORKTREES_DIR / f"{slug}-{unique}"
+
+    async def fail(reason: str) -> str:
+        feature_requests_manager.update(request_id, status="error", summary=reason, branch=branch)
+        feature_requests_manager.append_log(request_id, reason)
+        return reason
+
+    feature_requests_manager.update(request_id, status="running", branch=branch)
+    config.SELF_UPGRADE_WORKTREES_DIR.mkdir(parents=True, exist_ok=True)
+
+    await _git(["worktree", "prune"], cwd=config.BASE_DIR)
+    rc, out = await _git(["worktree", "add", str(worktree_dir), "-b", branch, "main"], cwd=config.BASE_DIR)
+    if rc != 0:
+        return await fail(f"Could not create worktree: {out[:400]}")
+    feature_requests_manager.append_log(request_id, f"Created worktree at {worktree_dir} on branch {branch}")
+
+    env = _subprocess_env()
+    venv_python = str(config.BASE_DIR / "venv" / "bin" / "python")
+    wrapped_prompt = _wrap_feature_request_prompt(prompt)
+
+    saw_completion = False
+    async for event in run_pi_agent(wrapped_prompt, cwd=worktree_dir):
+        etype = event.get("type")
+        content = event.get("content", "")
+        if etype == "file_change":
+            path = content.split(": ", 1)[-1] if ": " in content else content
+            feature_requests_manager.add_file_changed(request_id, path)
+            feature_requests_manager.append_log(request_id, content)
+        elif etype == "completed":
+            saw_completion = True
+            feature_requests_manager.append_log(request_id, content)
+        elif etype == "error":
+            feature_requests_manager.append_log(request_id, f"Error: {content}")
+            return await fail(f"Pi agent error: {content[:300]}")
+        elif content:
+            feature_requests_manager.append_log(request_id, content)
+
+    if not saw_completion:
+        return await fail("Pi agent did not report completion.")
+
+    await _git(["add", "-A"], cwd=worktree_dir)
+    rc_diff, _ = await _git(["diff", "--cached", "--quiet"], cwd=worktree_dir)
+    if rc_diff == 0:
+        feature_requests_manager.update(request_id, status="completed", summary="No changes were necessary.", branch=branch)
+        await _cleanup_worktree(worktree_dir, branch, delete_branch=True)
+        return None
+
+    commit_msg = f"Feature request: {prompt[:72]}"
+    rc, out = await _git(["commit", "-m", commit_msg], cwd=worktree_dir)
+    feature_requests_manager.append_log(request_id, f"commit:\n{out[-2000:]}")
+    if rc != 0:
+        return await fail(f"Commit rejected by pre-commit hook (lint/tests). Branch `{branch}` preserved. Tail:\n{out[-500:]}")
+
+    feature_requests_manager.update(request_id, status="testing")
+    rc, out = await _run(
+        [venv_python, "-m", "pytest", "tests/"], cwd=worktree_dir,
+        timeout=config.SELF_UPGRADE_TEST_TIMEOUT_SECONDS, env=env,
+    )
+    feature_requests_manager.append_log(request_id, f"pytest:\n{out[-2000:]}")
+    if rc != 0:
+        return await fail(f"Test suite failed (exit {rc}). Branch `{branch}` preserved for manual fixing. Tail:\n{out[-500:]}")
+
+    _, changed_files_out = await _git(["diff", "--name-only", "main", "HEAD"], cwd=worktree_dir)
+    changed_files = [f.strip() for f in changed_files_out.splitlines() if f.strip()]
+    frontend_touched = any(f.startswith("order_explorer_site/frontend/") for f in changed_files)
+
+    test_warning = " (no test coverage was added for this change)" if _missing_test_coverage(changed_files) else ""
+
+    if frontend_touched:
+        frontend_dir = worktree_dir / "order_explorer_site" / "frontend"
+        live_node_modules = config.BASE_DIR / "order_explorer_site" / "frontend" / "node_modules"
+        worktree_node_modules = frontend_dir / "node_modules"
+
+        if not live_node_modules.exists():
+            return await fail("Frontend changed but node_modules missing - cannot verify build.")
+        if not worktree_node_modules.exists():
+            try:
+                os.symlink(live_node_modules, worktree_node_modules)
+            except OSError as e:
+                return await fail(f"Could not link node_modules for frontend test: {e}")
+
+        rc, out = await _run(["npx", "tsc", "--noEmit"], cwd=frontend_dir, timeout=180, env=env)
+        feature_requests_manager.append_log(request_id, f"tsc --noEmit:\n{out[-1500:]}")
+        if rc != 0:
+            return await fail(f"Frontend typecheck failed. Branch `{branch}` preserved. Tail:\n{out[-500:]}")
+
+        rc, out = await _run(["npm", "run", "build"], cwd=frontend_dir, timeout=180, env=env)
+        feature_requests_manager.append_log(request_id, f"npm run build:\n{out[-1500:]}")
+        if rc != 0:
+            return await fail(f"Frontend build failed. Branch `{branch}` preserved. Tail:\n{out[-500:]}")
+
+    # Same safety gate as run_self_upgrade: only merge onto a clean main
+    # that's actually checked out, so this never clobbers concurrent manual
+    # work in the live checkout.
+    _, current_branch = await _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=config.BASE_DIR)
+    if current_branch.strip() != "main":
+        return await fail(
+            f"Main checkout is on branch '{current_branch.strip()}', not main - merge aborted. "
+            f"Merge branch `{branch}` manually once main is checked out."
+        )
+
+    _, status_out = await _git(["status", "--porcelain"], cwd=config.BASE_DIR)
+    if status_out.strip():
+        return await fail(
+            "Tests passed, but the main checkout has uncommitted changes - merge aborted to avoid "
+            f"clobbering in-progress work. Merge branch `{branch}` manually once it's clean."
+        )
+
+    rc, out = await _git(["merge", "--no-ff", branch, "-m", commit_msg], cwd=config.BASE_DIR)
+    if rc != 0:
+        await _git(["merge", "--abort"], cwd=config.BASE_DIR)
+        return await fail(f"Merge failed: {out[:400]}")
+
+    services = _affected_services(changed_files)
+    if frontend_touched:
+        # Rebuild against the live checkout's real node_modules before restart.
+        await _run(
+            ["npm", "run", "build"],
+            cwd=config.BASE_DIR / "order_explorer_site" / "frontend",
+            timeout=180, env=env,
+        )
+
+    summary = (
+        f"Merged to main. Files changed: {', '.join(changed_files[:10])}. "
+        f"Restarting: {', '.join(services) or 'nothing'}.{test_warning}"
+    )
+    feature_requests_manager.update(request_id, status="completed", summary=summary, branch=branch)
+
+    await _cleanup_worktree(worktree_dir, branch, delete_branch=True)
+
+    # Detached, fire-and-forget - issued only after everything above is
+    # already merged and persisted, so even if this restarts the very
+    # process running this code, there's nothing left to lose. See
+    # _restart_services's docstring.
+    if services:
+        _restart_services(services)
+
+    return summary
