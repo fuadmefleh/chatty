@@ -59,6 +59,8 @@ from skills.pi_agent.requests_manager import FeatureRequestsManager
 from skills.pi_agent import lock as pi_lock
 from src.managers.self_upgrade_manager import run_feature_request
 from src.managers.trending_manager import TrendingSuggestionsManager, run_trending_scan
+from src.managers.webcam_manager import WEBCAM_KINDS, WebcamSourcesManager, WebcamSuggestionsManager
+from src.managers.webcam_discovery import run_webcam_discovery_scan
 from src.core.token_usage_manager import get_token_usage_manager
 
 logger = get_api_logger()
@@ -112,6 +114,8 @@ watchlist_manager = WatchlistManager()
 insights_manager = InsightsManager()
 feature_requests_manager = FeatureRequestsManager()
 trending_suggestions_manager = TrendingSuggestionsManager()
+webcam_sources_manager = WebcamSourcesManager()
+webcam_suggestions_manager = WebcamSuggestionsManager()
 token_usage_manager = get_token_usage_manager()
 skills_manager: Optional[SkillsManager] = None
 _pi_worker_task: Optional[asyncio.Task] = None
@@ -1189,6 +1193,112 @@ async def delete_trending_suggestion(suggestion_id: str):
     if trending_suggestions_manager.get(suggestion_id) is None:
         raise HTTPException(status_code=404, detail="Suggestion not found")
     trending_suggestions_manager.delete(suggestion_id)
+    return {"deleted": True}
+
+
+# ── Webcam Sources & Discovery (SearXNG-curated suggestions the user reviews ──
+# on the dashboard; approving one adds it to the source list) ────────────────
+class WebcamSourceCreate(BaseModel):
+    name: str
+    url: str
+    kind: str = "webpage"
+    location: str = ""
+    enabled: bool = True
+
+
+class WebcamSourceUpdate(BaseModel):
+    name: Optional[str] = None
+    url: Optional[str] = None
+    kind: Optional[str] = None
+    location: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+@app.get("/api/chatty/webcam-sources", dependencies=[Depends(require_api_key)])
+async def get_webcam_sources():
+    return [s.to_dict() for s in webcam_sources_manager.list()]
+
+
+@app.post("/api/chatty/webcam-sources", dependencies=[Depends(require_api_key)], status_code=201)
+async def create_webcam_source(body: WebcamSourceCreate):
+    name = body.name.strip()
+    url = body.url.strip()
+    if not name or not url:
+        raise HTTPException(status_code=400, detail="name and url are required")
+    if body.kind not in WEBCAM_KINDS:
+        raise HTTPException(status_code=400, detail=f"kind must be one of: {', '.join(WEBCAM_KINDS)}")
+    source = webcam_sources_manager.create(
+        name=name, url=url, kind=body.kind, location=body.location.strip(),
+        enabled=body.enabled, source="manual",
+    )
+    return source.to_dict()
+
+
+@app.put("/api/chatty/webcam-sources/{source_id}", dependencies=[Depends(require_api_key)])
+async def update_webcam_source(source_id: str, body: WebcamSourceUpdate):
+    if webcam_sources_manager.get(source_id) is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    fields = body.model_dump(exclude_unset=True)
+    if "kind" in fields and fields["kind"] not in WEBCAM_KINDS:
+        raise HTTPException(status_code=400, detail=f"kind must be one of: {', '.join(WEBCAM_KINDS)}")
+    updated = webcam_sources_manager.update(source_id, **fields)
+    return updated.to_dict()
+
+
+@app.delete("/api/chatty/webcam-sources/{source_id}", dependencies=[Depends(require_api_key)])
+async def delete_webcam_source(source_id: str):
+    ok = webcam_sources_manager.delete(source_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Source not found")
+    return {"deleted": True}
+
+
+@app.get("/api/chatty/webcam-suggestions", dependencies=[Depends(require_api_key)])
+async def get_webcam_suggestions():
+    return [s.to_dict() for s in webcam_suggestions_manager.list()]
+
+
+@app.post("/api/chatty/webcam-suggestions/scan", dependencies=[Depends(require_api_key)])
+async def scan_webcam_suggestions():
+    """Manual "scan now" trigger - bypasses the heartbeat's interval gate."""
+    await run_webcam_discovery_scan(webcam_sources_manager, webcam_suggestions_manager)
+    return [s.to_dict() for s in webcam_suggestions_manager.list()]
+
+
+@app.post("/api/chatty/webcam-suggestions/{suggestion_id}/approve", dependencies=[Depends(require_api_key)])
+async def approve_webcam_suggestion(suggestion_id: str):
+    suggestion = webcam_suggestions_manager.get(suggestion_id)
+    if suggestion is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    if suggestion.status != "pending":
+        raise HTTPException(status_code=409, detail=f"Suggestion is already {suggestion.status}")
+
+    new_source = webcam_sources_manager.create(
+        name=suggestion.name, url=suggestion.url, kind=suggestion.kind,
+        location=suggestion.location, enabled=True, source="suggestion",
+        suggestion_id=suggestion.id,
+    )
+    updated = webcam_suggestions_manager.update(suggestion_id, status="approved", source_id=new_source.id)
+    return updated.to_dict()
+
+
+@app.post("/api/chatty/webcam-suggestions/{suggestion_id}/dismiss", dependencies=[Depends(require_api_key)])
+async def dismiss_webcam_suggestion(suggestion_id: str):
+    suggestion = webcam_suggestions_manager.get(suggestion_id)
+    if suggestion is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    if suggestion.status != "pending":
+        raise HTTPException(status_code=409, detail=f"Suggestion is already {suggestion.status}")
+
+    updated = webcam_suggestions_manager.update(suggestion_id, status="dismissed")
+    return updated.to_dict()
+
+
+@app.delete("/api/chatty/webcam-suggestions/{suggestion_id}", dependencies=[Depends(require_api_key)])
+async def delete_webcam_suggestion(suggestion_id: str):
+    if webcam_suggestions_manager.get(suggestion_id) is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    webcam_suggestions_manager.delete(suggestion_id)
     return {"deleted": True}
 
 

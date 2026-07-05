@@ -122,6 +122,23 @@ TRENDING_SCAN_INTERVAL_HOURS = int(os.getenv("TRENDING_SCAN_INTERVAL_HOURS", "6"
 TRENDING_REPOS_PER_LANGUAGE = int(os.getenv("TRENDING_REPOS_PER_LANGUAGE", "10"))
 TRENDING_MAX_SUGGESTIONS_PER_SCAN = int(os.getenv("TRENDING_MAX_SUGGESTIONS_PER_SCAN", "4"))
 
+# Webcam Discovery Configuration: Chatty periodically searches (via the
+# SearXNG integration above) for promising public live-webcam pages/threads
+# and asks an LLM to curate best-effort suggestions (name/url/kind/location
+# guessed from search snippets) - see src/managers/webcam_discovery.py.
+# Nothing is added to the user's source list automatically; suggestions sit
+# in a pending queue on the dashboard's /webcams page until approved or
+# dismissed. Queries are semicolon-separated since they may contain commas.
+WEBCAM_DISCOVERY_QUERIES = os.getenv(
+    "WEBCAM_DISCOVERY_QUERIES",
+    "site:reddit.com live traffic camera;site:reddit.com earthcam;"
+    "live webcam city traffic feed;DOT traffic camera portal live view;"
+    "live streaming webcam tourist attraction",
+)
+WEBCAM_DISCOVERY_INTERVAL_HOURS = int(os.getenv("WEBCAM_DISCOVERY_INTERVAL_HOURS", "12"))
+WEBCAM_DISCOVERY_RESULTS_PER_QUERY = int(os.getenv("WEBCAM_DISCOVERY_RESULTS_PER_QUERY", "8"))
+WEBCAM_DISCOVERY_MAX_SUGGESTIONS_PER_SCAN = int(os.getenv("WEBCAM_DISCOVERY_MAX_SUGGESTIONS_PER_SCAN", "5"))
+
 # System Prompt
 SYSTEM_PROMPT = """You are a helpful and friendly AI companion. You have access to your memory 
 from previous conversations and various skills to help users. You think step by step and can 

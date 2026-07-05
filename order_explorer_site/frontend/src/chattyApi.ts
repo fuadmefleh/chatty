@@ -423,6 +423,90 @@ export const deleteTrendingSuggestion = async (id: string): Promise<void> => {
   await chattyApi.delete(`/api/chatty/trending-suggestions/${id}`);
 };
 
+// ── Webcam Sources & Suggestions (SearXNG-curated discovery, reviewed here) ───
+export type WebcamKind = 'snapshot' | 'mjpeg' | 'hls' | 'youtube' | 'webpage';
+
+export interface WebcamSource {
+  id: string;
+  name: string;
+  url: string;
+  kind: WebcamKind;
+  location: string;
+  enabled: boolean;
+  source: 'manual' | 'suggestion';
+  suggestion_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type WebcamSuggestionStatus = 'pending' | 'approved' | 'dismissed';
+
+export interface WebcamSuggestion {
+  id: string;
+  name: string;
+  url: string;
+  discovered_url: string;
+  kind: WebcamKind;
+  location: string;
+  rationale: string;
+  status: WebcamSuggestionStatus;
+  source_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const fetchWebcamSources = async (): Promise<WebcamSource[]> => {
+  const res = await chattyApi.get<WebcamSource[]>('/api/chatty/webcam-sources');
+  return res.data;
+};
+
+export const createWebcamSource = async (body: {
+  name: string;
+  url: string;
+  kind: WebcamKind;
+  location: string;
+  enabled?: boolean;
+}): Promise<WebcamSource> => {
+  const res = await chattyApi.post<WebcamSource>('/api/chatty/webcam-sources', body);
+  return res.data;
+};
+
+export const updateWebcamSource = async (
+  id: string,
+  body: Partial<{ name: string; url: string; kind: WebcamKind; location: string; enabled: boolean }>
+): Promise<WebcamSource> => {
+  const res = await chattyApi.put<WebcamSource>(`/api/chatty/webcam-sources/${id}`, body);
+  return res.data;
+};
+
+export const deleteWebcamSource = async (id: string): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/webcam-sources/${id}`);
+};
+
+export const fetchWebcamSuggestions = async (): Promise<WebcamSuggestion[]> => {
+  const res = await chattyApi.get<WebcamSuggestion[]>('/api/chatty/webcam-suggestions');
+  return res.data;
+};
+
+export const scanWebcamSuggestions = async (): Promise<WebcamSuggestion[]> => {
+  const res = await chattyApi.post<WebcamSuggestion[]>('/api/chatty/webcam-suggestions/scan');
+  return res.data;
+};
+
+export const approveWebcamSuggestion = async (id: string): Promise<WebcamSuggestion> => {
+  const res = await chattyApi.post<WebcamSuggestion>(`/api/chatty/webcam-suggestions/${id}/approve`);
+  return res.data;
+};
+
+export const dismissWebcamSuggestion = async (id: string): Promise<WebcamSuggestion> => {
+  const res = await chattyApi.post<WebcamSuggestion>(`/api/chatty/webcam-suggestions/${id}/dismiss`);
+  return res.data;
+};
+
+export const deleteWebcamSuggestion = async (id: string): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/webcam-suggestions/${id}`);
+};
+
 // ── Server Health ───────────────────────────────────────────────────────────
 export interface HealthCPU {
   logical_cores: number;

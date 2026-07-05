@@ -183,6 +183,12 @@ class HeartbeatManager:
                     if result:
                         summary.append(result)
 
+                    # Search for promising live-webcam pages and curate suggestions
+                    # (never auto-added - just added to the dashboard's /webcams menu).
+                    result = await self._process_webcam_discovery()
+                    if result:
+                        summary.append(result)
+
                     # Think of (and, if worthwhile, implement) a self-upgrade idea.
                     # Placed last: it's the slowest task and, on success, restarts
                     # this very process - nothing after it in this cycle is
@@ -1131,6 +1137,60 @@ If nothing is worth suggesting, reply with exactly: NONE"""
     def _save_trending_state(self, state: Dict[str, str]) -> None:
         import json
         path = config.BASE_DIR / "data" / "trending_state.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2))
+
+    async def _process_webcam_discovery(self) -> Optional[str]:
+        """Search (via SearXNG) for promising public live-webcam pages and,
+        via src/managers/webcam_discovery.py, curate a short list of
+        best-effort suggestions worth reviewing. Nothing is ever added to
+        the source list automatically - curated ideas are just stored as
+        pending suggestions for the user to approve or dismiss from the
+        dashboard's /webcams page.
+
+        Runs at most once per WEBCAM_DISCOVERY_INTERVAL_HOURS, tracked globally.
+        """
+        try:
+            from src.managers import webcam_manager, webcam_discovery
+            import src.main as main_module
+
+            if not getattr(main_module, "authorized_users", None):
+                return None
+
+            state = self._load_webcam_discovery_state()
+            last_run = state.get("last_run_at")
+            if last_run:
+                try:
+                    elapsed = datetime.now() - datetime.fromisoformat(last_run)
+                    if elapsed < timedelta(hours=config.WEBCAM_DISCOVERY_INTERVAL_HOURS):
+                        return None
+                except ValueError:
+                    pass
+
+            state["last_run_at"] = datetime.now().isoformat()
+            self._save_webcam_discovery_state(state)
+
+            sources_manager = webcam_manager.WebcamSourcesManager()
+            suggestions_manager = webcam_manager.WebcamSuggestionsManager()
+            return await webcam_discovery.run_webcam_discovery_scan(sources_manager, suggestions_manager)
+
+        except Exception as e:
+            heartbeat_logger.error(f"Error in webcam-discovery processing: {e}", exc_info=True)
+            return None
+
+    def _load_webcam_discovery_state(self) -> Dict[str, str]:
+        import json
+        path = config.BASE_DIR / "data" / "webcam_discovery_state.json"
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return {}
+
+    def _save_webcam_discovery_state(self, state: Dict[str, str]) -> None:
+        import json
+        path = config.BASE_DIR / "data" / "webcam_discovery_state.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, indent=2))
 
