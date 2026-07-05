@@ -17,7 +17,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4-turbo-preview")
 # server, e.g. llama.cpp serving qwen), or "anthropic" (Claude API). Used by
 # both the Telegram bot (StagedReACTAgent) and the web dashboard (WebChatAgent).
 CHAT_PROVIDER = os.getenv("CHAT_PROVIDER", "openai")
-LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://192.168.18.150:8080/v1")
+LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:8080/v1")
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen3.6-27b")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
