@@ -6,22 +6,25 @@ Provides REST + WebSocket endpoints for:
 - Notes (CRUD)
 - Transcriptions (create/list/delete - staged for automatic memory mining)
 - Audio ingestion (raw-body upload -> WhisperX STT -> transcriptions queue)
+- Media ingestion (raw-body photo/video upload -> vision/STT -> transcriptions queue)
 - Reminders (read + delete)
 - Memory viewer (read-only)
 - Code browser (read-only)
 - System status (skills, pm2)
 """
 import asyncio
+import base64
 import fnmatch
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
+from urllib.parse import unquote
 
-import httpx
 from fastapi import (
     FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Header,
     Query, Request, BackgroundTasks,
@@ -41,13 +44,16 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.core.logging_config import get_api_logger
 from src.core.skills_manager import SkillsManager
+from src.core.stt import get_stt_provider, TranscriptionResult
 from skills.notes.notes_manager import NotesManager
-from skills.transcriptions.transcriptions_manager import TranscriptionsManager
+from skills.transcriptions.transcriptions_manager import TranscriptionsManager, render_segments
+from skills.speakers.speaker_manager import SpeakerManager
 from skills.watchlist.watchlist_manager import WatchlistManager
 from src.managers.insights_manager import InsightsManager
 from skills.pi_agent.requests_manager import FeatureRequestsManager
-from skills.pi_agent.runner import run_pi_agent
 from skills.pi_agent import lock as pi_lock
+from src.managers.self_upgrade_manager import run_feature_request
+from src.managers.trending_manager import TrendingSuggestionsManager, run_trending_scan
 
 logger = get_api_logger()
 
@@ -57,12 +63,6 @@ WEB_USER_ID = os.getenv("WEB_USER_ID", "")
 REMINDERS_DIR = PROJECT_ROOT / "reminders"
 MEMORY_DIR = PROJECT_ROOT / "memory"
 PORT = int(os.getenv("CHATTY_WEB_PORT", "8016"))
-
-# Expects a WhisperX-based STT engine reachable at this URL (run separately,
-# not part of this repo) rather than embedding a second Whisper install.
-# Handles diarization itself (gracefully skipped server-side if it has no
-# HUGGINGFACE_TOKEN configured).
-STT_ENGINE_URL = os.getenv("STT_ENGINE_URL", "http://127.0.0.1:8003")
 
 # ── Code browser config ──────────────────────────────────────────────────────
 CODE_EXCLUDE_DIRS = {
@@ -101,9 +101,11 @@ app.add_middleware(
 # ── Shared state ─────────────────────────────────────────────────────────────
 notes_manager = NotesManager()
 transcriptions_manager = TranscriptionsManager()
+speaker_manager = SpeakerManager()
 watchlist_manager = WatchlistManager()
 insights_manager = InsightsManager()
 feature_requests_manager = FeatureRequestsManager()
+trending_suggestions_manager = TrendingSuggestionsManager()
 skills_manager: Optional[SkillsManager] = None
 _pi_worker_task: Optional[asyncio.Task] = None
 
@@ -132,6 +134,144 @@ async def root():
 @app.get("/api/chatty/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+# ── Server Health (CPU, RAM, Disk, GPU) ──────────────────────────────────────
+def _get_gpu_info() -> list[dict]:
+    """Query NVIDIA GPUs via nvidia-smi."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=name,memory.used,memory.total,utilization.gpu,"
+             "utilization.memory,temperature.gpu,power.draw,power.limit,"
+             "clocks.gr,clocks.mem,driver_version",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+        gpus = []
+        for line in result.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 10:
+                gpus.append({
+                    "name": parts[0],
+                    "memory_used_miB": _parse_int(parts[1]),
+                    "memory_total_miB": _parse_int(parts[2]),
+                    "gpu_util_percent": _parse_float(parts[3]),
+                    "mem_util_percent": _parse_float(parts[4]),
+                    "temperature_c": _parse_float(parts[5]),
+                    "power_draw_w": _parse_float(parts[6]),
+                    "power_limit_w": _parse_float(parts[7]),
+                    "clock_gr_mhz": _parse_int(parts[8]),
+                    "clock_mem_mhz": _parse_int(parts[9]),
+                    "driver_version": parts[10] if len(parts) > 10 else "unknown",
+                })
+        return gpus
+    except Exception:
+        return []
+
+
+def _parse_int(val: str) -> int:
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return 0
+
+
+def _parse_float(val: str) -> float:
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+@app.get("/api/chatty/health/server", dependencies=[Depends(require_api_key)])
+async def server_health():
+    """Return server resource metrics: CPU, RAM, disk, GPU, load, uptime."""
+    import psutil
+
+    # CPU
+    cpu_logical = psutil.cpu_count(logical=True)
+    cpu_physical = psutil.cpu_count(logical=False)
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    per_cpu = psutil.cpu_percent(interval=0.1, percpu=True)
+    load_avg = {}  # type: dict[str, float]
+    try:
+        la = psutil.getloadavg()
+        load_avg = {"1m": la[0], "5m": la[1], "15m": la[2]}
+    except (OSError, AttributeError):
+        pass
+
+    # RAM
+    vm = psutil.virtual_memory()
+    ram = {
+        "total_bytes": vm.total,
+        "used_bytes": vm.used,
+        "available_bytes": vm.available,
+        "percent": vm.percent,
+    }
+
+    # Swap
+    swap = psutil.swap_memory()
+    swap_info = {
+        "total_bytes": swap.total,
+        "used_bytes": swap.used,
+        "percent": swap.percent,
+    }
+
+    # Disk partitions (skip squashfs snap mounts - noise, not real filesystems)
+    disks = []
+    for part in psutil.disk_partitions(all=False):
+        if part.fstype == "squashfs" or part.mountpoint.startswith("/snap/"):
+            continue
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+            disks.append({
+                "device": part.device,
+                "mountpoint": part.mountpoint,
+                "fstype": part.fstype,
+                "total_bytes": usage.total,
+                "used_bytes": usage.used,
+                "free_bytes": usage.free,
+                "percent": usage.percent,
+            })
+        except PermissionError:
+            pass
+
+    # Network I/O counters (snapshot)
+    net = psutil.net_io_counters()
+    network = {
+        "bytes_sent": net.bytes_sent,
+        "bytes_recv": net.bytes_recv,
+        "packets_sent": net.packets_sent,
+        "packets_recv": net.packets_recv,
+    }
+
+    # Uptime
+    boot_time = datetime.fromtimestamp(psutil.boot_time())
+    uptime_seconds = (datetime.now() - boot_time).total_seconds()
+
+    # GPU
+    gpus = _get_gpu_info()
+
+    return {
+        "cpu": {
+            "logical_cores": cpu_logical,
+            "physical_cores": cpu_physical,
+            "overall_percent": cpu_percent,
+            "per_core_percent": per_cpu,
+            "load_average": load_avg,
+        },
+        "memory": ram,
+        "swap": swap_info,
+        "disks": disks,
+        "network": network,
+        "gpus": gpus,
+        "boot_time": boot_time.isoformat(),
+        "uptime_seconds": uptime_seconds,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
 
 
 # ── Notes ────────────────────────────────────────────────────────────────────
@@ -210,48 +350,210 @@ async def get_transcription_audio(transcription_id: str):
     return FileResponse(path, media_type="audio/mp4")
 
 
+def _find_transcription(transcription_id: str):
+    """Look up a transcription by id, pending or archived."""
+    for t in transcriptions_manager.get_pending(WEB_USER_ID) + transcriptions_manager.get_archived(WEB_USER_ID):
+        if t.id == transcription_id:
+            return t
+    return None
+
+
+@app.get("/api/chatty/transcriptions/{transcription_id}/segments", dependencies=[Depends(require_api_key)])
+async def get_transcription_segments(transcription_id: str):
+    """Structured, time-aligned segments with currently-resolved speaker
+    names, for the speaker-labeling page. Fetched lazily per transcript
+    (mirrors the audio blob's lazy-load pattern) rather than embedded in the
+    main transcriptions list, since most of the list is never expanded."""
+    transcription = _find_transcription(transcription_id)
+    if transcription is None:
+        raise HTTPException(status_code=404, detail="Transcription not found")
+    if transcription.segments is None:
+        return {"segments": []}
+
+    labels = transcription.speaker_labels or {}
+    return {
+        "segments": [
+            {
+                "start": seg.get("start"),
+                "end": seg.get("end"),
+                "local_speaker": seg.get("local_speaker"),
+                "speaker_name": labels.get(seg["local_speaker"]) if seg.get("local_speaker") else None,
+                "text": seg.get("text"),
+            }
+            for seg in transcription.segments
+        ]
+    }
+
+
+def _rescan_transcripts_for_speaker(exclude_id: Optional[str] = None) -> int:
+    """Re-check every stored transcript's per-file speaker embeddings against
+    the roster, staging speaker_labels updates for any newly-matching local
+    speakers (never overwriting an existing label). Applied via one batched
+    write per file - the "face recognition tags other photos too" moment for
+    already-backfilled data.
+
+    Called automatically after each manual label (excluding the transcript
+    just labeled, since that one was already updated directly), and also
+    exposed as a standalone "rescan unmatched" action a user can trigger any
+    time - e.g. after tuning SPEAKER_MATCH_THRESHOLD, or to sweep up anything
+    an earlier rescan's threshold missed."""
+    updates: dict = {}
+    all_transcripts = transcriptions_manager.get_pending(WEB_USER_ID) + transcriptions_manager.get_archived(WEB_USER_ID)
+    for t in all_transcripts:
+        if t.id == exclude_id or not t.speaker_embeddings:
+            continue
+        labels = dict(t.speaker_labels or {})
+        changed = False
+        for local_speaker, embedding in t.speaker_embeddings.items():
+            if labels.get(local_speaker):
+                continue
+            match = speaker_manager.match(WEB_USER_ID, embedding)
+            if match:
+                labels[local_speaker] = match[0]["name"]
+                changed = True
+        if changed:
+            updates[t.id] = {"speaker_labels": labels}
+
+    if not updates:
+        return 0
+    return transcriptions_manager.update_transcriptions_batch(WEB_USER_ID, updates)
+
+
+class SpeakerLabelRequest(BaseModel):
+    local_speaker: str
+    name: Optional[str] = None
+    speaker_id: Optional[str] = None
+
+
+@app.post("/api/chatty/transcriptions/{transcription_id}/label", dependencies=[Depends(require_api_key)])
+async def label_speaker(transcription_id: str, body: SpeakerLabelRequest):
+    """Assign a real name to a generic diarization speaker id (e.g.
+    "SPEAKER_00") within one transcript, either creating a new roster entry
+    or attaching another voice sample to an existing one, then retroactively
+    relabels every other stored transcript where that voice already
+    appears."""
+    transcription = _find_transcription(transcription_id)
+    if transcription is None:
+        raise HTTPException(status_code=404, detail="Transcription not found")
+    if not transcription.speaker_embeddings or body.local_speaker not in transcription.speaker_embeddings:
+        raise HTTPException(status_code=400, detail="No voice embedding available for this speaker in this transcript")
+    if not body.name and not body.speaker_id:
+        raise HTTPException(status_code=400, detail="Provide either name (new speaker) or speaker_id (existing speaker)")
+
+    embedding = transcription.speaker_embeddings[body.local_speaker]
+
+    if body.speaker_id:
+        speaker = speaker_manager.get_speaker(WEB_USER_ID, body.speaker_id)
+        if speaker is None:
+            raise HTTPException(status_code=404, detail="Speaker not found")
+        speaker_manager.add_sample(WEB_USER_ID, speaker["id"], embedding, transcription_id=transcription_id)
+    else:
+        speaker = speaker_manager.create_speaker(WEB_USER_ID, body.name, embedding, transcription_id=transcription_id)
+
+    new_labels = dict(transcription.speaker_labels or {})
+    new_labels[body.local_speaker] = speaker["name"]
+    transcriptions_manager.update_transcription(WEB_USER_ID, transcription_id, speaker_labels=new_labels)
+
+    also_updated = _rescan_transcripts_for_speaker(exclude_id=transcription_id)
+
+    return {"speaker": speaker_manager.to_public(speaker), "also_updated_count": also_updated}
+
+
+# ── Speakers (named voice roster) ────────────────────────────────────────────
+class SpeakerRename(BaseModel):
+    name: str
+
+
+@app.get("/api/chatty/speakers", dependencies=[Depends(require_api_key)])
+async def get_speakers():
+    return speaker_manager.list_speakers(WEB_USER_ID)
+
+
+@app.put("/api/chatty/speakers/{speaker_id}", dependencies=[Depends(require_api_key)])
+async def rename_speaker(speaker_id: str, body: SpeakerRename):
+    speaker = speaker_manager.rename_speaker(WEB_USER_ID, speaker_id, body.name)
+    if speaker is None:
+        raise HTTPException(status_code=404, detail="Speaker not found")
+    return speaker_manager.to_public(speaker)
+
+
+@app.delete("/api/chatty/speakers/{speaker_id}", dependencies=[Depends(require_api_key)])
+async def delete_speaker(speaker_id: str):
+    """Remove a speaker from the roster - does not retroactively strip labels
+    already written into transcripts, only stops future matching."""
+    ok = speaker_manager.delete_speaker(WEB_USER_ID, speaker_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Speaker not found")
+    return {"deleted": True}
+
+
+@app.post("/api/chatty/speakers/rescan", dependencies=[Depends(require_api_key)])
+async def rescan_speakers():
+    """Manually sweep every transcript's unmatched speaker embeddings against
+    the full roster right now, rather than waiting for the next manual label
+    action to trigger it as a side effect. Useful after tuning
+    SPEAKER_MATCH_THRESHOLD, or just to force a fresh pass over anything an
+    earlier rescan missed."""
+    updated_count = _rescan_transcripts_for_speaker()
+    return {"updated_count": updated_count}
+
+
 # ── Audio ingestion (iOS app) ────────────────────────────────────────────────
 # Raw-body (not multipart) audio chunk upload. Transcribed via the WhisperX
 # STT engine already running on this host, then fed into the same
 # TranscriptionsManager pending queue as text transcriptions - the existing
 # heartbeat mining step (HeartbeatManager._process_transcription_mining)
 # picks it up from there unchanged.
-def _format_transcript(stt_result: dict) -> str:
-    """Render an STT engine result as plain text, using per-speaker lines
-    when diarization segments are present."""
-    segments = stt_result.get("segments") or []
-    if segments and isinstance(segments[0], dict) and "speaker" in segments[0]:
-        lines = []
-        for seg in segments:
-            text = (seg.get("text") or "").strip()
-            if text:
-                lines.append(f"{seg.get('speaker', '?')}: {text}")
-        if lines:
-            return "\n".join(lines)
-    return (stt_result.get("text") or "").strip()
+def _normalize_segments(result: TranscriptionResult) -> Optional[List[dict]]:
+    """Convert STT engine segments ({speaker, start, end, text}) into our
+    stored shape ({local_speaker, start, end, text}). Returns None when the
+    STT engine returned no segments at all, so callers can fall back to
+    plain `text` instead of storing an empty segments list."""
+    raw_segments = result.segments or []
+    if not raw_segments:
+        return None
+    return [
+        {
+            "start": seg.get("start"),
+            "end": seg.get("end"),
+            "local_speaker": seg.get("speaker"),
+            "text": (seg.get("text") or "").strip(),
+        }
+        for seg in raw_segments
+    ]
 
 
 async def _transcribe_and_store_audio(
     audio_bytes: bytes, device_id: str, chunk_start: str, chunk_duration: str, source: str
 ) -> None:
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{STT_ENGINE_URL}/transcribe",
-                files={"file": ("chunk.m4a", audio_bytes, "audio/mp4")},
-                data={"language": "en", "diarize": "true"},
-            )
-            resp.raise_for_status()
-            result = resp.json()
+        result = await get_stt_provider().transcribe(audio_bytes, filename_hint="chunk.m4a")
 
-        transcript = _format_transcript(result)
+        segments = _normalize_segments(result)
+        speaker_embeddings = result.speaker_embeddings or {}
+
+        # Auto-label any local speaker whose voice already matches a known
+        # roster entry - the "face recognition recognizes you automatically"
+        # step for brand-new recordings.
+        speaker_labels = {}
+        for local_speaker, embedding in speaker_embeddings.items():
+            match = speaker_manager.match(WEB_USER_ID, embedding)
+            if match:
+                speaker_labels[local_speaker] = match[0]["name"]
+
+        transcript = render_segments(segments, speaker_labels) if segments else result.text
         if not transcript:
             logger.info(f"Audio chunk from device {device_id} at {chunk_start} had no speech, skipping")
             return
 
         audio_filename = transcriptions_manager.save_audio(audio_bytes)
-        content = f"[{chunk_start}] (device {device_id}, {chunk_duration}s audio) {transcript}"
-        transcriptions_manager.add_transcription(WEB_USER_ID, content, source=source, audio_filename=audio_filename)
+        header = f"[{chunk_start}] (device {device_id}, {chunk_duration}s audio)"
+        content = f"{header} {transcript}"
+        transcriptions_manager.add_transcription(
+            WEB_USER_ID, content, source=source, audio_filename=audio_filename,
+            segments=segments, speaker_embeddings=speaker_embeddings or None,
+            speaker_labels=speaker_labels or None, header=header,
+        )
         logger.info(f"Transcribed and queued audio chunk from device {device_id} at {chunk_start}")
 
     except Exception as e:
@@ -274,6 +576,264 @@ async def receive_audio(
     background_tasks.add_task(
         _transcribe_and_store_audio, audio_bytes, x_device_id, x_chunk_start, x_chunk_duration, x_source
     )
+    return {"accepted": True}
+
+
+# ── Media ingestion (iOS app) ────────────────────────────────────────────────
+# Raw-body (not multipart) single-file photo/video upload. Vision-describes
+# images and summarizes videos (keyframes + audio track STT), then feeds the
+# resulting text into the same TranscriptionsManager pending queue as audio/
+# text transcriptions - the heartbeat's mining step picks it up unchanged.
+# Never surfaced in Notes.
+MEDIA_MAX_BYTES = 200 * 1024 * 1024  # videos arrive pre-compressed to 720p, so this is generous
+MEDIA_IMAGE_FORMATS = {"image/jpeg": "jpg", "image/heic": "heic", "image/png": "png"}
+MEDIA_VIDEO_FORMATS = {"video/quicktime": "mov", "video/mp4": "mp4"}
+MEDIA_VIDEO_KEYFRAME_COUNT = 3
+
+
+def _decode_caption(raw: str) -> Optional[str]:
+    if not raw:
+        return None
+    try:
+        decoded = unquote(raw, encoding="utf-8", errors="strict")
+    except Exception:
+        decoded = raw
+    return decoded.strip() or None
+
+
+async def _describe_image(jpeg_b64: str, prompt: str) -> str:
+    """Vision-describe a single JPEG image, falling back to a one-off OpenAI
+    vision call if the configured chat provider doesn't support vision -
+    same fallback src.main's Telegram photo handler uses."""
+    from src.core import config
+    from src.core.llm.factory import get_llm_provider
+    from src.core.llm.openai_provider import OpenAIProvider
+
+    provider = get_llm_provider()
+    if provider.supports_vision:
+        return await provider.complete_vision(prompt, image_b64=jpeg_b64, max_tokens=500)
+    if config.OPENAI_API_KEY:
+        fallback = OpenAIProvider(
+            api_key=config.OPENAI_API_KEY, base_url=None, model="gpt-4o", supports_vision=True,
+        )
+        return await fallback.complete_vision(prompt, image_b64=jpeg_b64, max_tokens=500)
+    raise RuntimeError("No vision-capable LLM provider configured (set OPENAI_API_KEY, or CHAT_PROVIDER=anthropic)")
+
+
+async def _summarize_video_notes(raw_notes: str) -> str:
+    from src.core.llm.factory import get_llm_provider
+
+    prompt = (
+        "Summarize this video into a short paragraph, combining what happens "
+        "visually across the sampled frames with anything said in the audio "
+        "transcript (if present). Focus on facts worth remembering: people, "
+        "places, events, plans.\n\n" + raw_notes
+    )
+    response = await get_llm_provider().complete([{"role": "user", "content": prompt}])
+    return response.content
+
+
+def _convert_image_to_jpeg_b64(image_bytes: bytes, image_format: str) -> str:
+    """Normalize any supported image format (jpeg/heic/png) to real JPEG
+    bytes via ImageMagick (auto-orienting per EXIF), since the vision
+    providers' complete_vision() hardcodes an image/jpeg mime type in the
+    request payload - HEIC in particular isn't understood by either vision
+    API directly."""
+    result = subprocess.run(
+        ["convert", f"{image_format}:-", "-auto-orient", "jpeg:-"],
+        input=image_bytes, capture_output=True, timeout=30, check=True,
+    )
+    return base64.b64encode(result.stdout).decode("ascii")
+
+
+def _ffprobe_duration(path: str) -> Optional[float]:
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=15, check=True,
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        return None
+
+
+def _extract_frame_at(path: str, timestamp: float) -> Optional[bytes]:
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-ss", str(timestamp), "-i", path,
+             "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-"],
+            capture_output=True, timeout=30, check=True,
+        )
+        return result.stdout or None
+    except Exception:
+        return None
+
+
+def _extract_audio_track(path: str) -> Optional[bytes]:
+    """Extract the audio track as an mp4/m4a file. Written to a real temp
+    file rather than piped to stdout - the mp4 muxer needs a seekable
+    output to write its header, unlike the mjpeg frame grabs above."""
+    with tempfile.NamedTemporaryFile(suffix=".m4a") as tmp_out:
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-i", path, "-vn", "-acodec", "aac", "-f", "mp4", tmp_out.name],
+                capture_output=True, timeout=60, check=True,
+            )
+        except Exception:
+            return None
+        data = tmp_out.read()
+        return data or None
+
+
+def _extract_video_parts(video_bytes: bytes, video_format: str) -> Tuple[List[bytes], Optional[bytes]]:
+    with tempfile.NamedTemporaryFile(suffix=f".{video_format}") as tmp_in:
+        tmp_in.write(video_bytes)
+        tmp_in.flush()
+
+        duration = _ffprobe_duration(tmp_in.name)
+        fractions = [0.1, 0.5, 0.9] if duration else [0.0]
+        keyframes = []
+        for frac in fractions[:MEDIA_VIDEO_KEYFRAME_COUNT]:
+            timestamp = duration * frac if duration else 0.0
+            frame = _extract_frame_at(tmp_in.name, timestamp)
+            if frame:
+                keyframes.append(frame)
+
+        audio_bytes = _extract_audio_track(tmp_in.name)
+
+    return keyframes, audio_bytes
+
+
+async def _process_image_media(
+    media_bytes: bytes, image_format: str, device_id: str, caption: Optional[str],
+    captured_at: str, source: str, filename: str,
+) -> None:
+    try:
+        jpeg_b64 = await asyncio.to_thread(_convert_image_to_jpeg_b64, media_bytes, image_format)
+    except Exception as e:
+        logger.error(f"Failed to normalize image from device {device_id}: {e}")
+        return
+
+    prompt = (
+        "Describe this photo in a few concise sentences: setting, people, "
+        "objects, and anything notable. This description will be scanned "
+        "for personal facts worth remembering, so include names, places, or "
+        f"details mentioned in the caption if given.\n\nUser's caption: {caption or '(none)'}"
+    )
+    try:
+        description = await _describe_image(jpeg_b64, prompt)
+    except Exception as e:
+        logger.error(f"Vision analysis failed for image from device {device_id}: {e}")
+        return
+
+    header = f"[{captured_at or datetime.utcnow().isoformat()}] (device {device_id}, image)"
+    parts = [header, description.strip()]
+    if caption:
+        parts.append(f"Caption: {caption}")
+    content = "\n".join(parts)
+
+    transcriptions_manager.add_transcription(WEB_USER_ID, content, source=source, header=header)
+    logger.info(f"Processed image media '{filename or '(unnamed)'}' from device {device_id}, queued for memory mining")
+
+
+async def _process_video_media(
+    media_bytes: bytes, video_format: str, device_id: str, caption: Optional[str],
+    captured_at: str, source: str, filename: str,
+) -> None:
+    try:
+        keyframes, audio_bytes = await asyncio.to_thread(_extract_video_parts, media_bytes, video_format)
+    except Exception as e:
+        logger.error(f"Failed to extract frames/audio from video from device {device_id}: {e}")
+        return
+
+    frame_descriptions = []
+    for i, frame_bytes in enumerate(keyframes):
+        frame_b64 = base64.b64encode(frame_bytes).decode("ascii")
+        prompt = (
+            f"This is frame {i + 1} of {len(keyframes)} sampled from a video, in "
+            "chronological order. Describe what's happening in one or two sentences."
+        )
+        try:
+            frame_descriptions.append((await _describe_image(frame_b64, prompt)).strip())
+        except Exception as e:
+            logger.error(f"Vision analysis failed for video frame {i} from device {device_id}: {e}")
+
+    transcript = None
+    if audio_bytes:
+        try:
+            result = await get_stt_provider().transcribe(audio_bytes, filename_hint="video_audio.m4a")
+            transcript = (result.text or "").strip() or None
+        except Exception as e:
+            logger.error(f"STT failed for video audio from device {device_id}: {e}")
+
+    if not frame_descriptions and not transcript:
+        logger.info(f"Video from device {device_id} yielded no frame descriptions or transcript, skipping")
+        return
+
+    notes = "\n".join(f"Frame {i + 1}: {d}" for i, d in enumerate(frame_descriptions))
+    if transcript:
+        notes += f"\n\nAudio transcript: {transcript}"
+    if caption:
+        notes += f"\n\nUser's caption: {caption}"
+
+    try:
+        summary = (await _summarize_video_notes(notes)).strip()
+    except Exception as e:
+        logger.error(f"Failed to summarize video from device {device_id}: {e}")
+        summary = notes  # fall back to the raw frame/transcript notes rather than dropping them
+
+    header = f"[{captured_at or datetime.utcnow().isoformat()}] (device {device_id}, video)"
+    content = f"{header} {summary}"
+
+    transcriptions_manager.add_transcription(WEB_USER_ID, content, source=source, header=header)
+    logger.info(f"Processed video media '{filename or '(unnamed)'}' from device {device_id}, queued for memory mining")
+
+
+@app.post("/api/chatty/media", dependencies=[Depends(require_api_key)], status_code=202)
+async def receive_media(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_device_id: str = Header(default=""),
+    x_media_kind: str = Header(default=""),
+    x_source: str = Header(default="ios_app"),
+    x_captured_at: str = Header(default=""),
+    x_caption: str = Header(default=""),
+    x_filename: str = Header(default=""),
+):
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if content_type in MEDIA_IMAGE_FORMATS:
+        kind, media_format = "image", MEDIA_IMAGE_FORMATS[content_type]
+    elif content_type in MEDIA_VIDEO_FORMATS:
+        kind, media_format = "video", MEDIA_VIDEO_FORMATS[content_type]
+    else:
+        raise HTTPException(status_code=415, detail=f"Unsupported content type: {content_type or '(none)'}")
+
+    if x_media_kind and x_media_kind != kind:
+        logger.warning(
+            f"X-Media-Kind ({x_media_kind}) doesn't match Content-Type ({content_type}) "
+            f"from device {x_device_id}; trusting Content-Type"
+        )
+
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"Media exceeds {MEDIA_MAX_BYTES:,} byte limit")
+
+    media_bytes = await request.body()
+    if not media_bytes:
+        raise HTTPException(status_code=400, detail="Empty media body")
+    if len(media_bytes) > MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"Media exceeds {MEDIA_MAX_BYTES:,} byte limit")
+
+    caption = _decode_caption(x_caption)
+
+    if kind == "image":
+        background_tasks.add_task(
+            _process_image_media, media_bytes, media_format, x_device_id, caption, x_captured_at, x_source, x_filename
+        )
+    else:
+        background_tasks.add_task(
+            _process_video_media, media_bytes, media_format, x_device_id, caption, x_captured_at, x_source, x_filename
+        )
     return {"accepted": True}
 
 
@@ -359,7 +919,17 @@ class FeatureRequestCreate(BaseModel):
 
 
 async def _process_pi_queue():
-    """Drain queued feature requests one at a time through the Pi agent."""
+    """Drain queued feature requests one at a time through the Pi agent.
+
+    Each request runs inside an isolated git worktree via
+    src.managers.self_upgrade_manager.run_feature_request - the same
+    pattern the heartbeat's self-upgrade pipeline uses - so Pi can never
+    edit the live checkout mid-turn, and never restarts the very server
+    it's running under as its own verification step (that used to kill the
+    `pi` subprocess before it could report back; see
+    skills/pi_agent/runner.py's PM2_SELF_APP_NAME handling for the narrower
+    fix covering requests made before this existed).
+    """
     global _pi_worker_task
     try:
         while True:
@@ -383,29 +953,15 @@ async def _process_pi_queue():
                 waited += 5
 
             try:
-                async for event in run_pi_agent(req.prompt):
-                    etype = event.get("type")
-                    content = event.get("content", "")
-
-                    if etype == "file_change":
-                        path = content.split(": ", 1)[-1] if ": " in content else content
-                        feature_requests_manager.add_file_changed(req.id, path)
-                        feature_requests_manager.append_log(req.id, content)
-                    elif etype == "completed":
-                        feature_requests_manager.update(req.id, status="completed", summary=content)
-                    elif etype == "error":
-                        feature_requests_manager.update(req.id, status="error", summary=content)
-                        feature_requests_manager.append_log(req.id, f"Error: {content}")
-                    elif content:
-                        feature_requests_manager.append_log(req.id, content)
+                await run_feature_request(req.id, req.prompt, feature_requests_manager)
             except Exception as e:
                 feature_requests_manager.update(req.id, status="error", summary=str(e))
             finally:
                 pi_lock.release("web_queue")
 
-            # Safety net: if the generator ended without an explicit terminal status
+            # Safety net: if run_feature_request ended without setting a terminal status
             latest = feature_requests_manager.get(req.id)
-            if latest and latest.status == "running":
+            if latest and latest.status in ("running", "testing"):
                 feature_requests_manager.update(req.id, status="completed", summary="Finished.")
     finally:
         _pi_worker_task = None
@@ -443,6 +999,54 @@ async def delete_request(request_id: str):
     return {"deleted": True}
 
 
+# ── Trending Suggestions (GitHub-trending ideas curated by the heartbeat; ────
+# never implemented automatically - the user picks from the menu here) ───────
+@app.get("/api/chatty/trending-suggestions", dependencies=[Depends(require_api_key)])
+async def get_trending_suggestions():
+    return [s.to_dict() for s in trending_suggestions_manager.list()]
+
+
+@app.post("/api/chatty/trending-suggestions/scan", dependencies=[Depends(require_api_key)])
+async def scan_trending_suggestions():
+    """Manual "scan now" trigger - bypasses the heartbeat's interval gate."""
+    await run_trending_scan(skills_manager, trending_suggestions_manager)
+    return [s.to_dict() for s in trending_suggestions_manager.list()]
+
+
+@app.post("/api/chatty/trending-suggestions/{suggestion_id}/implement", dependencies=[Depends(require_api_key)])
+async def implement_trending_suggestion(suggestion_id: str):
+    suggestion = trending_suggestions_manager.get(suggestion_id)
+    if suggestion is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    if suggestion.status != "pending":
+        raise HTTPException(status_code=409, detail=f"Suggestion is already {suggestion.status}")
+
+    req = feature_requests_manager.create(suggestion.integration_prompt, source="github_trending")
+    _ensure_pi_worker_running()
+    updated = trending_suggestions_manager.update(suggestion_id, status="implemented", request_id=req.id)
+    return updated.to_dict()
+
+
+@app.post("/api/chatty/trending-suggestions/{suggestion_id}/dismiss", dependencies=[Depends(require_api_key)])
+async def dismiss_trending_suggestion(suggestion_id: str):
+    suggestion = trending_suggestions_manager.get(suggestion_id)
+    if suggestion is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    if suggestion.status != "pending":
+        raise HTTPException(status_code=409, detail=f"Suggestion is already {suggestion.status}")
+
+    updated = trending_suggestions_manager.update(suggestion_id, status="dismissed")
+    return updated.to_dict()
+
+
+@app.delete("/api/chatty/trending-suggestions/{suggestion_id}", dependencies=[Depends(require_api_key)])
+async def delete_trending_suggestion(suggestion_id: str):
+    if trending_suggestions_manager.get(suggestion_id) is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    trending_suggestions_manager.delete(suggestion_id)
+    return {"deleted": True}
+
+
 # ── Memory viewer ─────────────────────────────────────────────────────────────
 @app.get("/api/chatty/memory", dependencies=[Depends(require_api_key)])
 async def get_memory(days: int = Query(default=7, ge=1, le=90)):
@@ -462,6 +1066,26 @@ async def get_memory(days: int = Query(default=7, ge=1, le=90)):
             })
 
     return result
+
+
+@app.get("/api/chatty/memory/search", dependencies=[Depends(require_api_key)])
+async def search_memory(q: str = Query(min_length=1)):
+    from src.core.memory_tools import MemoryTools
+
+    memory_tools = MemoryTools(WEB_USER_ID)
+    results = await memory_tools.search_memory_grep(q)
+    return {"results": results}
+
+
+@app.post("/api/chatty/memory/consolidate", dependencies=[Depends(require_api_key)])
+async def consolidate_memory():
+    from src.core.memory import MemoryManager
+    from src.agents.staged_react_agent import StagedReACTAgent
+
+    memory_manager = MemoryManager(WEB_USER_ID)
+    agent = StagedReACTAgent(memory_manager, skills_manager)
+    result = await memory_manager.consolidate_memories(agent)
+    return {"result": result}
 
 
 # ── Code browser (read-only) ──────────────────────────────────────────────────
