@@ -57,6 +57,13 @@ ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
 OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "tts-1")
 OPENAI_TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "alloy")
 
+# OpenMontage Configuration (AI video generation — skills/video_production/).
+# OPENMONTAGE_API_KEY is optional; the skill returns an error when absent.
+OPENMONTAGE_API_KEY = os.getenv("OPENMONTAGE_API_KEY")
+OPENMONTAGE_API_URL = os.getenv(
+    "OPENMONTAGE_API_URL", "https://api.openmontage.ai"
+)
+
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_PHONE_NUMBER = os.getenv("ALLOWED_PHONE_NUMBER", "")
