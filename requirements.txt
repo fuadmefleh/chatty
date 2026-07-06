@@ -35,6 +35,9 @@ psutil>=5.9.0
 fastapi>=0.110.0
 uvicorn>=0.27.0
 pydantic>=2.5.0
+# python-multipart - required by FastAPI for UploadFile/Form parsing
+# (POST /api/chatty/chat/attachments in chatty_web_server.py).
+python-multipart>=0.0.9
 python-dateutil>=2.8.2
 # yfinance - skills/stocks/yahoo_client.py's stock-quote lookups.
 yfinance>=0.2.36

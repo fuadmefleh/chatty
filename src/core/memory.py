@@ -72,10 +72,21 @@ class ConversationHistoryManager:
 
     # -- Mutations -----------------------------------------------------------
 
-    async def append(self, user_msg: str, assistant_msg: str):
-        """Append one user↔assistant exchange to persisted history."""
+    async def append(self, user_msg: str, assistant_msg: str, attachment: Optional[Dict] = None):
+        """Append one user↔assistant exchange to persisted history.
+
+        `attachment` (if given) is stored on the user message only - metadata
+        about a chat-attached image/video (see chatty_web_server.py's
+        websocket_chat), so the frontend can re-render the thumbnail after a
+        reload. Not used for LLM context (get_messages/get_session for the
+        agent's own preload strip it away naturally since callers that need
+        the plain shape just read "role"/"content").
+        """
         history = await self.load()
-        history.append({"role": "user", "content": user_msg, "ts": datetime.now().isoformat()})
+        user_entry = {"role": "user", "content": user_msg, "ts": datetime.now().isoformat()}
+        if attachment:
+            user_entry["attachment"] = attachment
+        history.append(user_entry)
         history.append({"role": "assistant", "content": assistant_msg, "ts": datetime.now().isoformat()})
         await self.save(history)
 
@@ -210,11 +221,17 @@ class ConversationHistoryManager:
         return result
 
     async def get_session(self, session_id: int) -> List[Dict]:
-        """Return messages for a specific session (stripped of ts)."""
+        """Return messages for a specific session (stripped of ts, attachment kept if present)."""
         sessions = await self.get_sessions()
         if 0 <= session_id < len(sessions):
             sess = sessions[session_id]
-            return [{"role": m["role"], "content": m["content"]} for m in sess["messages"]]
+            out = []
+            for m in sess["messages"]:
+                entry = {"role": m["role"], "content": m["content"]}
+                if m.get("attachment"):
+                    entry["attachment"] = m["attachment"]
+                out.append(entry)
+            return out
         return []
 
     async def delete_session(self, session_id: int) -> bool:

@@ -6,7 +6,10 @@ import {
   fetchSessionMessages,
   deleteSession,
   renameSession,
+  chatMediaUrl,
+  uploadChatAttachment,
   type ChatSession,
+  type ChatAttachment,
 } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Badge from '../components/ui/Badge';
@@ -21,6 +24,20 @@ interface Message {
   role: 'user' | 'assistant' | 'error' | 'system';
   content: string;
   streaming?: boolean;
+  attachment?: ChatAttachment;
+}
+
+// A file the user picked but hasn't sent yet: `previewUrl` is a local object
+// URL (instant preview while `uploading`); `id`/`kind`/`url` come back from
+// POST /api/chatty/chat/attachments once the upload completes, and are what
+// actually gets sent (as `attachment_id`) with the next message.
+interface StagedAttachment {
+  previewUrl: string;
+  previewKind: 'image' | 'video'; // known immediately from the picked File, before upload finishes
+  uploading: boolean;
+  id?: string;
+  kind?: 'image' | 'video';
+  url?: string;
 }
 
 let msgId = 0;
@@ -52,6 +69,7 @@ const Chat: React.FC = () => {
   const [editDraft, setEditDraft] = useState('');
   const [renamingSessionId, setRenamingSessionId] = useState<number | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  const [stagedAttachment, setStagedAttachment] = useState<StagedAttachment | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -61,6 +79,7 @@ const Chat: React.FC = () => {
   const intentionalCloseRef = useRef(false);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef(RECONNECT_BASE_MS);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const { showToast } = useToast();
 
   useEffect(() => {
@@ -182,6 +201,7 @@ const Chat: React.FC = () => {
         role: m.role as 'user' | 'assistant',
         content: m.content,
         streaming: false,
+        attachment: m.attachment,
       }));
       setMessages([systemMsg, ...historyMessages]);
     } catch {
@@ -219,13 +239,54 @@ const Chat: React.FC = () => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, showSessions]);
 
+  const clearStagedAttachment = useCallback(() => {
+    setStagedAttachment((prev) => {
+      if (prev) URL.revokeObjectURL(prev.previewUrl);
+      return null;
+    });
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, []);
+
+  const handleAttachFile = useCallback(async (file: File) => {
+    const previewUrl = URL.createObjectURL(file);
+    const previewKind: 'image' | 'video' = file.type.startsWith('video/') ? 'video' : 'image';
+    setStagedAttachment({ previewUrl, previewKind, uploading: true });
+    try {
+      const uploaded = await uploadChatAttachment(file);
+      setStagedAttachment((prev) =>
+        prev && prev.previewUrl === previewUrl ? { ...prev, uploading: false, ...uploaded } : prev
+      );
+    } catch {
+      showToast('Failed to upload attachment', 'red');
+      setStagedAttachment((prev) => {
+        if (prev?.previewUrl === previewUrl) URL.revokeObjectURL(previewUrl);
+        return prev?.previewUrl === previewUrl ? null : prev;
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showToast]);
+
+  const onFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleAttachFile(file);
+  };
+
   const sendMessage = () => {
     const text = input.trim();
-    if (!text || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const attachment = stagedAttachment?.id ? stagedAttachment : null;
+    if ((!text && !attachment) || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
     // Add user message
     const userId = ++msgId;
-    setMessages((prev) => [...prev, { id: userId, role: 'user', content: text }]);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: userId,
+        role: 'user',
+        content: text,
+        attachment: attachment ? { kind: attachment.kind!, url: attachment.url! } : undefined,
+      },
+    ]);
 
     // Add placeholder assistant message
     const assistantId = ++msgId;
@@ -235,8 +296,9 @@ const Chat: React.FC = () => {
       { id: assistantId, role: 'assistant', content: '', streaming: true },
     ]);
 
-    wsRef.current.send(JSON.stringify({ type: 'message', text }));
+    wsRef.current.send(JSON.stringify({ type: 'message', text, attachment_id: attachment?.id }));
     setInput('');
+    clearStagedAttachment();
   };
 
   const stopGeneration = useCallback(() => {
@@ -647,35 +709,86 @@ const Chat: React.FC = () => {
       </div>
 
       {/* Input */}
-      <div className="flex shrink-0 items-end gap-2.5 border-t border-line bg-surface px-4 py-3 md:px-6">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onFocus={handleInputFocus}
-          placeholder={activeSessionId !== null ? 'Continue the conversation…' : 'Message Chatty…'}
-          disabled={!connected}
-          rows={1}
-          className="min-h-[46px] max-h-40 flex-1 resize-none rounded-lg border border-line bg-bg px-4 py-2.5 text-[14.5px] text-ink outline-none focus:border-signal disabled:opacity-60"
-        />
-        {isGenerating ? (
-          <button
-            onClick={stopGeneration}
-            className="h-[46px] shrink-0 whitespace-nowrap rounded-lg bg-alert-red px-5 text-sm font-semibold text-white hover:opacity-90"
-          >
-            Stop
-          </button>
-        ) : (
-          <button
-            onClick={sendMessage}
-            disabled={!connected || !input.trim()}
-            className={`h-[46px] shrink-0 whitespace-nowrap rounded-lg px-5 text-sm font-semibold ${
-              connected && input.trim() ? 'bg-signal text-white hover:opacity-90' : 'bg-surface-dim text-muted'
-            }`}
-          >
-            Send
-          </button>
+      <div className="shrink-0 border-t border-line bg-surface px-4 py-3 md:px-6">
+        {stagedAttachment && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg border border-line bg-bg px-2 py-2">
+            <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-md bg-surface-dim">
+              {stagedAttachment.previewKind === 'video' ? (
+                <video src={stagedAttachment.previewUrl} className="h-full w-full object-cover" muted />
+              ) : (
+                <img src={stagedAttachment.previewUrl} alt="Attachment preview" className="h-full w-full object-cover" />
+              )}
+              {stagedAttachment.uploading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-ink/40">
+                  <Spinner size="sm" />
+                </div>
+              )}
+            </div>
+            <span className="flex-1 truncate text-xs text-ink-dim">
+              {stagedAttachment.uploading
+                ? 'Uploading…'
+                : stagedAttachment.id
+                ? `${stagedAttachment.previewKind === 'video' ? 'Video' : 'Image'} attached`
+                : 'Upload failed'}
+            </span>
+            <button
+              onClick={clearStagedAttachment}
+              aria-label="Remove attachment"
+              title="Remove attachment"
+              className="rounded p-1 text-muted hover:bg-surface-dim hover:text-ink"
+            >
+              ✕
+            </button>
+          </div>
         )}
+        <div className="flex items-end gap-2.5">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,video/*"
+            onChange={onFileInputChange}
+            className="hidden"
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!connected}
+            title="Attach an image or video"
+            aria-label="Attach an image or video"
+            className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-lg border border-line text-ink-dim hover:border-signal hover:text-ink disabled:opacity-60"
+          >
+            📎
+          </button>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onFocus={handleInputFocus}
+            placeholder={activeSessionId !== null ? 'Continue the conversation…' : 'Message Chatty…'}
+            disabled={!connected}
+            rows={1}
+            className="min-h-[46px] max-h-40 flex-1 resize-none rounded-lg border border-line bg-bg px-4 py-2.5 text-[14.5px] text-ink outline-none focus:border-signal disabled:opacity-60"
+          />
+          {isGenerating ? (
+            <button
+              onClick={stopGeneration}
+              className="h-[46px] shrink-0 whitespace-nowrap rounded-lg bg-alert-red px-5 text-sm font-semibold text-white hover:opacity-90"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={sendMessage}
+              disabled={!connected || (!input.trim() && !stagedAttachment?.id)}
+              className={`h-[46px] shrink-0 whitespace-nowrap rounded-lg px-5 text-sm font-semibold ${
+                connected && (input.trim() || stagedAttachment?.id)
+                  ? 'bg-signal text-white hover:opacity-90'
+                  : 'bg-surface-dim text-muted'
+              }`}
+            >
+              Send
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -776,6 +889,19 @@ const MessageBubble: React.FC<MessageBubbleProps> = React.memo(function MessageB
               : 'border-l-[3px] border-signal bg-surface-dim text-ink'
           }`}
         >
+          {msg.attachment && (
+            <div className="mb-2 max-w-full overflow-hidden rounded-lg">
+              {msg.attachment.kind === 'video' ? (
+                <video src={chatMediaUrl(msg.attachment.url)} controls className="max-h-72 max-w-full rounded-lg" />
+              ) : (
+                <img
+                  src={chatMediaUrl(msg.attachment.url)}
+                  alt="Attachment"
+                  className="max-h-72 max-w-full rounded-lg object-contain"
+                />
+              )}
+            </div>
+          )}
           {msg.role === 'assistant' ? (
             <>
               {msg.content ? (
@@ -786,7 +912,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = React.memo(function MessageB
               {msg.streaming && msg.content && <BlinkingCursor />}
             </>
           ) : (
-            <span className="whitespace-pre-wrap">{msg.content}</span>
+            msg.content && <span className="whitespace-pre-wrap">{msg.content}</span>
           )}
         </div>
       )}

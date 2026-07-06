@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from datetime import datetime
 import contextlib
@@ -32,7 +33,7 @@ from urllib.parse import unquote
 
 from fastapi import (
     FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Header,
-    Query, Request, BackgroundTasks,
+    Query, Request, BackgroundTasks, UploadFile, File,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -171,8 +172,9 @@ def _client_ip(request: Request) -> str:
     return request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
 
 
-async def require_api_key(request: Request, x_api_key: str = Header(default="")):
-    ip = _client_ip(request)
+def _verify_api_key(provided: str, ip: str) -> None:
+    """Shared lockout + constant-time compare, used by both the header-only
+    (require_api_key) and header-or-query (require_api_key_flexible) dependencies."""
     now = time.monotonic()
 
     locked_until = _auth_locked_until.get(ip)
@@ -186,7 +188,7 @@ async def require_api_key(request: Request, x_api_key: str = Header(default=""))
             )
         del _auth_locked_until[ip]
 
-    if not hmac.compare_digest(x_api_key, API_KEY):
+    if not hmac.compare_digest(provided, API_KEY):
         attempts = [t for t in _auth_failures[ip] if now - t < AUTH_WINDOW_SECONDS]
         attempts.append(now)
         _auth_failures[ip] = attempts
@@ -201,6 +203,19 @@ async def require_api_key(request: Request, x_api_key: str = Header(default=""))
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     _auth_failures.pop(ip, None)
+
+
+async def require_api_key(request: Request, x_api_key: str = Header(default="")):
+    _verify_api_key(x_api_key, _client_ip(request))
+
+
+async def require_api_key_flexible(
+    request: Request, x_api_key: str = Header(default=""), api_key: str = Query(default=""),
+):
+    """Same as require_api_key, but also accepts the key as an `api_key` query
+    param - needed for chat-media, since plain <img>/<video> tags can't set a
+    custom header (mirrors websocket_chat's own `api_key: str = Query(...)` auth)."""
+    _verify_api_key(x_api_key or api_key, _client_ip(request))
 
 
 # ── Health / root ─────────────────────────────────────────────────────────────
@@ -735,8 +750,8 @@ async def receive_audio(
 # text transcriptions - the heartbeat's mining step picks it up unchanged.
 # Never surfaced in Notes.
 MEDIA_MAX_BYTES = 200 * 1024 * 1024  # videos arrive pre-compressed to 720p, so this is generous
-MEDIA_IMAGE_FORMATS = {"image/jpeg": "jpg", "image/heic": "heic", "image/png": "png"}
-MEDIA_VIDEO_FORMATS = {"video/quicktime": "mov", "video/mp4": "mp4"}
+MEDIA_IMAGE_FORMATS = {"image/jpeg": "jpg", "image/heic": "heic", "image/png": "png", "image/webp": "webp"}
+MEDIA_VIDEO_FORMATS = {"video/quicktime": "mov", "video/mp4": "mp4", "video/webm": "webm"}
 MEDIA_VIDEO_KEYFRAME_COUNT = 3
 
 
@@ -984,6 +999,148 @@ async def receive_media(
             _process_video_media, media_bytes, media_format, x_device_id, caption, x_captured_at, x_source, x_filename
         )
     return {"accepted": True}
+
+
+# ── Interactive chat media ───────────────────────────────────────────────────
+# Images/videos the user attaches to a live chat message (see websocket_chat
+# below), and images Chatty generates (skills/image_generation/). Distinct
+# from the passive ingestion endpoint above: these are part of a live turn
+# and get served straight back to the browser rather than mined into memory.
+CHAT_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
+_CHAT_MEDIA_FILENAME_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|jpeg|png|webp|heic|mp4|mov|webm)$"
+)
+_CHAT_MEDIA_EXT_TO_MIME = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "webp": "image/webp", "heic": "image/heic",
+    "mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm",
+}
+_CHAT_MEDIA_VIDEO_EXTS = {"mp4", "mov", "webm"}
+
+
+def _chat_uploads_dir() -> Path:
+    d = MEMORY_DIR / WEB_USER_ID / "uploads" / "chat"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@app.get("/api/chatty/chat-media/{filename}", dependencies=[Depends(require_api_key_flexible)])
+async def get_chat_media(filename: str):
+    if not _CHAT_MEDIA_FILENAME_RE.match(filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    uploads_dir = _chat_uploads_dir().resolve()
+    path = (uploads_dir / filename).resolve()
+    if uploads_dir not in path.parents or not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    ext = filename.rsplit(".", 1)[-1]
+    return FileResponse(path, media_type=_CHAT_MEDIA_EXT_TO_MIME.get(ext, "application/octet-stream"))
+
+
+@app.post("/api/chatty/chat/attachments", dependencies=[Depends(require_api_key)], status_code=201)
+async def upload_chat_attachment(file: UploadFile = File(...)):
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if content_type in MEDIA_IMAGE_FORMATS:
+        kind, ext = "image", MEDIA_IMAGE_FORMATS[content_type]
+    elif content_type in MEDIA_VIDEO_FORMATS:
+        kind, ext = "video", MEDIA_VIDEO_FORMATS[content_type]
+    else:
+        raise HTTPException(status_code=415, detail=f"Unsupported content type: {content_type or '(none)'}")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > CHAT_ATTACHMENT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"Attachment exceeds {CHAT_ATTACHMENT_MAX_BYTES:,} byte limit")
+
+    filename = f"{uuid.uuid4()}.{ext}"
+    await asyncio.to_thread((_chat_uploads_dir() / filename).write_bytes, data)
+
+    return {"id": filename, "kind": kind, "url": f"/api/chatty/chat-media/{filename}"}
+
+
+async def _build_attachment_context(media_bytes: bytes, ext: str, kind: str, caption: Optional[str]) -> str:
+    """Describe an image/video attached to a live chat message, for use as
+    ephemeral LLM context (WebChatAgent.stream's attachment_context). Reuses
+    the same vision/STT helpers as the passive media-ingestion pipeline above,
+    but skips that pipeline's final video-summarization pass (needed there for
+    memory-log framing) since here the chat model synthesizes its own reply
+    from the raw per-frame notes."""
+    if kind == "image":
+        jpeg_b64 = await asyncio.to_thread(_convert_image_to_jpeg_b64, media_bytes, ext)
+        prompt = (
+            "Describe this image in detail so you (an AI assistant) can discuss it with the "
+            "user: setting, people, objects, text, and anything notable."
+        )
+        if caption:
+            prompt += f"\n\nThe user's message accompanying it: {caption}"
+        return await _describe_image(jpeg_b64, prompt)
+
+    keyframes, audio_bytes = await asyncio.to_thread(_extract_video_parts, media_bytes, ext)
+    frame_descriptions = []
+    for i, frame_bytes in enumerate(keyframes):
+        frame_b64 = base64.b64encode(frame_bytes).decode("ascii")
+        prompt = (
+            f"This is frame {i + 1} of {len(keyframes)} sampled from a video the user just "
+            "attached to a chat message, in chronological order. Describe what's happening "
+            "in one or two sentences."
+        )
+        try:
+            frame_descriptions.append((await _describe_image(frame_b64, prompt)).strip())
+        except Exception as e:
+            logger.error(f"Vision analysis failed for chat video frame {i}: {e}")
+
+    transcript = None
+    if audio_bytes:
+        try:
+            result = await get_stt_provider().transcribe(audio_bytes, filename_hint="video_audio.m4a")
+            transcript = (result.text or "").strip() or None
+        except Exception as e:
+            logger.error(f"STT failed for chat video audio: {e}")
+
+    if not frame_descriptions and not transcript:
+        return "(The video couldn't be analyzed - no usable frames or audio.)"
+
+    parts = [f"Frame {i + 1}: {d}" for i, d in enumerate(frame_descriptions)]
+    if transcript:
+        parts.append(f"Audio transcript: {transcript}")
+    if caption:
+        parts.append(f"User's message: {caption}")
+    return "\n".join(parts)
+
+
+async def _load_chat_attachment_context(
+    attachment_id: str, caption: Optional[str],
+) -> Tuple[Optional[str], Optional[Dict]]:
+    """Load a previously-uploaded chat attachment (see upload_chat_attachment)
+    and describe it. Returns (attachment_context_for_the_llm, metadata_for_history)."""
+    if not _CHAT_MEDIA_FILENAME_RE.match(attachment_id):
+        return "(The attachment reference was invalid.)", None
+
+    path = _chat_uploads_dir() / attachment_id
+    if not path.is_file():
+        return "(The attachment could not be found - it may have expired.)", None
+
+    ext = attachment_id.rsplit(".", 1)[-1]
+    kind = "video" if ext in _CHAT_MEDIA_VIDEO_EXTS else "image"
+    meta = {"kind": kind, "url": f"/api/chatty/chat-media/{attachment_id}"}
+
+    try:
+        media_bytes = await asyncio.to_thread(path.read_bytes)
+        description = await _build_attachment_context(media_bytes, ext, kind, caption)
+    except Exception as e:
+        logger.error(f"Failed to analyze chat attachment {attachment_id}: {e}")
+        description = f"(The user attached a {kind}, but it couldn't be analyzed.)"
+
+    # Grafted onto the user's own message by WebChatAgent._build_messages
+    # (attachment_context), not sent as a separate system note - live-tested
+    # against this deployment's local model and found that a system-level
+    # "here's what the image shows, don't say you can't see images" note
+    # reliably got overridden by the model's trained "I can't view images"
+    # refusal once real memory context padded the conversation. Folding the
+    # description into what the user is literally saying doesn't trigger that.
+    return f"[Attached {kind} - here's what it shows: {description}]", meta
 
 
 # ── Watchlist ────────────────────────────────────────────────────────────────
@@ -1522,10 +1679,12 @@ async def delete_session(session_id: int):
 
 
 # ── WebSocket Chat ────────────────────────────────────────────────────────────
-# Protocol (client -> server): {"type": "message", "text": ...}
+# Protocol (client -> server): {"type": "message", "text": ..., "attachment_id": ...}
 #                               {"type": "stop"}
 #                               {"type": "regenerate"}
 #                               {"type": "edit_resend", "text": ...}
+# `attachment_id` (optional, "message" only) references a file already
+# uploaded via POST /api/chatty/chat/attachments.
 # Protocol (server -> client): {"type": "session_loaded", ...}
 #                               {"type": "chunk", "text": ...}
 #                               {"type": "done"}
@@ -1620,7 +1779,10 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
                 # response still gets persisted even if the client never sees it.
                 pass
 
-    async def finalize_stream(mode: str, user_text: Optional[str], task: asyncio.Task, holder: Dict[str, str]):
+    async def finalize_stream(
+        mode: str, user_text: Optional[str], task: asyncio.Task, holder: Dict[str, str],
+        attachment_meta: Optional[Dict] = None,
+    ):
         """Await a finished/cancelled/errored stream task, persist, and send exactly
         one control frame. This is the single place that does either, to avoid
         concurrent send_text calls on the same socket."""
@@ -1637,7 +1799,7 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
         response_text = holder["text"]
         try:
             if mode == "message":
-                await history_mgr.append(user_text, response_text)
+                await history_mgr.append(user_text, response_text, attachment=attachment_meta)
             elif mode == "regenerate":
                 await history_mgr.replace_last_assistant(response_text)
             elif mode == "edit_resend":
@@ -1655,10 +1817,10 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
         except Exception:
             pass
 
-    def start_stream(mode: str, text: Optional[str]):
+    def start_stream(mode: str, text: Optional[str], attachment_context: Optional[str] = None):
         holder = {"text": ""}
         if mode == "message":
-            gen = agent.stream(text)
+            gen = agent.stream(text, attachment_context=attachment_context)
         elif mode == "regenerate":
             gen = agent.regenerate()
         elif mode == "edit_resend":
@@ -1683,12 +1845,19 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
             msg_type = data.get("type")
             stream_mode: Optional[str] = None
             stream_user_text: Optional[str] = None
+            attachment_context: Optional[str] = None
+            attachment_meta: Optional[Dict] = None
 
             if msg_type == "message":
                 text = data.get("text", "").strip()
-                if not text:
+                attachment_id = (data.get("attachment_id") or "").strip()
+                if not text and not attachment_id:
                     continue
-                stream_mode, stream_user_text = "message", text
+                if attachment_id:
+                    attachment_context, attachment_meta = await _load_chat_attachment_context(
+                        attachment_id, text or None
+                    )
+                stream_mode, stream_user_text = "message", text or "(sent an attachment)"
             elif msg_type == "regenerate":
                 stream_mode, stream_user_text = "regenerate", None
             elif msg_type == "edit_resend":
@@ -1700,7 +1869,7 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
                 # "stop" (or anything unrecognized) while idle: nothing to stop, ignore.
                 continue
 
-            stream_task, stream_holder = start_stream(stream_mode, stream_user_text)
+            stream_task, stream_holder = start_stream(stream_mode, stream_user_text, attachment_context)
             if stream_task is None:
                 continue
 
@@ -1725,7 +1894,7 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
                     # frame just arrived, so a "stop" racing natural completion
                     # becomes a no-op against an idle connection instead of a
                     # lost or misapplied frame.
-                    await finalize_stream(stream_mode, stream_user_text, stream_task, stream_holder)
+                    await finalize_stream(stream_mode, stream_user_text, stream_task, stream_holder, attachment_meta)
                     stream_task = None
                     if incoming is not None:
                         await queue.put(incoming)
@@ -1733,7 +1902,7 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
 
                 if incoming is _WS_DISCONNECT:
                     stream_task.cancel()
-                    await finalize_stream(stream_mode, stream_user_text, stream_task, stream_holder)
+                    await finalize_stream(stream_mode, stream_user_text, stream_task, stream_holder, attachment_meta)
                     stream_task = None
                     await queue.put(_WS_DISCONNECT)
                     break
@@ -1744,7 +1913,7 @@ async def websocket_chat(websocket: WebSocket, api_key: str = Query(default=""),
                         incoming_data = {}
                     if incoming_data.get("type") == "stop":
                         stream_task.cancel()
-                        await finalize_stream(stream_mode, stream_user_text, stream_task, stream_holder)
+                        await finalize_stream(stream_mode, stream_user_text, stream_task, stream_holder, attachment_meta)
                         stream_task = None
                         break
                     # Any other frame type while busy is ignored (not requeued —

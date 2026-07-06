@@ -13,7 +13,7 @@ Usage:
         print(chunk, end="", flush=True)
 """
 import json
-from typing import AsyncGenerator, List, Dict, Any
+from typing import AsyncGenerator, List, Dict, Any, Optional
 from src.core import config
 from src.core.llm import get_llm_provider
 from src.core.memory import MemoryManager
@@ -60,7 +60,7 @@ class WebChatAgent:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
-    async def _build_messages(self) -> List[Dict[str, Any]]:
+    async def _build_messages(self, attachment_context: Optional[str] = None) -> List[Dict[str, Any]]:
         """Assemble the system prompt + memory context + conversation history."""
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + self._history
 
@@ -82,6 +82,25 @@ class WebChatAgent:
                 })
         except Exception:
             pass
+
+        # Describes an image/video the user just attached to their latest message
+        # (see chatty_web_server.py's websocket_chat). Grafted onto that user
+        # turn's own content - live-tested against this deployment's local model
+        # and found that a *separate system message* saying "here's what the
+        # image shows" got silently overridden by the model's trained "I can't
+        # see images" refusal once real memory context padded the conversation,
+        # even with explicit "don't say you can't see images" instructions.
+        # Folding it into the user message itself (what the user is literally
+        # saying to you) doesn't trigger that reflex. Builds a new dict rather
+        # than mutating messages[-1] in place, since that dict is the same
+        # object as self._history[-1] (shallow list copy above) - mutating it
+        # would leak the description into persisted/displayed history, which
+        # should stay just the user's caption.
+        if attachment_context and messages and messages[-1]["role"] == "user":
+            last = messages[-1]
+            caption = last.get("content") or ""
+            merged = f"{attachment_context}\n\n{caption}".strip() if caption else attachment_context
+            messages[-1] = {**last, "content": merged}
 
         return messages
 
@@ -149,13 +168,19 @@ class WebChatAgent:
             # Max iterations reached
             yield "\n[Max tool iterations reached]"
 
-    async def stream(self, user_message: str) -> AsyncGenerator[str, None]:
+    async def stream(
+        self, user_message: str, attachment_context: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
         """Process a new user message and stream response text chunks.
 
         Maintains conversation history across calls (within the same agent instance).
         Saves the completed interaction to memory. Persists partial output even if
         cancelled mid-stream, so self._history stays consistent with what the caller
         ends up persisting elsewhere.
+
+        `attachment_context` (optional) is a text description of an image/video the
+        user attached to this message (see chatty_web_server.py's websocket_chat) -
+        fed to the LLM as an ephemeral system note for this turn only.
         """
         self._history.append({"role": "user", "content": user_message})
 
@@ -165,7 +190,7 @@ class WebChatAgent:
 
         full_response = ""
         try:
-            messages = await self._build_messages()
+            messages = await self._build_messages(attachment_context)
             tools = self._get_tools()
             async for delta in self._run_completion(messages, tools):
                 full_response += delta

@@ -332,9 +332,15 @@ export const fetchChatSessions = async (): Promise<ChatSession[]> => {
   return res.data;
 };
 
+export interface ChatAttachment {
+  kind: 'image' | 'video';
+  url: string;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  attachment?: ChatAttachment;
 }
 
 export const fetchSessionMessages = async (sessionId: number): Promise<ChatMessage[]> => {
@@ -348,6 +354,26 @@ export const deleteSession = async (sessionId: number): Promise<void> => {
 
 export const renameSession = async (sessionId: number, title: string): Promise<void> => {
   await chattyApi.put(`/api/chatty/sessions/${sessionId}`, { title });
+};
+
+// ── Chat attachments (images/videos sent in a chat message) ─────────────────
+// `chat-media` URLs are authenticated via an `api_key` query param rather than
+// the usual X-API-Key header, since they're used directly as <img>/<video> src
+// (which can't set custom headers) - mirrors WS_CHAT_URL's own `?api_key=` auth.
+// Both the upload response and session-history reload return the bare path
+// (e.g. "/api/chatty/chat-media/<id>"); this appends the key for display.
+export const chatMediaUrl = (relativeUrl: string): string =>
+  `${relativeUrl}?api_key=${encodeURIComponent(getStoredApiKey())}`;
+
+export const uploadChatAttachment = async (file: File): Promise<ChatAttachment & { id: string }> => {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await chattyApi.post<{ id: string; kind: 'image' | 'video'; url: string }>(
+    '/api/chatty/chat/attachments',
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' } }
+  );
+  return res.data;
 };
 
 // ── Feature Requests (Pi agent) ────────────────────────────────────────────────

@@ -69,6 +69,37 @@ async def test_text_only_streaming_response():
 
 
 @pytest.mark.asyncio
+async def test_attachment_context_merged_into_user_turn_not_persisted():
+    """attachment_context should reach the LLM grafted onto the current user
+    turn's own content (not a separate system message - see _build_messages'
+    docstring for why: a separate system note reliably got overridden by the
+    local model's trained "I can't see images" refusal in live testing), and
+    only for this completion - not stored in self._history, so it isn't
+    repeated on later turns and doesn't pollute the persisted/displayed text."""
+    provider = FakeStreamingProvider([
+        [StreamChunk(text_delta="Nice photo!", is_final=True, stop_reason="stop")],
+        [StreamChunk(text_delta="Sure, tell me more.", is_final=True, stop_reason="stop")],
+    ])
+    agent, _ = _make_agent(provider)
+
+    chunks = [c async for c in agent.stream("check this out", attachment_context="It's a photo of a cat.")]
+    assert "".join(chunks) == "Nice photo!"
+
+    first_call_messages = provider.calls[0]["messages"]
+    last_message = first_call_messages[-1]
+    assert last_message["role"] == "user"
+    assert "photo of a cat" in last_message["content"]
+    assert "check this out" in last_message["content"]
+    # The user-visible/persisted history entry stays the plain caption.
+    assert {"role": "user", "content": "check this out"} in agent._history
+
+    # A follow-up turn with no attachment must not resurface the old context.
+    [c async for c in agent.stream("okay")]
+    second_call_messages = provider.calls[1]["messages"]
+    assert not any("photo of a cat" in m.get("content", "") for m in second_call_messages)
+
+
+@pytest.mark.asyncio
 async def test_tool_call_deltas_get_executed_and_looped():
     provider = FakeStreamingProvider([
         [
