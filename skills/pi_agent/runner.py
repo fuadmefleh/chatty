@@ -29,7 +29,9 @@ PI_AGENT_PROVIDER = os.environ.get("PI_AGENT_PROVIDER", "llama-cpp")
 PI_AGENT_MODEL = os.environ.get("PI_AGENT_MODEL", "qwen3.6-27b")
 
 # Max time (seconds) before we kill a stuck pi process
-MAX_RUN_SECONDS = 300  # 5 minutes
+# Local models (qwen3.6-27b on llama-cpp) need more breathing room for
+# complex coding tasks involving multiple file reads, edits, and tool calls.
+MAX_RUN_SECONDS = int(os.environ.get("PI_AGENT_MAX_RUN_SECONDS", "900"))  # 15 min default
 
 # The pm2 app name this very server runs under. `pi` runs as a plain child
 # subprocess of this process (no start_new_session), so when a request asks
