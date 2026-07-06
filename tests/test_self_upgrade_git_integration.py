@@ -35,20 +35,30 @@ async def _fake_run(args, cwd, timeout=120, env=None):
     return (0, "5 passed")
 
 
-def _init_scratch_repo(repo_dir: Path) -> None:
-    def run(args):
-        result = subprocess.run(["git"] + args, cwd=repo_dir, capture_output=True, text=True)
+def _init_scratch_repo(repo_dir: Path) -> Path:
+    """Initialize a scratch repo with a bare 'origin' remote. Returns the
+    origin bare-repo path so callers can push to it if needed."""
+    def run(args, cwd=None):
+        result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
         assert result.returncode == 0, f"git {args} failed: {result.stderr}"
 
     repo_dir.mkdir(parents=True, exist_ok=True)
-    run(["init", "-b", "main"])
-    run(["config", "user.email", "test@example.com"])
-    run(["config", "user.name", "Test"])
+    run(["init", "-b", "main"], cwd=repo_dir)
+    run(["config", "user.email", "test@example.com"], cwd=repo_dir)
+    run(["config", "user.name", "Test"], cwd=repo_dir)
     (repo_dir / "README.md").write_text("scratch repo\n")
     (repo_dir / "src").mkdir()
     (repo_dir / "src" / "existing.py").write_text("# existing file\n")
-    run(["add", "-A"])
-    run(["commit", "-m", "initial commit"])
+    run(["add", "-A"], cwd=repo_dir)
+    run(["commit", "-m", "initial commit"], cwd=repo_dir)
+
+    # Create a bare 'origin' repo and add it as a remote so that
+    # _sync_main_with_origin's `git fetch origin` succeeds.
+    origin_dir = repo_dir.parent / "origin.git"
+    run(["init", "--bare", str(origin_dir)], cwd=repo_dir.parent)
+    run(["remote", "add", "origin", str(origin_dir)], cwd=repo_dir)
+    run(["push", "-u", "origin", "main"], cwd=repo_dir)
+    return origin_dir
 
 
 async def _fake_pi_agent_writes_file(prompt, cwd=None):

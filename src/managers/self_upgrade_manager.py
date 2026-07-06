@@ -182,6 +182,48 @@ def _missing_test_coverage(changed_files: List[str]) -> bool:
     return bool(source_files) and not test_files
 
 
+async def _sync_main_with_origin(cwd: Path) -> None:
+    """Fetch from origin and merge any new origin/main commits into local main.
+
+    This ensures the worktree is created from the latest available code, not
+    a stale local checkout. A no-op if origin/main is not ahead.
+
+    Raises on failure (e.g. fetch fails, or merge conflict) so the caller can
+    decide whether to proceed or abort.
+    """
+    rc, out = await _git(["fetch", "origin"], cwd=cwd, timeout=60)
+    if rc != 0:
+        raise RuntimeError(f"git fetch origin failed: {out[-500:]}")
+
+    # Check if origin/main is ahead of local main.
+    # `git rev-list main..origin/main --count` returns the number of commits
+    # on origin/main that are NOT on local main.
+    rc, count_out = await _git(
+        ["rev-list", "main..origin/main", "--count"], cwd=cwd
+    )
+    if rc != 0:
+        # origin/main doesn't exist (no remote tracking) — nothing to sync.
+        return
+
+    count_str = count_out.strip()
+    if not count_str:
+        return  # Empty output — treat as 0 (no new commits)
+    count = int(count_str)
+    if count == 0:
+        return  # origin/main is not ahead, nothing to do
+
+    # origin/main is ahead — fast-forward merge it into local main.
+    # --ff-only ensures we never create a merge commit or risk conflicts;
+    # if local main has unpushed changes that diverge from origin, this will
+    # fail and the caller can decide how to handle it.
+    rc, out = await _git(["merge", "--ff-only", "origin/main"], cwd=cwd)
+    if rc != 0:
+        raise RuntimeError(
+            f"Cannot fast-forward main to origin/main ({count} new commit(s) "
+            f"on origin but local main has diverging changes). {out[-400:]}"
+        )
+
+
 def _affected_services(changed_files: List[str]) -> List[str]:
     """Map changed file paths to the pm2 services that need restarting."""
     services: List[str] = []
@@ -404,6 +446,15 @@ async def run_self_upgrade(
         config.SELF_UPGRADE_WORKTREES_DIR.mkdir(parents=True, exist_ok=True)
 
         await _git(["worktree", "prune"], cwd=config.BASE_DIR)
+        # Pull any new origin/main commits before branching, so the worktree
+        # starts from the latest upstream code rather than a stale local main.
+        try:
+            await _sync_main_with_origin(config.BASE_DIR)
+        except RuntimeError as e:
+            return await fail(
+                f"Could not sync main with origin before creating worktree: {e}",
+                keep_worktree=False,
+            )
         rc, out = await _git(["worktree", "add", str(worktree_dir), "-b", branch, "main"], cwd=config.BASE_DIR)
         if rc != 0:
             return await fail(f"Could not create worktree: {out[:400]}", keep_worktree=False)
@@ -624,6 +675,12 @@ async def run_feature_request(
     config.SELF_UPGRADE_WORKTREES_DIR.mkdir(parents=True, exist_ok=True)
 
     await _git(["worktree", "prune"], cwd=config.BASE_DIR)
+    # Pull any new origin/main commits before branching, so the worktree
+    # starts from the latest upstream code rather than a stale local main.
+    try:
+        await _sync_main_with_origin(config.BASE_DIR)
+    except RuntimeError as e:
+        return await fail(f"Could not sync main with origin: {e}")
     rc, out = await _git(["worktree", "add", str(worktree_dir), "-b", branch, "main"], cwd=config.BASE_DIR)
     if rc != 0:
         return await fail(f"Could not create worktree: {out[:400]}")

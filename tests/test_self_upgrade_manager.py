@@ -116,6 +116,8 @@ async def test_run_self_upgrade_no_changes_is_a_clean_noop():
         # worktree add succeeds; `git add -A` then `diff --cached --quiet` reports no diff (rc=0)
         mock_git.side_effect = [
             (0, ""),   # worktree prune
+            (0, ""),   # fetch origin
+            (0, ""),   # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),   # worktree add
             (0, ""),   # add -A
             (0, ""),   # diff --cached --quiet -> 0 means NO diff
@@ -149,6 +151,8 @@ async def test_run_self_upgrade_test_failure_never_touches_main():
 
         mock_git.side_effect = [
             (0, ""),           # worktree prune
+            (0, ""),           # fetch origin
+            (0, ""),           # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),           # worktree add
             (0, ""),           # add -A
             (1, ""),           # diff --cached --quiet -> 1 means there IS a diff
@@ -198,6 +202,8 @@ async def test_run_self_upgrade_retries_after_test_failure_then_succeeds():
 
         mock_git.side_effect = [
             (0, ""),             # worktree prune
+            (0, ""),             # fetch origin
+            (0, ""),             # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),             # worktree add
             (0, ""),             # attempt 1: add -A
             (1, ""),             # attempt 1: diff --cached --quiet -> has a diff
@@ -242,6 +248,8 @@ async def test_run_self_upgrade_gives_up_after_max_attempts():
 
         mock_git.side_effect = [
             (0, ""),   # worktree prune
+            (0, ""),   # fetch origin
+            (0, ""),   # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),   # worktree add
             (0, ""),   # attempt 1: add -A
             (1, ""),   # attempt 1: diff --cached --quiet -> has a diff
@@ -287,6 +295,8 @@ async def test_run_self_upgrade_retries_when_commit_rejected_by_hook():
 
         mock_git.side_effect = [
             (0, ""),                                  # worktree prune
+            (0, ""),                                  # fetch origin
+            (0, ""),                                  # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),                                  # worktree add
             (0, ""),                                  # attempt 1: add -A
             (1, ""),                                  # attempt 1: diff --cached --quiet -> has a diff
@@ -348,6 +358,8 @@ async def test_run_self_upgrade_fails_fast_on_infra_failure_without_retry():
 
         mock_git.side_effect = [
             (0, ""),                                                        # worktree prune
+            (0, ""),                                                        # fetch origin
+            (0, ""),                                                        # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),                                                        # worktree add
             (0, ""),                                                        # add -A
             (1, ""),                                                        # diff --cached --quiet -> has a diff
@@ -389,6 +401,8 @@ async def test_run_self_upgrade_retries_when_test_coverage_missing():
 
         mock_git.side_effect = [
             (0, ""),                              # worktree prune
+            (0, ""),                              # fetch origin
+            (0, ""),                              # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),                              # worktree add
             (0, ""),                              # attempt 1: add -A
             (1, ""),                              # attempt 1: diff --cached --quiet -> has a diff
@@ -427,6 +441,8 @@ async def test_run_self_upgrade_aborts_merge_when_main_is_dirty():
 
         mock_git.side_effect = [
             (0, ""),             # worktree prune
+            (0, ""),             # fetch origin
+            (0, ""),             # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),             # worktree add
             (0, ""),             # add -A
             (1, ""),             # diff --cached --quiet -> has a diff
@@ -470,6 +486,8 @@ async def test_run_self_upgrade_aborts_when_main_worktree_not_on_main():
 
         mock_git.side_effect = [
             (0, ""),                    # worktree prune
+            (0, ""),                    # fetch origin
+            (0, ""),                    # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),                    # worktree add
             (0, ""),                    # add -A
             (1, ""),                    # diff --cached --quiet -> has a diff
@@ -509,6 +527,8 @@ async def test_run_self_upgrade_happy_path_merges_and_restarts():
 
         mock_git.side_effect = [
             (0, ""),             # worktree prune
+            (0, ""),             # fetch origin
+            (0, ""),             # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),             # worktree add
             (0, ""),             # add -A
             (1, ""),             # diff --cached --quiet -> has a diff
@@ -531,6 +551,92 @@ async def test_run_self_upgrade_happy_path_merges_and_restarts():
     mock_restart.assert_called_once()
     restarted_services = mock_restart.call_args.args[0]
     assert "chatty-bot" in restarted_services
+
+
+# ── _sync_main_with_origin ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_sync_main_with_origin_noop_when_origin_not_ahead():
+    """Fetch succeeds, but origin/main is not ahead — nothing to do."""
+    with patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git:
+        mock_git.side_effect = [
+            (0, ""),     # fetch origin
+            (0, "0"),    # rev-list main..origin/main --count -> 0
+        ]
+        await sum_._sync_main_with_origin(Path("/fake"))
+
+    git_calls = [c.args[0] for c in mock_git.await_args_list]
+    assert git_calls[0] == ["fetch", "origin"]
+    assert git_calls[1] == ["rev-list", "main..origin/main", "--count"]
+    # Should NOT call merge
+    assert not any(call[:1] == ["merge"] for call in git_calls)
+
+
+@pytest.mark.asyncio
+async def test_sync_main_with_origin_noop_on_empty_revlist_output():
+    """rev-list returns empty string — treat as 0 (no new commits)."""
+    with patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git:
+        mock_git.side_effect = [
+            (0, ""),     # fetch origin
+            (0, ""),     # rev-list returns empty string
+        ]
+        await sum_._sync_main_with_origin(Path("/fake"))
+
+    git_calls = [c.args[0] for c in mock_git.await_args_list]
+    assert not any(call[:1] == ["merge"] for call in git_calls)
+
+
+@pytest.mark.asyncio
+async def test_sync_main_with_origin_fast_forwards_when_origin_ahead():
+    """origin/main has new commits — fast-forward merge into local main."""
+    with patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git:
+        mock_git.side_effect = [
+            (0, ""),     # fetch origin
+            (0, "3"),    # rev-list main..origin/main --count -> 3 new commits
+            (0, ""),     # merge --ff-only origin/main
+        ]
+        await sum_._sync_main_with_origin(Path("/fake"))
+
+    git_calls = [c.args[0] for c in mock_git.await_args_list]
+    assert git_calls[-1] == ["merge", "--ff-only", "origin/main"]
+
+
+@pytest.mark.asyncio
+async def test_sync_main_with_origin_noop_when_no_remote_tracking():
+    """origin/main doesn't exist (no remote) — rev-list fails, no-op."""
+    with patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git:
+        mock_git.side_effect = [
+            (0, ""),     # fetch origin
+            (1, "fatal: ambiguous argument 'origin/main'"),  # rev-list fails
+        ]
+        await sum_._sync_main_with_origin(Path("/fake"))
+
+    git_calls = [c.args[0] for c in mock_git.await_args_list]
+    assert not any(call[:1] == ["merge"] for call in git_calls)
+
+
+@pytest.mark.asyncio
+async def test_sync_main_with_origin_raises_on_fetch_failure():
+    """Fetch fails — raise RuntimeError."""
+    with patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git:
+        mock_git.return_value = (1, "fatal: unable to access origin")
+
+        with pytest.raises(RuntimeError, match="git fetch origin failed"):
+            await sum_._sync_main_with_origin(Path("/fake"))
+
+
+@pytest.mark.asyncio
+async def test_sync_main_with_origin_raises_on_ff_only_conflict():
+    """--ff-only fails because local main has diverging changes — raise."""
+    with patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git:
+        mock_git.side_effect = [
+            (0, ""),     # fetch origin
+            (0, "2"),    # rev-list main..origin/main --count -> 2 new commits
+            (1, "error: Your local changes to the following files would be overwritten"),  # merge fails
+        ]
+
+        with pytest.raises(RuntimeError, match="Cannot fast-forward main to origin/main"):
+            await sum_._sync_main_with_origin(Path("/fake"))
 
 
 # ── retry_pending_merges ──────────────────────────────────────────────────
