@@ -41,6 +41,22 @@ STT_OPENAI_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 STT_LOCAL_MODEL_SIZE = os.getenv("STT_LOCAL_MODEL_SIZE", "base")
 STT_LOCAL_DEVICE = os.getenv("STT_LOCAL_DEVICE", "cpu")
 
+# TTS (text-to-speech) provider - used by the Telegram bot's speak_text skill
+# (skills/tts/) to reply with a real voice message instead of/alongside text.
+#   local (default) - the tts_engine_api microservice already running on
+#     this machine (kokoro/mms/chatterbox engines), no API key needed.
+#   elevenlabs - ElevenLabs API, requires ELEVENLABS_API_KEY.
+#   openai - OpenAI's audio.speech API, reuses OPENAI_API_KEY.
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "local")
+TTS_LOCAL_ENGINE_URL = os.getenv("TTS_LOCAL_ENGINE_URL", "http://127.0.0.1:8002")
+TTS_LOCAL_ENGINE_ENGINE = os.getenv("TTS_LOCAL_ENGINE_ENGINE", "kokoro")
+TTS_LOCAL_ENGINE_VOICE = os.getenv("TTS_LOCAL_ENGINE_VOICE", "af_sky")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # "Rachel" premade voice
+ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
+OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "tts-1")
+OPENAI_TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "alloy")
+
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_PHONE_NUMBER = os.getenv("ALLOWED_PHONE_NUMBER", "")

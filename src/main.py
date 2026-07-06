@@ -31,6 +31,7 @@ from skills.watchlist.tools import set_watchlist_manager
 from src.managers.heartbeat_manager import HeartbeatManager
 from src.core.logging_config import get_main_logger, get_interactions_logger, get_error_logger, get_api_logger
 from src.core.telegram_utils import safe_send_reply, safe_send_message
+from src.core.request_context import current_chat_id
 
 # Get specialized loggers
 logger = get_main_logger()
@@ -1426,7 +1427,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Show typing indicator
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    
+
+    # Let skill tools (e.g. skills/tts's speak_text) that have no direct
+    # access to `context`/`update` reach the current chat - reset in the
+    # finally below regardless of success/failure.
+    chat_id_token = current_chat_id.set(update.effective_chat.id)
+
     try:
         logger.info(f"Processing message from user {user_id}: {message_text[:100]}...")
         
@@ -1498,6 +1504,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except:
             error_logger.error("Failed to send error message to user", exc_info=True)
+    finally:
+        current_chat_id.reset(chat_id_token)
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
