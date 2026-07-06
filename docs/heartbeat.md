@@ -123,12 +123,20 @@ The heartbeat system allows the AI to perform periodic checks and autonomous act
       that's the most common way a self-written test silently fails to even run
   - **Only if all of the following hold** does it merge and restart: tests pass, the live
     `main` checkout has no uncommitted changes, and `main` is actually checked out
-  - Any failure at any stage (including running out of fix attempts) leaves the branch/worktree
-    in place for manual review - `main` is never touched unless the full gate passes
+  - If the tests/coverage gate fails (including running out of fix attempts), the branch/worktree
+    is left in place for manual review - `main` is never touched unless the full gate passes
+  - If only the *merge* gate fails (main was dirty, or checked out to something other than
+    `main`) - a genuinely tested, already-committed change is never abandoned: it's marked
+    `merge_pending` and every heartbeat tick (every `HEARTBEAT_INTERVAL_MINUTES`, independent of
+    this section's own weekly cadence) re-checks whether main is clean yet and merges + restarts
+    automatically the moment it is - see `HeartbeatManager._process_pending_merges` and
+    `self_upgrade_manager.retry_pending_merges`. No manual `git merge` is ever required.
 - Every attempt (successful or not) shows up on the dashboard's Requests page tagged
   🤖 self-upgrade, alongside a Telegram notification
 - A cross-process file lock (`skills/pi_agent/lock.py`) prevents this from ever running
-  the Pi coding agent at the same time as a manually-submitted dashboard feature request
+  the Pi coding agent at the same time as a manually-submitted dashboard feature request -
+  the merge-retry step above acquires the same lock (as a distinct `merge_retry` owner) before
+  touching `main`, so it never races a live merge from either pipeline either
 
 ## Guidelines
 

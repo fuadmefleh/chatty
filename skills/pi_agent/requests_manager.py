@@ -32,7 +32,7 @@ class FeatureRequest:
     ):
         self.id = request_id
         self.prompt = prompt
-        self.status = status  # queued | running | testing | completed | error
+        self.status = status  # queued | running | testing | merge_pending | completed | error
         self.created_at = created_at
         self.updated_at = updated_at
         self.files_changed = files_changed or []
@@ -132,6 +132,14 @@ class FeatureRequestsManager:
         """Oldest request still in the 'queued' state, if any."""
         queued = [r for r in self._load() if r.status == "queued"]
         return sorted(queued, key=lambda r: r.created_at)[0] if queued else None
+
+    def list_pending_merges(self) -> List[FeatureRequest]:
+        """Requests stuck at the merge safety gate (main was dirty or not
+        checked out at merge time), oldest first - retried automatically once
+        main is clean by src/managers/self_upgrade_manager.py's
+        retry_pending_merges(), so no manual `git merge` is ever required."""
+        pending = [r for r in self._load() if r.status == "merge_pending"]
+        return sorted(pending, key=lambda r: r.created_at)
 
     def update(self, request_id: str, **fields) -> Optional[FeatureRequest]:
         requests = self._load()

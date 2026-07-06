@@ -1,5 +1,7 @@
 """Tests for HeartbeatManager._process_self_upgrade_ideas (interval gating +
-delegation to src/managers/self_upgrade_manager.py)."""
+delegation to src/managers/self_upgrade_manager.py) and
+_process_pending_merges (the merge-retry step, which runs every tick with no
+interval gating)."""
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -79,6 +81,48 @@ async def test_no_idea_generated_is_a_quiet_noop():
 
     mock_gen.assert_awaited_once()
     mock_run.assert_not_awaited()
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_process_pending_merges_no_authorized_users_short_circuits():
+    hb = make_manager()
+
+    with patch("src.main.authorized_users", {}):
+        result = await hb._process_pending_merges()
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_process_pending_merges_delegates_and_joins_summaries():
+    hb = make_manager()
+
+    with patch("src.main.authorized_users", {"u1": "phone"}), \
+         patch("src.managers.self_upgrade_manager.retry_pending_merges", new_callable=AsyncMock) as mock_retry, \
+         patch("skills.pi_agent.requests_manager.FeatureRequestsManager"):
+
+        mock_retry.return_value = ["🔧 Deferred merge completed: fix a bug"]
+
+        result = await hb._process_pending_merges()
+
+    mock_retry.assert_awaited_once()
+    assert mock_retry.await_args.args[-1] == "u1"
+    assert result == "🔧 Deferred merge completed: fix a bug"
+
+
+@pytest.mark.asyncio
+async def test_process_pending_merges_nothing_pending_is_a_quiet_noop():
+    hb = make_manager()
+
+    with patch("src.main.authorized_users", {"u1": "phone"}), \
+         patch("src.managers.self_upgrade_manager.retry_pending_merges", new_callable=AsyncMock) as mock_retry, \
+         patch("skills.pi_agent.requests_manager.FeatureRequestsManager"):
+
+        mock_retry.return_value = []
+
+        result = await hb._process_pending_merges()
+
     assert result is None
 
 

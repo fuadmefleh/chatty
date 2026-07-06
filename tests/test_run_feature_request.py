@@ -198,6 +198,11 @@ async def test_run_feature_request_aborts_merge_when_main_is_dirty():
     git_calls = [c.args[0] for c in mock_git.await_args_list]
     assert not any(call[:1] == ["merge"] for call in git_calls)
     mock_cleanup.assert_not_awaited()
+    # Deferred, not a dead end - retry_pending_merges retries this automatically
+    # once main is clean, so it's marked merge_pending rather than error.
+    status_calls = [c.kwargs.get("status") for c in frm.update.call_args_list]
+    assert "merge_pending" in status_calls
+    assert "error" not in status_calls
 
 
 @pytest.mark.asyncio
@@ -230,6 +235,8 @@ async def test_run_feature_request_aborts_when_main_worktree_not_on_main():
     assert not any(call[:1] == ["status"] for call in git_calls)  # short-circuited before the dirty check
     assert not any(call[:1] == ["merge"] for call in git_calls)
     mock_cleanup.assert_not_awaited()
+    status_calls = [c.kwargs.get("status") for c in frm.update.call_args_list]
+    assert "merge_pending" in status_calls
 
 
 @pytest.mark.asyncio

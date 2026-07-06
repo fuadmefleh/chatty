@@ -439,12 +439,16 @@ async def test_run_self_upgrade_aborts_merge_when_main_is_dirty():
 
         result = await sum_.run_self_upgrade("fix a bug", frm, send, "user1")
 
-    assert result is not None and "failed" in result.lower()
+    # Deferred, not failed - a dirty main is retried automatically (see
+    # retry_pending_merges), not a dead end requiring manual intervention.
+    assert result is not None and "deferred" in result.lower()
     git_calls = [c.args[0] for c in mock_git.await_args_list]
     assert not any(call[:1] == ["merge"] for call in git_calls)  # never attempted
     mock_cleanup.assert_not_awaited()
     mock_release.assert_called_once_with("self_upgrade")
-    # Failure message should mention the branch for manual merge
+    status_calls = [c.kwargs.get("status") for c in frm.update.call_args_list]
+    assert "merge_pending" in status_calls
+    assert "error" not in status_calls
     sent_msg = send.await_args.args[1]
     assert "uncommitted changes" in sent_msg
 
@@ -477,11 +481,13 @@ async def test_run_self_upgrade_aborts_when_main_worktree_not_on_main():
 
         result = await sum_.run_self_upgrade("fix a bug", frm, send, "user1")
 
-    assert result is not None and "failed" in result.lower()
+    assert result is not None and "deferred" in result.lower()
     git_calls = [c.args[0] for c in mock_git.await_args_list]
     assert not any(call[:1] == ["status"] for call in git_calls)  # short-circuited before the dirty check
     assert not any(call[:1] == ["merge"] for call in git_calls)
     mock_cleanup.assert_not_awaited()
+    status_calls = [c.kwargs.get("status") for c in frm.update.call_args_list]
+    assert "merge_pending" in status_calls
 
 
 @pytest.mark.asyncio
@@ -525,3 +531,134 @@ async def test_run_self_upgrade_happy_path_merges_and_restarts():
     mock_restart.assert_called_once()
     restarted_services = mock_restart.call_args.args[0]
     assert "chatty-bot" in restarted_services
+
+
+# ── retry_pending_merges ──────────────────────────────────────────────────
+
+def make_pending_request(request_id="req1", branch="feature-request/fix-thing-123", source="user", prompt="fix a bug"):
+    request = MagicMock()
+    request.id = request_id
+    request.branch = branch
+    request.source = source
+    request.prompt = prompt
+    return request
+
+
+@pytest.mark.asyncio
+async def test_retry_pending_merges_noop_when_queue_empty():
+    frm = MagicMock()
+    frm.list_pending_merges.return_value = []
+
+    with patch("src.managers.self_upgrade_manager.pi_lock.acquire") as mock_acquire, \
+         patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git:
+
+        result = await sum_.retry_pending_merges(frm)
+
+    assert result == []
+    mock_acquire.assert_not_called()
+    mock_git.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_pending_merges_skips_when_lock_unavailable():
+    frm = MagicMock()
+    frm.list_pending_merges.return_value = [make_pending_request()]
+
+    with patch("src.managers.self_upgrade_manager.pi_lock.acquire", return_value=False) as mock_acquire, \
+         patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git:
+
+        result = await sum_.retry_pending_merges(frm)
+
+    assert result == []
+    mock_acquire.assert_called_once_with("merge_retry")
+    mock_git.assert_not_awaited()
+    frm.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retry_pending_merges_leaves_request_untouched_when_still_dirty(tmp_path):
+    frm = MagicMock()
+    request = make_pending_request(branch="feature-request/fix-thing-123")
+    frm.list_pending_merges.return_value = [request]
+
+    worktree_dir = tmp_path / "fix-thing-123"
+    worktree_dir.mkdir()
+
+    with patch("src.managers.self_upgrade_manager.config.SELF_UPGRADE_WORKTREES_DIR", tmp_path), \
+         patch("src.managers.self_upgrade_manager.pi_lock.acquire", return_value=True), \
+         patch("src.managers.self_upgrade_manager.pi_lock.release") as mock_release, \
+         patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git:
+
+        mock_git.side_effect = [
+            (0, ""),                  # rev-parse --verify <branch>
+            (0, "main"),              # rev-parse --abbrev-ref HEAD -> on main
+            (0, " M some_file.py"),   # status --porcelain -> still dirty
+        ]
+
+        result = await sum_.retry_pending_merges(frm)
+
+    assert result == []
+    git_calls = [c.args[0] for c in mock_git.await_args_list]
+    assert not any(call[:1] == ["merge"] for call in git_calls)
+    frm.update.assert_not_called()  # left exactly as-is, retried again next tick
+    mock_release.assert_called_once_with("merge_retry")
+
+
+@pytest.mark.asyncio
+async def test_retry_pending_merges_marks_error_when_branch_or_worktree_missing(tmp_path):
+    frm = MagicMock()
+    request = make_pending_request(branch="feature-request/fix-thing-123")
+    frm.list_pending_merges.return_value = [request]
+
+    with patch("src.managers.self_upgrade_manager.config.SELF_UPGRADE_WORKTREES_DIR", tmp_path), \
+         patch("src.managers.self_upgrade_manager.pi_lock.acquire", return_value=True), \
+         patch("src.managers.self_upgrade_manager.pi_lock.release"), \
+         patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git:
+
+        mock_git.side_effect = [(1, "fatal: not a valid ref")]  # rev-parse --verify fails
+
+        result = await sum_.retry_pending_merges(frm)
+
+    assert result == []
+    frm.update.assert_called_once()
+    assert frm.update.call_args.kwargs.get("status") == "error"
+    assert "no longer exist" in frm.update.call_args.kwargs.get("summary", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_retry_pending_merges_completes_once_main_is_clean(tmp_path):
+    frm = MagicMock()
+    request = make_pending_request(branch="feature-request/fix-thing-123", prompt="fix a bug")
+    frm.list_pending_merges.return_value = [request]
+    send = AsyncMock()
+
+    worktree_dir = tmp_path / "fix-thing-123"
+    worktree_dir.mkdir()
+
+    with patch("src.managers.self_upgrade_manager.config.SELF_UPGRADE_WORKTREES_DIR", tmp_path), \
+         patch("src.managers.self_upgrade_manager.pi_lock.acquire", return_value=True), \
+         patch("src.managers.self_upgrade_manager.pi_lock.release") as mock_release, \
+         patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git, \
+         patch("src.managers.self_upgrade_manager._run", new_callable=AsyncMock) as mock_run, \
+         patch("src.managers.self_upgrade_manager._cleanup_worktree", new_callable=AsyncMock) as mock_cleanup, \
+         patch("src.managers.self_upgrade_manager._restart_services") as mock_restart:
+
+        mock_git.side_effect = [
+            (0, ""),                              # rev-parse --verify <branch>
+            (0, "main"),                           # rev-parse --abbrev-ref HEAD -> on main
+            (0, ""),                               # status --porcelain -> CLEAN now
+            (0, "src/foo.py\ntests/test_foo.py"),  # diff --name-only main HEAD
+            (0, ""),                               # merge --no-ff
+        ]
+        mock_run.return_value = (0, "")
+
+        result = await sum_.retry_pending_merges(frm, send, "user1")
+
+    assert len(result) == 1 and "completed" in result[0].lower()
+    completed_calls = [c for c in frm.update.call_args_list if c.kwargs.get("status") == "completed"]
+    assert len(completed_calls) == 1
+    mock_cleanup.assert_awaited_once()
+    mock_restart.assert_called_once()
+    mock_release.assert_called_once_with("merge_retry")
+    send.assert_awaited_once()
+    assert "merge completed" in send.await_args.args[1].lower()

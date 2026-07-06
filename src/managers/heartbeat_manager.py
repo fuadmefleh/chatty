@@ -189,6 +189,18 @@ class HeartbeatManager:
                     if result:
                         summary.append(result)
 
+                    # Retry any feature-request/self-upgrade merges deferred by
+                    # self_upgrade_manager's safety gate (main was dirty or not
+                    # checked out at merge time) - runs every tick, unlike the
+                    # self-upgrade idea step below, since flushing an already-
+                    # tested backlog is cheap (git only, no Pi invocation) and
+                    # shouldn't wait on that slower weekly cadence. May also
+                    # restart this process on success - see that step's own
+                    # comment for why both go near the end of this cycle.
+                    result = await self._process_pending_merges()
+                    if result:
+                        summary.append(result)
+
                     # Think of (and, if worthwhile, implement) a self-upgrade idea.
                     # Placed last: it's the slowest task and, on success, restarts
                     # this very process - nothing after it in this cycle is
@@ -1014,6 +1026,34 @@ If nothing is worth suggesting, reply with exactly: NONE"""
         path = config.BASE_DIR / "data" / "daily_briefing_state.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, indent=2))
+
+    async def _process_pending_merges(self) -> Optional[str]:
+        """Retry any feature-request/self-upgrade merges deferred by
+        src/managers/self_upgrade_manager.py's safety gate (main had
+        uncommitted changes, or wasn't checked out, at merge time) - see
+        retry_pending_merges(). Runs every heartbeat tick, not gated to a
+        slow interval like _process_self_upgrade_ideas below, so a tested,
+        already-committed branch merges itself in promptly once main is
+        clean, with no manual `git merge` ever required.
+        """
+        try:
+            from src.managers import self_upgrade_manager
+            from skills.pi_agent.requests_manager import FeatureRequestsManager
+            import src.main as main_module
+
+            if not getattr(main_module, "authorized_users", None):
+                return None
+
+            user_id = next(iter(main_module.authorized_users.keys()))
+            feature_requests_manager = FeatureRequestsManager()
+            summaries = await self_upgrade_manager.retry_pending_merges(
+                feature_requests_manager, self._send_message_callback, user_id
+            )
+            return "; ".join(summaries) if summaries else None
+
+        except Exception as e:
+            heartbeat_logger.error(f"Error retrying pending merges: {e}", exc_info=True)
+            return None
 
     async def _process_self_upgrade_ideas(self) -> Optional[str]:
         """Think of a self-upgrade idea and, if one seems worthwhile, implement

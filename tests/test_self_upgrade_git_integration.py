@@ -206,16 +206,93 @@ async def test_dirty_main_blocks_merge_and_preserves_branch():
 
             result = await sum_.run_self_upgrade("add a new feature", frm, send, "user1")
 
-        assert result is not None and "failed" in result.lower()
+        # Deferred, not failed - retry_pending_merges retries this automatically
+        # once main is clean (see test_deferred_merge_completes_once_main_is_clean
+        # below), not a dead end requiring a manual `git merge`.
+        assert result is not None and "deferred" in result.lower()
 
         # The uncommitted work on main must survive untouched.
         assert (repo_dir / "src" / "existing.py").read_text() == "# someone is editing this right now\n"
         # The self-upgrade's own change must NOT have landed on main.
         assert not (repo_dir / "src" / "new_feature.py").exists()
 
-        # Branch/worktree preserved for manual inspection.
+        # Branch/worktree preserved for the automatic retry to use later.
         branches = subprocess.run(["git", "branch", "--list"], cwd=repo_dir, capture_output=True, text=True)
         assert "self-upgrade/" in branches.stdout
         assert worktrees_dir.exists() and any(worktrees_dir.iterdir())
 
         mock_restart.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deferred_merge_completes_once_main_is_clean():
+    """The other half of test_dirty_main_blocks_merge_and_preserves_branch: once
+    the human's in-progress edit is committed (main is clean again),
+    retry_pending_merges must actually land the previously-deferred branch on
+    main and clean it up - proving the fix genuinely resolves the stuck state,
+    not just that the initial abort is safe."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        repo_dir = tmp_path / "repo"
+        worktrees_dir = tmp_path / "worktrees"
+        _init_scratch_repo(repo_dir)
+
+        # Simulate a human mid-edit on main - an uncommitted change.
+        (repo_dir / "src" / "existing.py").write_text("# someone is editing this right now\n")
+
+        frm = make_feature_requests_manager()
+        request = frm.create.return_value
+        send = AsyncMock()
+
+        with patch("src.managers.self_upgrade_manager.config.BASE_DIR", repo_dir), \
+             patch("src.managers.self_upgrade_manager.config.SELF_UPGRADE_WORKTREES_DIR", worktrees_dir), \
+             patch("src.managers.self_upgrade_manager.pi_lock.acquire", return_value=True), \
+             patch("src.managers.self_upgrade_manager.pi_lock.release"), \
+             patch("src.managers.self_upgrade_manager.run_pi_agent", _fake_pi_agent_writes_file), \
+             patch("src.managers.self_upgrade_manager._run", _fake_run), \
+             patch("src.managers.self_upgrade_manager._restart_services") as mock_restart:
+
+            deferred_result = await sum_.run_self_upgrade("add a new feature", frm, send, "user1")
+
+        assert deferred_result is not None and "deferred" in deferred_result.lower()
+        mock_restart.assert_not_called()
+
+        # Capture the real branch name generated for this run (frm is a
+        # MagicMock, so .update() calls don't mutate `request` for real -
+        # every call includes branch=, including the deferring one).
+        branch = frm.update.call_args.kwargs["branch"]
+        assert branch  # sanity: the deferred call really did include it
+        request.branch = branch
+        request.source = "self_upgrade"
+        request.prompt = "add a new feature"
+        frm.list_pending_merges.return_value = [request]
+
+        # The human's edit is done - main is clean again.
+        subprocess.run(["git", "add", "-A"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "finish manual edit"], cwd=repo_dir, check=True)
+
+        with patch("src.managers.self_upgrade_manager.config.BASE_DIR", repo_dir), \
+             patch("src.managers.self_upgrade_manager.config.SELF_UPGRADE_WORKTREES_DIR", worktrees_dir), \
+             patch("src.managers.self_upgrade_manager.pi_lock.acquire", return_value=True), \
+             patch("src.managers.self_upgrade_manager.pi_lock.release"), \
+             patch("src.managers.self_upgrade_manager._run", _fake_run), \
+             patch("src.managers.self_upgrade_manager._restart_services") as mock_restart_retry:
+
+            summaries = await sum_.retry_pending_merges(frm, send, "user1")
+
+        assert len(summaries) == 1 and "completed" in summaries[0].lower()
+
+        # The change genuinely landed on main now.
+        assert (repo_dir / "src" / "new_feature.py").exists()
+
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=repo_dir, capture_output=True, text=True)
+        assert status.stdout.strip() == ""
+
+        # Worktree removed, branch deleted (merged, so -d succeeds).
+        assert not worktrees_dir.exists() or not any(worktrees_dir.iterdir())
+        branches = subprocess.run(["git", "branch", "--list"], cwd=repo_dir, capture_output=True, text=True)
+        assert "self-upgrade/" not in branches.stdout
+
+        mock_restart_retry.assert_called_once()
+        completed_calls = [c for c in frm.update.call_args_list if c.kwargs.get("status") == "completed"]
+        assert len(completed_calls) == 1

@@ -237,6 +237,56 @@ async def _cleanup_worktree(worktree_dir: Path, branch: str, delete_branch: bool
             logger.warning(f"Could not delete self-upgrade branch {branch}: {out[:300]}")
 
 
+async def _finalize_merge(
+    branch: str,
+    worktree_dir: Path,
+    changed_files: List[str],
+    commit_msg: str,
+    request_id: str,
+    feature_requests_manager,
+    frontend_touched: bool,
+    env: dict,
+    extra_summary: str = "",
+) -> Tuple[bool, str, List[str]]:
+    """Merge `branch` into the live main checkout and, on success, finalize
+    the request. Caller must already have verified main is on `main` and
+    clean (the safety gate in run_self_upgrade/run_feature_request/
+    retry_pending_merges) - this does not re-check it.
+
+    Returns (merged_ok, message, services). On failure, `message` is the
+    merge-failure reason and the merge is aborted; the caller decides how to
+    report that (fail()'s messaging/lock-release differs per caller). On
+    success, `message` is the completed summary and this has already: run
+    the frontend rebuild if needed, marked the request `completed`, cleaned
+    up the worktree, and requested a restart of the affected services -
+    callers only need to handle their own messaging/lock afterward.
+    """
+    rc, out = await _git(["merge", "--no-ff", branch, "-m", commit_msg], cwd=config.BASE_DIR)
+    if rc != 0:
+        await _git(["merge", "--abort"], cwd=config.BASE_DIR)
+        return False, f"Merge failed: {out[:400]}", []
+
+    services = _affected_services(changed_files)
+    if frontend_touched:
+        # Rebuild against the live checkout's real node_modules before restart.
+        await _run(
+            ["npm", "run", "build"],
+            cwd=config.BASE_DIR / "order_explorer_site" / "frontend",
+            timeout=180, env=env,
+        )
+
+    summary = (
+        f"Merged to main. Files changed: {', '.join(changed_files[:10])}. "
+        f"Restarting: {', '.join(services) or 'nothing'}.{extra_summary}"
+    )
+    feature_requests_manager.update(request_id, status="completed", summary=summary, branch=branch)
+    await _cleanup_worktree(worktree_dir, branch, delete_branch=True)
+    if services:
+        _restart_services(services)
+
+    return True, summary, services
+
+
 async def generate_self_upgrade_idea(skills_manager, memory_manager, feature_requests_manager) -> Optional[str]:
     """Ask the LLM for ONE small, concrete self-upgrade idea, or None."""
     try:
@@ -328,19 +378,26 @@ async def run_self_upgrade(
     branch = f"self-upgrade/{slug}-{unique}"
     worktree_dir = config.SELF_UPGRADE_WORKTREES_DIR / f"{slug}-{unique}"
 
-    async def fail(reason: str, keep_worktree: bool = True) -> str:
-        feature_requests_manager.update(request.id, status="error", summary=reason, branch=branch)
+    async def fail(reason: str, keep_worktree: bool = True, status: str = "error") -> str:
+        deferred = status == "merge_pending"
+        feature_requests_manager.update(request.id, status=status, summary=reason, branch=branch)
         feature_requests_manager.append_log(request.id, reason)
         if send_message_callback:
-            msg = f"🔧 **Self-Upgrade Failed**\n\n{idea_prompt[:200]}\n\n{reason}"
+            verb = "Deferred" if deferred else "Failed"
+            msg = f"🔧 **Self-Upgrade {verb}**\n\n{idea_prompt[:200]}\n\n{reason}"
             if keep_worktree:
-                msg += f"\n\nBranch `{branch}` preserved at `{worktree_dir}` for manual review."
+                msg += (
+                    f"\n\nBranch `{branch}` preserved - will retry the merge automatically."
+                    if deferred
+                    else f"\n\nBranch `{branch}` preserved at `{worktree_dir}` for manual review."
+                )
             try:
                 await send_message_callback(user_id, msg)
             except Exception:
                 pass
         pi_lock.release("self_upgrade")
-        return f"🔧 Self-upgrade failed: {reason[:80]}"
+        prefix = "deferred" if deferred else "failed"
+        return f"🔧 Self-upgrade {prefix}: {reason[:80]}"
 
     try:
         feature_requests_manager.update(request.id, status="running", branch=branch)
@@ -479,54 +536,45 @@ async def run_self_upgrade(
         # Safety gate: only merge onto a clean main that's actually checked
         # out, so this never clobbers concurrent manual work in the live
         # checkout (e.g. someone editing the repo directly at the same time).
+        # A gate failure isn't terminal - it's deferred (status=merge_pending)
+        # and retried automatically every heartbeat tick by
+        # retry_pending_merges() once main is clean, so no manual `git merge`
+        # is ever required.
         _, current_branch = await _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=config.BASE_DIR)
         if current_branch.strip() != "main":
             return await fail(
-                f"Main checkout is on branch '{current_branch.strip()}', not main - merge aborted "
-                f"to avoid clobbering it. Merge branch `{branch}` manually once main is checked out."
+                f"Main checkout is on branch '{current_branch.strip()}', not main right now. This "
+                f"will be retried automatically once main is checked out again.",
+                status="merge_pending",
             )
 
         _, status_out = await _git(["status", "--porcelain"], cwd=config.BASE_DIR)
         if status_out.strip():
             return await fail(
-                "Tests passed, but the main checkout has uncommitted changes - merge aborted to "
-                f"avoid clobbering in-progress work. Commit or stash those changes, then merge "
-                f"branch `{branch}` manually."
-            )
-
-        rc, out = await _git(["merge", "--no-ff", branch, "-m", f"Self-upgrade: {idea_prompt[:72]}"], cwd=config.BASE_DIR)
-        if rc != 0:
-            await _git(["merge", "--abort"], cwd=config.BASE_DIR)
-            return await fail(f"Merge failed: {out[:400]}")
-
-        services = _affected_services(changed_files)
-        if frontend_touched:
-            # Rebuild against the live checkout's real node_modules before restart.
-            await _run(
-                ["npm", "run", "build"],
-                cwd=config.BASE_DIR / "order_explorer_site" / "frontend",
-                timeout=180, env=env,
+                "Tests passed, but the main checkout has uncommitted changes right now. This will "
+                "be retried automatically once main is clean.",
+                status="merge_pending",
             )
 
         test_warning = ""
         if touched_test_files:
             test_warning = f"\n\n⚠️ This change also modified test file(s): {', '.join(touched_test_files)} - worth a look."
 
-        summary = f"Merged to main. Files changed: {', '.join(changed_files[:10])}. Restarting: {', '.join(services) or 'nothing'}."
-        feature_requests_manager.update(request.id, status="completed", summary=summary)
+        merged, message, services = await _finalize_merge(
+            branch, worktree_dir, changed_files, f"Self-upgrade: {idea_prompt[:72]}",
+            request.id, feature_requests_manager, frontend_touched, env, extra_summary=test_warning,
+        )
+        if not merged:
+            return await fail(message)
 
         if send_message_callback:
-            msg = f"🔧 **Self-Upgrade Merged**\n\n{idea_prompt[:200]}\n\n{summary}{test_warning}"
+            msg = f"🔧 **Self-Upgrade Merged**\n\n{idea_prompt[:200]}\n\n{message}"
             try:
                 await send_message_callback(user_id, msg)
             except Exception:
                 pass
 
-        await _cleanup_worktree(worktree_dir, branch, delete_branch=True)
         pi_lock.release("self_upgrade")
-
-        if services:
-            _restart_services(services)
 
         return f"🔧 Self-upgrade merged: {slug} (restarting {', '.join(services) if services else 'nothing'})"
 
@@ -567,8 +615,8 @@ async def run_feature_request(
     branch = f"feature-request/{slug}-{unique}"
     worktree_dir = config.SELF_UPGRADE_WORKTREES_DIR / f"{slug}-{unique}"
 
-    async def fail(reason: str) -> str:
-        feature_requests_manager.update(request_id, status="error", summary=reason, branch=branch)
+    async def fail(reason: str, status: str = "error") -> str:
+        feature_requests_manager.update(request_id, status=status, summary=reason, branch=branch)
         feature_requests_manager.append_log(request_id, reason)
         return reason
 
@@ -664,48 +712,153 @@ async def run_feature_request(
 
     # Same safety gate as run_self_upgrade: only merge onto a clean main
     # that's actually checked out, so this never clobbers concurrent manual
-    # work in the live checkout.
+    # work in the live checkout. Not terminal - see fail()'s status param and
+    # retry_pending_merges(), which retries this automatically every
+    # heartbeat tick once main is clean, so no manual `git merge` is needed.
     _, current_branch = await _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=config.BASE_DIR)
     if current_branch.strip() != "main":
         return await fail(
-            f"Main checkout is on branch '{current_branch.strip()}', not main - merge aborted. "
-            f"Merge branch `{branch}` manually once main is checked out."
+            f"Main checkout is on branch '{current_branch.strip()}', not main right now. This "
+            f"will be retried automatically once main is checked out again.",
+            status="merge_pending",
         )
 
     _, status_out = await _git(["status", "--porcelain"], cwd=config.BASE_DIR)
     if status_out.strip():
         return await fail(
-            "Tests passed, but the main checkout has uncommitted changes - merge aborted to avoid "
-            f"clobbering in-progress work. Merge branch `{branch}` manually once it's clean."
+            "Tests passed, but the main checkout has uncommitted changes right now. This will be "
+            "retried automatically once main is clean.",
+            status="merge_pending",
         )
 
-    rc, out = await _git(["merge", "--no-ff", branch, "-m", commit_msg], cwd=config.BASE_DIR)
-    if rc != 0:
-        await _git(["merge", "--abort"], cwd=config.BASE_DIR)
-        return await fail(f"Merge failed: {out[:400]}")
-
-    services = _affected_services(changed_files)
-    if frontend_touched:
-        # Rebuild against the live checkout's real node_modules before restart.
-        await _run(
-            ["npm", "run", "build"],
-            cwd=config.BASE_DIR / "order_explorer_site" / "frontend",
-            timeout=180, env=env,
-        )
-
-    summary = (
-        f"Merged to main. Files changed: {', '.join(changed_files[:10])}. "
-        f"Restarting: {', '.join(services) or 'nothing'}.{test_warning}"
+    merged, message, _services = await _finalize_merge(
+        branch, worktree_dir, changed_files, commit_msg,
+        request_id, feature_requests_manager, frontend_touched, env, extra_summary=test_warning,
     )
-    feature_requests_manager.update(request_id, status="completed", summary=summary, branch=branch)
+    if not merged:
+        return await fail(message)
 
-    await _cleanup_worktree(worktree_dir, branch, delete_branch=True)
+    # _finalize_merge's restart request is detached/fire-and-forget - issued
+    # only after everything above is already merged and persisted, so even
+    # if this restarts the very process running this code, there's nothing
+    # left to lose. See _restart_services's docstring.
+    return message
 
-    # Detached, fire-and-forget - issued only after everything above is
-    # already merged and persisted, so even if this restarts the very
-    # process running this code, there's nothing left to lose. See
-    # _restart_services's docstring.
-    if services:
-        _restart_services(services)
 
-    return summary
+async def retry_pending_merges(
+    feature_requests_manager,
+    send_message_callback: Optional[Callable] = None,
+    user_id: str = "",
+) -> List[str]:
+    """Re-attempt merges deferred by the safety gate in run_self_upgrade/
+    run_feature_request (main had uncommitted changes, or wasn't checked out
+    at merge time) - called every heartbeat tick (see
+    HeartbeatManager._process_pending_merges) so an already-tested,
+    already-committed branch merges itself in as soon as main is naturally
+    clean again, with no manual `git merge` ever required.
+
+    Deliberately does NOT touch the working tree beyond the merge itself -
+    if main is still dirty/not on main, the request is simply left as-is for
+    the next tick. Returns a list of one-line summaries for the heartbeat
+    digest (empty if nothing was pending or nothing completed this tick).
+    """
+    pending = feature_requests_manager.list_pending_merges()
+    if not pending:
+        return []
+
+    # Merging into main is otherwise always done while this lock is held (by
+    # whichever pipeline is running) - acquire it here too so a retry never
+    # races a live run_self_upgrade/run_feature_request merge. Best-effort:
+    # if unavailable, just try again next tick.
+    if not pi_lock.acquire("merge_retry"):
+        logger.info("Merge retry skipped - pi agent lock held by another process")
+        return []
+
+    summaries: List[str] = []
+    try:
+        for request in pending:
+            try:
+                summary = await _retry_one_pending_merge(
+                    request, feature_requests_manager, send_message_callback, user_id,
+                )
+                if summary:
+                    summaries.append(summary)
+            except Exception as e:
+                logger.error(f"Error retrying pending merge for request {request.id}: {e}", exc_info=True)
+                feature_requests_manager.update(
+                    request.id, status="error", summary=f"Unexpected error retrying merge: {str(e)[:300]}"
+                )
+    finally:
+        pi_lock.release("merge_retry")
+
+    return summaries
+
+
+async def _retry_one_pending_merge(
+    request,
+    feature_requests_manager,
+    send_message_callback: Optional[Callable],
+    user_id: str,
+) -> Optional[str]:
+    """Handle a single merge_pending request. Returns a one-line summary if
+    a merge actually completed this tick, else None (still pending, or
+    marked error - both logged/messaged internally, nothing further for the
+    caller to do)."""
+    branch = request.branch
+    if not branch or "/" not in branch:
+        feature_requests_manager.update(
+            request.id, status="error", summary="Merge pending but no valid branch was recorded."
+        )
+        return None
+
+    worktree_dir = config.SELF_UPGRADE_WORKTREES_DIR / branch.split("/", 1)[1]
+    rc, _ = await _git(["rev-parse", "--verify", branch], cwd=config.BASE_DIR)
+    if rc != 0 or not worktree_dir.is_dir():
+        feature_requests_manager.update(
+            request.id, status="error",
+            summary=f"Branch `{branch}` or its worktree no longer exists - cannot retry merge automatically.",
+        )
+        return None
+
+    # Same safety gate as the original pipelines - still not safe to merge,
+    # just leave it pending and try again next tick.
+    _, current_branch = await _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=config.BASE_DIR)
+    if current_branch.strip() != "main":
+        return None
+    _, status_out = await _git(["status", "--porcelain"], cwd=config.BASE_DIR)
+    if status_out.strip():
+        return None
+
+    _, changed_files_out = await _git(["diff", "--name-only", "main", "HEAD"], cwd=worktree_dir)
+    changed_files = [f.strip() for f in changed_files_out.splitlines() if f.strip()]
+    frontend_touched = any(f.startswith("order_explorer_site/frontend/") for f in changed_files)
+    env = _subprocess_env()
+    label = "Self-upgrade" if request.source == "self_upgrade" else "Feature request"
+    commit_msg = f"{label}: {request.prompt[:72]}"
+
+    merged, message, _services = await _finalize_merge(
+        branch, worktree_dir, changed_files, commit_msg,
+        request.id, feature_requests_manager, frontend_touched, env,
+    )
+
+    if not merged:
+        feature_requests_manager.update(request.id, status="error", summary=message)
+        if send_message_callback:
+            try:
+                await send_message_callback(
+                    user_id, f"🔧 **Deferred Merge Failed**\n\n{request.prompt[:200]}\n\n{message}"
+                )
+            except Exception:
+                pass
+        return None
+
+    if send_message_callback:
+        try:
+            await send_message_callback(
+                user_id,
+                f"🔧 **Merge Completed** (was waiting on a clean main)\n\n{request.prompt[:200]}\n\n{message}",
+            )
+        except Exception:
+            pass
+
+    return f"🔧 Deferred merge completed: {request.prompt[:60]}"
