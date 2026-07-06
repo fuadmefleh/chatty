@@ -15,11 +15,6 @@ export default function WorkoutHistory() {
   const [loading, setLoading] = useState(true);
   const [limit, setLimit] = useState(20);
 
-  useEffect(() => {
-    loadWorkouts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [limit]);
-
   const loadWorkouts = async () => {
     try {
       const data = await fetchWorkouts(limit);
@@ -30,6 +25,11 @@ export default function WorkoutHistory() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    loadWorkouts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [limit]);
 
   const handleDelete = async (id: number) => {
     if (!confirm('Are you sure you want to delete this workout?')) {
