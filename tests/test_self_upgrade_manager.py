@@ -59,12 +59,14 @@ def test_missing_test_coverage_false_when_only_tests_changed():
     assert sum_._missing_test_coverage(["tests/test_foo.py"]) is False
 
 
-def test_restart_services_writes_signal_file(tmp_path):
+@pytest.mark.asyncio
+async def test_restart_services_writes_signal_file_when_no_pm2(tmp_path):
     """Under Docker there's no pm2 - _restart_services writes a JSON signal
     file for the restarter sidecar (docker/restarter/) instead of shelling
     out. This exercises the real function body, not a mock of it."""
-    with patch("src.managers.self_upgrade_manager.config.RESTART_REQUESTS_DIR", tmp_path):
-        sum_._restart_services(["chatty-web-server", "order-explorer-frontend"])
+    with patch("src.managers.self_upgrade_manager.config.RESTART_REQUESTS_DIR", tmp_path), \
+         patch("src.managers.self_upgrade_manager.shutil.which", return_value=None):
+        await sum_._restart_services(["chatty-web-server", "order-explorer-frontend"])
 
     written = list(tmp_path.glob("*.json"))
     assert len(written) == 1
@@ -75,10 +77,38 @@ def test_restart_services_writes_signal_file(tmp_path):
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_restart_services_noop_for_empty_list(tmp_path):
-    with patch("src.managers.self_upgrade_manager.config.RESTART_REQUESTS_DIR", tmp_path):
-        sum_._restart_services([])
+@pytest.mark.asyncio
+async def test_restart_services_noop_for_empty_list(tmp_path):
+    with patch("src.managers.self_upgrade_manager.config.RESTART_REQUESTS_DIR", tmp_path), \
+         patch("src.managers.self_upgrade_manager.shutil.which", return_value=None):
+        await sum_._restart_services([])
     assert list(tmp_path.glob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_restart_services_uses_pm2_when_available(tmp_path):
+    """On a bare-metal/pm2 deployment (this host), restart directly instead
+    of writing a signal file nothing is polling for - the real bug found
+    while clearing a backlog of merge_pending requests: signal files had
+    been piling up unconsumed since this host runs pm2, not Docker."""
+    with patch("src.managers.self_upgrade_manager.config.RESTART_REQUESTS_DIR", tmp_path), \
+         patch("src.managers.self_upgrade_manager.shutil.which", return_value="/usr/bin/pm2"), \
+         patch("src.managers.self_upgrade_manager._run", new_callable=AsyncMock) as mock_run:
+        mock_run.return_value = (0, "restarted")
+        await sum_._restart_services(["chatty-web-server", "order-explorer-frontend"])
+
+    mock_run.assert_awaited_once()
+    args = mock_run.await_args.args[0]
+    assert args == ["pm2", "restart", "chatty-web-server", "order-explorer-frontend"]
+    assert list(tmp_path.glob("*.json")) == []  # no Docker signal file written
+
+
+@pytest.mark.asyncio
+async def test_restart_services_pm2_failure_is_logged_not_raised(tmp_path):
+    with patch("src.managers.self_upgrade_manager.shutil.which", return_value="/usr/bin/pm2"), \
+         patch("src.managers.self_upgrade_manager._run", new_callable=AsyncMock) as mock_run:
+        mock_run.return_value = (1, "process not found")
+        await sum_._restart_services(["nonexistent-service"])  # must not raise
 
 
 def make_feature_requests_manager():

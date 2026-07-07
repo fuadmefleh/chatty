@@ -1401,6 +1401,22 @@ async def delete_request(request_id: str):
     return {"deleted": True}
 
 
+@app.post("/api/chatty/requests/retry-merges", dependencies=[Depends(require_api_key)])
+async def retry_merges():
+    """Manually trigger a retry of any requests deferred by the merge safety
+    gate (main was dirty, or checked out to something other than main) -
+    the same retry_pending_merges() the heartbeat already calls every tick
+    (see HeartbeatManager._process_pending_merges), just on demand instead of
+    waiting up to HEARTBEAT_INTERVAL_MINUTES. No chat message is sent - the
+    dashboard itself shows the result."""
+    from src.managers import self_upgrade_manager
+
+    summaries = await self_upgrade_manager.retry_pending_merges(
+        feature_requests_manager, send_message_callback=None, user_id=WEB_USER_ID
+    )
+    return {"summaries": summaries}
+
+
 # ── Video Production (OpenMontage AI video generation) ──────────────────────
 from skills.video_production import video_manager as _video_mgr
 

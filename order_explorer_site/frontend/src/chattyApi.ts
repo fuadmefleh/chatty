@@ -377,7 +377,10 @@ export const uploadChatAttachment = async (file: File): Promise<ChatAttachment &
 };
 
 // ── Feature Requests (Pi agent) ────────────────────────────────────────────────
-export type FeatureRequestStatus = 'queued' | 'running' | 'testing' | 'completed' | 'error';
+// `merge_pending` = tests passed but main was dirty/on another branch at merge
+// time - retried automatically every heartbeat tick (see retryPendingMerges
+// below for the on-demand version), never a dead end requiring manual `git merge`.
+export type FeatureRequestStatus = 'queued' | 'running' | 'testing' | 'merge_pending' | 'completed' | 'error';
 export type FeatureRequestSource = 'user' | 'self_upgrade' | 'github_trending';
 
 export interface FeatureRequest {
@@ -405,6 +408,13 @@ export const createFeatureRequest = async (prompt: string): Promise<FeatureReque
 
 export const deleteFeatureRequest = async (id: string): Promise<void> => {
   await chattyApi.delete(`/api/chatty/requests/${id}`);
+};
+
+// Manually retries any merge_pending requests right now, instead of waiting
+// for the heartbeat's own tick (see self_upgrade_manager.retry_pending_merges).
+export const retryPendingMerges = async (): Promise<{ summaries: string[] }> => {
+  const res = await chattyApi.post<{ summaries: string[] }>('/api/chatty/requests/retry-merges');
+  return res.data;
 };
 
 // ── Trending Suggestions (GitHub trending scan, curated every few hours) ──────

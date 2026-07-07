@@ -25,6 +25,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import tempfile
 import time
 import uuid
@@ -243,24 +244,37 @@ def _affected_services(changed_files: List[str]) -> List[str]:
     return services
 
 
-def _restart_services(services: List[str]) -> None:
+async def _restart_services(services: List[str]) -> None:
     """Request a restart of the given services.
 
-    Under Docker (see docker-compose.yml), there's no pm2 - instead this
-    writes an atomic signal file into config.RESTART_REQUESTS_DIR, which a
-    sidecar container (docker/restarter/restart_watcher.py) polls and
-    translates into `docker restart <container>` calls. That sidecar is the
-    only container with the Docker socket mounted, deliberately kept out of
-    the codebase self-upgrade can modify.
+    Two deployment modes, detected via `shutil.which("pm2")`:
+    - **pm2** (bare-metal/VM, this host's own deployment): restart directly
+      with `pm2 restart <services>`. Best-effort - a non-zero exit is logged
+      but never raised, since the merge/commit/cleanup already succeeded and
+      completed by the time this runs; a failed restart just means someone
+      needs to restart manually, not that anything is lost.
+    - **Docker** (see docker-compose.yml): there's no pm2 in the container,
+      so this writes an atomic signal file into config.RESTART_REQUESTS_DIR
+      instead, which a sidecar container (docker/restarter/restart_watcher.py)
+      polls and translates into `docker restart <container>` calls. That
+      sidecar is the only container with the Docker socket mounted,
+      deliberately kept out of the codebase self-upgrade can modify.
 
-    This may indirectly cause the very process calling it (chatty-bot) to be
-    restarted, but does so asynchronously via the sidecar - this function
-    itself just writes a file and returns immediately. Kept as its own
-    function so tests can assert on the written file instead of mocking
-    subprocess/filesystem calls inline.
+    Either way this may indirectly cause the very process calling it
+    (chatty-bot) to be restarted - safe to do here since it's issued only
+    after everything is already merged and persisted, so there's nothing left
+    to lose. Kept as its own function so tests can assert on the pm2 call /
+    written file instead of mocking subprocess/filesystem calls inline.
     """
     if not services:
         return
+
+    if shutil.which("pm2"):
+        rc, out = await _run(["pm2", "restart"] + services, cwd=config.BASE_DIR, timeout=60)
+        if rc != 0:
+            logger.warning(f"pm2 restart failed for {services}: {out[:300]}")
+        return
+
     config.RESTART_REQUESTS_DIR.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"services": services, "requested_at": time.time()})
     tmp_path = config.RESTART_REQUESTS_DIR / f".{uuid.uuid4().hex}.tmp"
@@ -324,7 +338,7 @@ async def _finalize_merge(
     feature_requests_manager.update(request_id, status="completed", summary=summary, branch=branch)
     await _cleanup_worktree(worktree_dir, branch, delete_branch=True)
     if services:
-        _restart_services(services)
+        await _restart_services(services)
 
     return True, summary, services
 

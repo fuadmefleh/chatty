@@ -3,6 +3,7 @@ import {
   fetchFeatureRequests,
   createFeatureRequest,
   deleteFeatureRequest,
+  retryPendingMerges,
 } from '../chattyApi';
 import type { FeatureRequest, FeatureRequestStatus } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
@@ -11,6 +12,7 @@ import Badge from '../components/ui/Badge';
 import Spinner from '../components/ui/Spinner';
 import PulseDot from '../components/ui/PulseDot';
 import EmptyState from '../components/ui/EmptyState';
+import { useToast } from '../hooks/useToast';
 
 const POLL_MS = 3000;
 
@@ -18,6 +20,7 @@ const statusTone: Record<FeatureRequestStatus, 'neutral' | 'teal' | 'gold' | 'em
   queued: 'neutral',
   running: 'teal',
   testing: 'gold',
+  merge_pending: 'gold',
   completed: 'teal',
   error: 'ember',
 };
@@ -34,7 +37,9 @@ const Requests: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [retryingMerges, setRetryingMerges] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     try {
@@ -50,8 +55,12 @@ const Requests: React.FC = () => {
 
   useEffect(() => { load(); }, [load]);
 
-  // Poll while anything is queued/running; stop once everything has settled.
-  const pending = requests.some((r) => r.status === 'queued' || r.status === 'running' || r.status === 'testing');
+  // Poll while anything is queued/running/testing/waiting on a clean main to
+  // merge into; stop once everything has settled.
+  const pending = requests.some((r) =>
+    r.status === 'queued' || r.status === 'running' || r.status === 'testing' || r.status === 'merge_pending'
+  );
+  const pendingMerges = requests.filter((r) => r.status === 'merge_pending');
 
   useEffect(() => {
     if (pending && !pollRef.current) {
@@ -96,6 +105,23 @@ const Requests: React.FC = () => {
     }
   };
 
+  const handleRetryMerges = async () => {
+    setRetryingMerges(true);
+    try {
+      const { summaries } = await retryPendingMerges();
+      await load();
+      if (summaries.length > 0) {
+        showToast(summaries.join(' · '), 'green');
+      } else {
+        showToast('Still waiting on a clean main - will retry again automatically.', 'amber');
+      }
+    } catch {
+      showToast('Failed to retry merges', 'red');
+    } finally {
+      setRetryingMerges(false);
+    }
+  };
+
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this request?')) return;
     try {
@@ -125,11 +151,27 @@ const Requests: React.FC = () => {
       />
       <p className="-mt-4 mb-6 text-sm text-muted">
         Describe a feature or fix. It's routed to the local Pi coding agent (qwen3.6-27b),
-        which edits the Chatty codebase directly. Restart the affected pm2 service yourself
-        once a request completes. Entries marked 🤖 self-upgrade were proposed by Chatty's own
-        heartbeat - those run in an isolated branch, must pass the test suite, and only then
-        auto-merge and restart the affected services on their own.
+        which edits the Chatty codebase directly. Entries marked 🤖 self-upgrade were proposed by
+        Chatty's own heartbeat - those run in an isolated branch, must pass the test suite, and
+        only then auto-merge and restart the affected services on their own.
       </p>
+
+      {pendingMerges.length > 0 && (
+        <Card className="mb-6 flex flex-wrap items-center justify-between gap-3 border-signal/40">
+          <p className="m-0 text-sm text-ink">
+            {pendingMerges.length} change{pendingMerges.length === 1 ? '' : 's'} waiting for a clean
+            main to merge - retried automatically every heartbeat, or right now:
+          </p>
+          <button
+            type="button"
+            onClick={handleRetryMerges}
+            disabled={retryingMerges}
+            className="shrink-0 rounded-lg bg-signal px-4 py-2 text-sm font-bold text-white disabled:opacity-60"
+          >
+            {retryingMerges ? 'Retrying…' : 'Retry now'}
+          </button>
+        </Card>
+      )}
 
       {/* Submit */}
       <Card className="mb-7">
