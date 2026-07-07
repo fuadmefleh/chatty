@@ -154,6 +154,59 @@ async def test_curate_ideas_empty_repos_short_circuits():
 
 
 @pytest.mark.asyncio
+async def test_curate_ideas_prompt_requires_backend_and_frontend():
+    """The actual bug fix: curated ideas used to be steered toward bare
+    skills/ tools ("Add a skill that uses <repo> to ...") with no frontend
+    integration and no grounding beyond the trending page's one-line blurb.
+    The prompt must now demand a whole feature (backend + dashboard UI,
+    following this repo's own precedent) grounded in the repo's README."""
+    repos = [
+        {"repo": "foo/bar", "repo_url": "u", "description": "d", "language": "python",
+         "stars": "1", "readme_excerpt": "Implements a novel caching algorithm."},
+    ]
+    skills_manager = MagicMock()
+    skills_manager.get_all_skills.return_value = []
+
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock(message=MagicMock(content="[]"))]
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=fake_response)
+
+    with patch("openai.AsyncOpenAI", return_value=mock_client):
+        await tm._curate_ideas(repos, skills_manager)
+
+    sent_prompt = mock_client.chat.completions.create.await_args.kwargs["messages"][0]["content"]
+    assert "backend and frontend" in sent_prompt.lower()
+    assert "order_explorer_site/frontend" in sent_prompt
+    assert "webcams" in sent_prompt.lower()
+    assert "Add a skill that uses" not in sent_prompt  # the old biased example wording
+    assert "Implements a novel caching algorithm." in sent_prompt  # README excerpt included
+
+
+@pytest.mark.asyncio
+async def test_fetch_readme_excerpt_tries_candidates_and_truncates():
+    long_readme = "x" * 1000
+
+    async def fake_get(self, url, *args, **kwargs):
+        if url.endswith("/README.md"):
+            return MagicMock(status_code=200, text=long_readme)
+        return MagicMock(status_code=404, text="")
+
+    with patch("httpx.AsyncClient.get", new=fake_get):
+        excerpt = await tm._fetch_readme_excerpt("foo/bar")
+
+    assert excerpt == long_readme[:tm._README_EXCERPT_MAX_CHARS]
+    assert len(excerpt) == tm._README_EXCERPT_MAX_CHARS
+
+
+@pytest.mark.asyncio
+async def test_fetch_readme_excerpt_empty_when_all_candidates_missing():
+    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=MagicMock(status_code=404, text=""))):
+        excerpt = await tm._fetch_readme_excerpt("foo/bar")
+    assert excerpt == ""
+
+
+@pytest.mark.asyncio
 async def test_run_trending_scan_dedups_against_seen_repos(tmp_path):
     mgr = make_manager(tmp_path)
     mgr.create(repo="already/seen", repo_url="u", description="d", language="python",
@@ -165,6 +218,7 @@ async def test_run_trending_scan_dedups_against_seen_repos(tmp_path):
     ]
 
     with patch("src.managers.trending_manager._scan_trending_repos", new=AsyncMock(return_value=scanned)), \
+         patch("src.managers.trending_manager._fetch_readme_excerpt", new=AsyncMock(return_value="")), \
          patch("src.managers.trending_manager._curate_ideas", new=AsyncMock(return_value=[
              {"repo": "new/repo", "repo_url": "u2", "description": "d2", "language": "python",
               "stars": "2", "rationale": "worth it", "integration_prompt": "add it"},
@@ -183,6 +237,23 @@ async def test_run_trending_scan_dedups_against_seen_repos(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_trending_scan_attaches_readme_excerpts_before_curating(tmp_path):
+    mgr = make_manager(tmp_path)
+    scanned = [
+        {"repo": "new/repo", "repo_url": "u", "description": "d", "language": "python", "stars": "1"},
+    ]
+
+    with patch("src.managers.trending_manager._scan_trending_repos", new=AsyncMock(return_value=scanned)), \
+         patch("src.managers.trending_manager._fetch_readme_excerpt", new=AsyncMock(return_value="cool algorithm")), \
+         patch("src.managers.trending_manager._curate_ideas", new=AsyncMock(return_value=[])) as mock_curate:
+
+        await tm.run_trending_scan(MagicMock(), mgr)
+
+    curated_input = mock_curate.call_args.args[0]
+    assert curated_input[0]["readme_excerpt"] == "cool algorithm"
+
+
+@pytest.mark.asyncio
 async def test_run_trending_scan_returns_none_when_nothing_new(tmp_path):
     mgr = make_manager(tmp_path)
     with patch("src.managers.trending_manager._scan_trending_repos", new=AsyncMock(return_value=[])):
@@ -195,6 +266,7 @@ async def test_run_trending_scan_returns_none_when_curation_finds_nothing(tmp_pa
     mgr = make_manager(tmp_path)
     scanned = [{"repo": "new/repo", "repo_url": "u", "description": "d", "language": "python", "stars": "1"}]
     with patch("src.managers.trending_manager._scan_trending_repos", new=AsyncMock(return_value=scanned)), \
+         patch("src.managers.trending_manager._fetch_readme_excerpt", new=AsyncMock(return_value="")), \
          patch("src.managers.trending_manager._curate_ideas", new=AsyncMock(return_value=[])):
         result = await tm.run_trending_scan(MagicMock(), mgr)
     assert result is None

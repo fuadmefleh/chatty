@@ -18,6 +18,7 @@ Flow, driven by HeartbeatManager._process_trending_suggestions():
 3. run_trending_scan() - dedups against every repo ever suggested (so the same
    repo isn't re-proposed every cycle) and stores the rest as pending suggestions.
 """
+import asyncio
 import json
 import re
 from datetime import datetime
@@ -247,6 +248,30 @@ async def _scan_trending_repos(languages: List[str], per_language: int) -> List[
     return repos
 
 
+_README_CANDIDATES = ("README.md", "readme.md", "Readme.md", "README.rst")
+_README_EXCERPT_MAX_CHARS = 600
+
+
+async def _fetch_readme_excerpt(repo: str) -> str:
+    """Best-effort fetch of a repo's README so curated ideas can reference
+    real concepts/approaches from the project's own code, not just the
+    one-line blurb scraped off the trending page. "HEAD" resolves to the
+    default branch on raw.githubusercontent.com regardless of whether it's
+    main/master, so no separate branch lookup is needed. Truncated hard -
+    with up to TRENDING_REPOS_PER_LANGUAGE * len(languages) new repos in one
+    scan, an untruncated README per repo would blow up the curation prompt."""
+    async with httpx.AsyncClient(timeout=10.0, headers=GITHUB_TRENDING_HEADERS) as client:
+        for filename in _README_CANDIDATES:
+            try:
+                resp = await client.get(f"https://raw.githubusercontent.com/{repo}/HEAD/{filename}")
+                if resp.status_code == 200 and resp.text.strip():
+                    return resp.text.strip()[:_README_EXCERPT_MAX_CHARS]
+            except Exception as e:
+                logger.warning(f"Could not fetch README for {repo}: {e}")
+                break
+    return ""
+
+
 def _extract_json_array(text: str) -> Optional[list]:
     """Best-effort JSON-array parse: try the whole reply first, then fall back
     to the first [...] substring in case the model wrapped it in prose or a
@@ -280,8 +305,9 @@ async def _curate_ideas(repos: List[Dict], skills_manager) -> List[Dict]:
             for s in skills_manager.get_all_skills()
         ) or "(no skills loaded)"
 
-        repos_text = "\n".join(
+        repos_text = "\n\n".join(
             f"- {r['repo']} ({r['language']}, {r['stars']} stars): {r['description']}"
+            + (f"\n  README excerpt: {r['readme_excerpt']}" if r.get("readme_excerpt") else "")
             for r in repos
         )
 
@@ -289,7 +315,7 @@ async def _curate_ideas(repos: List[Dict], skills_manager) -> List[Dict]:
 
         prompt = f"""You are Chatty, a personal AI assistant, looking outward for ideas as part of
 your autonomous heartbeat. Below is a list of repositories currently trending on GitHub (past
-week) across Python, TypeScript, and JavaScript.
+week) across Python, TypeScript, and JavaScript, each with a README excerpt where one was found.
 
 Your current skills:
 {skills_summary}
@@ -298,14 +324,31 @@ Trending repositories:
 {repos_text}
 
 Pick at most {max_ideas} of these repos that are genuinely worth considering integrating into
-your own codebase (a new skill, a library swap, a UX idea inspired by the project) - not every
-trending repo is relevant, and it's fine to pick fewer than {max_ideas} or none at all.
+your own codebase - not every trending repo is relevant, and it's fine to pick fewer than
+{max_ideas} or none at all.
+
+Each idea MUST be a whole feature with both backend and frontend integration, not just a bare
+`skills/` tool exposed only through chat. Chatty's web dashboard (order_explorer_site/frontend/)
+already has plenty of precedent for this shape - a dedicated page wired through chattyApi.ts and
+added to the nav, backed by REST endpoints in chatty_web_server.py (or a skill's own module): the
+Webcams page, the Video Production page (skills/video_production/ + its job-history UI), the
+Storage Breakdown panel on Server Health, and inline generated-image rendering in Chat. A new idea
+should follow that same pattern - propose the dashboard page/panel alongside the backend piece,
+not backend alone.
+
+Ground the idea in the README excerpt's actual concepts/approach (an algorithm, a data model, a
+specific capability the project demonstrates) rather than a generic "wraps <repo>'s API" - if a
+repo has no README excerpt or nothing concrete to draw on, skip it rather than guessing.
 
 Reply with ONLY a JSON array (no prose, no code fences), where each element is:
 {{"repo": "<owner/repo, exactly as listed above>",
-  "rationale": "<one or two sentences on why this is worth considering>",
-  "integration_prompt": "<a direct instruction to a coding agent describing the concrete change
-  to make, e.g. 'Add a skill that uses <repo> to ...'>"}}
+  "rationale": "<one or two sentences on why this is worth considering, citing the concept from
+  the README you're drawing on>",
+  "integration_prompt": "<a direct instruction to a coding agent describing the concrete backend
+  AND frontend change to make, e.g. 'Add a <Name> page to the dashboard (nav entry + component in
+  order_explorer_site/frontend/src/pages/, wired through chattyApi.ts) backed by a new
+  /api/chatty/<name> endpoint in chatty_web_server.py that <does X, using <repo>'s approach to
+  Y>.'>"}}
 
 If nothing listed is worth suggesting, reply with exactly: []"""
 
@@ -351,6 +394,14 @@ async def run_trending_scan(skills_manager, suggestions_manager: TrendingSuggest
     new_repos = [r for r in repos if r["repo"] not in already_seen]
     if not new_repos:
         return None
+
+    # Ground curation in each repo's actual README rather than just the
+    # one-line trending-page blurb - fetched concurrently since this is a
+    # handful of independent HTTP calls, not a hot path (runs at most once
+    # per TRENDING_SCAN_INTERVAL_HOURS).
+    readme_excerpts = await asyncio.gather(*(_fetch_readme_excerpt(r["repo"]) for r in new_repos))
+    for r, excerpt in zip(new_repos, readme_excerpts):
+        r["readme_excerpt"] = excerpt
 
     ideas = await _curate_ideas(new_repos, skills_manager)
     if not ideas:
