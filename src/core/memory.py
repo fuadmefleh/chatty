@@ -2,13 +2,12 @@
 import json
 import aiofiles
 from datetime import datetime
-from difflib import SequenceMatcher
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from src.core import config
 from src.core.llm import get_llm_provider, with_retries
 from src.core.logging_config import get_memory_logger
-from src.core.long_term_facts import LongTermFactsStore, render_category_facts
+from src.core.wiki_store import WikiStore, _slugify
 
 # Get memory logger
 memory_logger = get_memory_logger()
@@ -21,6 +20,18 @@ HISTORY_PAGE_SIZE = 10
 SESSION_GAP_SECONDS = 3600  # 1 hour
 # Max sessions shown in /continue
 MAX_SESSIONS_SHOWN = 10
+
+
+def _is_suspicious_shrink(old_body: str, new_body: str) -> bool:
+    """Cheap defense against an LLM silently dropping content on a
+    full-body wiki-page rewrite: true if the new body is both drastically
+    shorter than the old one AND missing most of its distinct lines."""
+    old_lines = {line.strip() for line in old_body.split("\n") if line.strip()}
+    if not old_lines:
+        return False
+    new_lines = {line.strip() for line in new_body.split("\n") if line.strip()}
+    retained = len(old_lines & new_lines)
+    return retained < len(old_lines) * 0.5 and len(new_body) < len(old_body) * 0.5
 
 
 class ConversationHistoryManager:
@@ -314,7 +325,7 @@ class MemoryManager:
         self.long_term_dir.mkdir(parents=True, exist_ok=True)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
 
-        self._facts_store = LongTermFactsStore(user_id, self.long_term_dir)
+        self._wiki_store = WikiStore(user_id, self.long_term_dir)
 
         memory_logger.info(f"Initialized MemoryManager for user {user_id}")
     
@@ -433,64 +444,63 @@ class MemoryManager:
         """
         short_term_files = list(self.short_term_dir.glob("*.md"))
         total_size = sum(f.stat().st_size for f in short_term_files)
-        facts = self._facts_store.list_facts()
-        total_size += self._facts_store.storage_size_bytes()
+        pages = self._wiki_store.list_pages()
+        total_size += self._wiki_store.storage_size_bytes()
 
         return {
             "total_days": len(short_term_files),
-            "long_term_entries": len(facts),
+            "long_term_entries": len(pages),
             "total_size_bytes": total_size,
             "oldest_date": min(f.stem for f in short_term_files) if short_term_files else None,
             "newest_date": max(f.stem for f in short_term_files) if short_term_files else None,
         }
 
     async def get_long_term_memory(self, max_chars: Optional[int] = None) -> str:
-        """Retrieve all long-term memory as a formatted string.
+        """Retrieve all long-term memory (the wiki) as a formatted string.
 
         Args:
             max_chars: If given, cap total output at this many characters,
-                split evenly across categories so no single category (by
-                virtue of sort order or unbounded growth) starves out the
-                others. If None, returns full content (e.g. for the
-                heartbeat's watch-suggestion mining, which needs everything).
+                split evenly across pages so no single page (by virtue of
+                sort order or unbounded growth) starves out the others. If
+                None, returns full content (e.g. for the heartbeat's
+                watch-suggestion mining, which needs everything).
 
         Returns:
             Formatted long-term memory string
         """
-        categories = self._facts_store.list_categories()
+        pages = self._wiki_store.list_pages()
 
-        if not categories:
+        if not pages:
             return "No long-term memories yet."
 
-        per_category_budget = max_chars // len(categories) if max_chars is not None else None
+        per_page_budget = max_chars // len(pages) if max_chars is not None else None
 
         memory_parts = []
-        for category in categories:
-            facts = self._facts_store.list_facts(category=category)
-            memory_parts.append(render_category_facts(category, facts, max_chars=per_category_budget))
+        for page in pages:
+            block = f"# {page['title']}\n\n{page['body']}"
+            if per_page_budget is not None:
+                block = block[:per_page_budget]
+            memory_parts.append(block)
 
         return "\n\n".join(memory_parts) if memory_parts else "No long-term memories yet."
 
     async def add_long_term_memory(self, title: str, content: str):
-        """Add a long-term memory entry.
+        """Add a long-term memory entry: appends a bullet to the wiki
+        concept page named by `title` (creating it if it doesn't exist
+        yet), synchronously and without an LLM call - see
+        MemoryRouter.remember()'s docstring for why this stays a cheap
+        heuristic append rather than the heartbeat's richer page-editing
+        ingest.
 
         Args:
-            title: Category of the memory (e.g., 'preferences', 'important_facts')
+            title: Category/page-slug hint (e.g., 'preferences', 'important_facts')
             content: Content to store
         """
-        fact = self._facts_store.add_fact(category=title, content=content)
-
-        # Best-effort: a fact must still be saved even if embedding fails
-        # (missing/invalid OPENAI_API_KEY, network error, etc.) - semantic
-        # search just skips facts with no embedding (see LongTermFactsStore
-        # .semantic_search), falling back to search_memory_grep for those.
-        try:
-            from src.core.embeddings import get_embedding
-
-            embedding = await get_embedding(content)
-            self._facts_store.update_fact_embedding(fact["id"], embedding)
-        except Exception as e:
-            memory_logger.error(f"Error embedding fact {fact['id']} for {self.user_id}: {e}")
+        slug = _slugify(title) if title.strip() else "important-facts"
+        page_title = title.replace("_", " ").replace("-", " ").title() or "Important Facts"
+        self._wiki_store.append_section(
+            type_="concept", slug=slug, content=f"- {content}", title_hint=page_title,
+        )
     
     async def get_short_term_files_for_consolidation(self, days_old: int = 7) -> List[Path]:
         """Get short-term memory files older than specified days for consolidation.
@@ -535,22 +545,23 @@ class MemoryManager:
     async def consolidate_memories(self, agent) -> str:
         """Consolidate old short-term memories into long-term insights.
         
-        This method analyzes older short-term memories and extracts important
-        information to store in long-term memory categories.
-        
+        This method analyzes older short-term memories and updates/creates
+        the long-term wiki pages they belong to (edit, not just append -
+        see _ingest_content()).
+
         Args:
-            agent: ReACTAgent instance to use for analysis
-            
+            agent: StagedReACTAgent instance whose LLM is used for the ingest
+
         Returns:
             Summary of consolidation results
         """
-        
+
         # Get files older than 7 days
         files_to_consolidate = await self.get_short_term_files_for_consolidation(days_old=7)
-        
+
         if not files_to_consolidate:
             return "No short-term memories ready for consolidation."
-        
+
         # Read all files to consolidate
         all_content = []
         for file_path in files_to_consolidate:
@@ -560,78 +571,38 @@ class MemoryManager:
                     all_content.append(f"## From {file_path.stem}\n{content}")
             except Exception as e:
                 print(f"Error reading file {file_path}: {e}")
-        
+
         if not all_content:
             return "No content to consolidate."
-        
+
         combined_content = "\n\n".join(all_content)
-        
-        # Create prompt for AI to analyze and consolidate
-        consolidation_prompt = f"""You are consolidating short-term memories into long-term memory storage.
-
-Analyze the following conversation logs and extract important information that should be remembered long-term:
-
-{combined_content}
-
-Please identify and categorize important information into these categories:
-
-1. **Personal Preferences** - User's likes, dislikes, preferences
-2. **Important Facts** - Key facts about the user (name, location, job, family, etc.)
-3. **Goals and Projects** - User's goals, ongoing projects, aspirations
-4. **Relationships** - Important people in the user's life
-5. **Recurring Topics** - Topics the user frequently discusses
-6. **Key Insights** - Important insights or decisions made
-
-For each category that has relevant information, provide:
-- A clear, concise summary
-- Specific details worth remembering
-
-Respond with ONLY a JSON object of this exact shape:
-{{"entries": [{{"category": "important_facts", "content": "..."}}, ...]}}
-category must be one of: important_facts, personal_preferences,
-goals_and_projects, relationships, recurring_topics, key_insights (or a
-short snake_case category if genuinely none fit). If nothing is
-memory-worthy, respond {{"entries": []}}.
-"""
 
         try:
-            # Call the agent's LLM directly for a structured-output answer -
-            # agent.think() runs the entire 7-stage ReACT pipeline
-            # (decompose/memory/plan/execute/synthesize/reflect/memorize),
-            # which is unnecessary and unreliable for a single structured
-            # extraction like this.
-            response = await with_retries(
-                lambda: agent.llm.complete(
-                    [{"role": "user", "content": consolidation_prompt}],
-                    response_format="json", temperature=0.3,
-                ),
-                logger=memory_logger,
-            )
-            consolidation_result = response.content
-
-            # Parse the result and store in long-term memory
-            await self._parse_and_store_consolidation(consolidation_result)
-            
-            # Archive the processed files
-            for file_path in files_to_consolidate:
-                await self.archive_short_term_memory(file_path)
-            
-            return f"Successfully consolidated {len(files_to_consolidate)} days of memories into long-term storage."
-            
+            ingest_result = await self._ingest_content(combined_content, agent.llm.complete)
         except Exception as e:
             print(f"Error during consolidation: {e}")
             return f"Error consolidating memories: {e}"
-    
+
+        if ingest_result.startswith("Error"):
+            return ingest_result
+
+        # Archive the processed files (even if nothing was memory-worthy -
+        # they've been considered, no need to reprocess them next cycle)
+        for file_path in files_to_consolidate:
+            await self.archive_short_term_memory(file_path)
+
+        return f"Successfully consolidated {len(files_to_consolidate)} day(s) of memories into long-term storage."
+
     async def consolidate_text(self, text: str) -> str:
         """Extract and store long-term-memory-worthy content from arbitrary
-        text (e.g. a mined transcription) using the same category taxonomy
+        text (e.g. a mined transcription) via the same wiki-editing ingest
         as consolidate_memories().
 
         Unlike consolidate_memories(), this takes raw text directly instead
         of reading short-term memory files, and calls the LLM directly
-        rather than going through a ReACTAgent - so it can run without a
-        live per-user agent instance (e.g. from the heartbeat, for a web/iOS
-        user who may not have an active chat session).
+        rather than going through a live agent instance - so it can run
+        without one (e.g. from the heartbeat, for a web/iOS user who may
+        not have an active chat session).
 
         Args:
             text: Raw text to mine for long-term-memory-worthy content.
@@ -639,119 +610,268 @@ memory-worthy, respond {{"entries": []}}.
         Returns:
             Summary string of what was stored.
         """
-        consolidation_prompt = f"""You are extracting long-term-memory-worthy information from a piece of text (e.g. a transcribed voice memo).
+        try:
+            llm = get_llm_provider()
+            return await self._ingest_content(text, llm.complete)
+        except Exception as e:
+            memory_logger.error(f"Error consolidating text for {self.user_id}: {e}")
+            return f"Error consolidating text: {e}"
 
-Analyze the following text and extract important information that should be remembered long-term:
+    async def _ingest_content(self, source_content: str, complete_fn) -> str:
+        """Shared two-LLM-call wiki ingest, used by both consolidate_memories
+        (agent.llm.complete) and consolidate_text (get_llm_provider().complete)
+        - complete_fn is an async callable matching LLMProvider.complete's
+        signature (messages, *, response_format, temperature) -> LLMResponse.
 
-{text}
+        Call 1 (triage): given the wiki's index and the new content, decide
+        which existing pages to update and which new pages to create.
+        Call 2 (edit): given the new content plus the *current full body*
+        of only the pages triage selected (not the whole wiki - keeps token
+        cost roughly constant regardless of total wiki size), produce full
+        rewritten bodies - this is the wiki's "edit, don't just append"
+        behavior, unlike the old flat-fact-per-entry model.
 
-Please identify and categorize important information into these categories:
+        Returns a human-readable summary string.
+        """
+        wiki_store = self._wiki_store
+        index_text = wiki_store.read_index()
 
-1. **Personal Preferences** - User's likes, dislikes, preferences
-2. **Important Facts** - Key facts about the user (name, location, job, family, etc.)
-3. **Goals and Projects** - User's goals, ongoing projects, aspirations
-4. **Relationships** - Important people in the user's life
-5. **Recurring Topics** - Topics the user frequently discusses
-6. **Key Insights** - Important insights or decisions made
+        triage_prompt = f"""You are triaging new content to decide how a personal long-term-memory wiki should be updated.
 
-For each category that has relevant information, provide:
-- A clear, concise summary
-- Specific details worth remembering
+Wiki index (existing pages):
+{index_text}
+
+New content to incorporate:
+{source_content}
+
+Decide which EXISTING pages (if any) this content should update, and which NEW pages (if any) should be created. Respond with ONLY a JSON object of this exact shape:
+{{"update_pages": ["concepts/budgeting", ...], "create_pages": [{{"type": "entity", "slug": "acme-corp", "title": "Acme Corp"}}, ...]}}
+Use lowercase hyphenated slugs. "entity" pages are for people/organizations/places/products; "concept" pages are for themes, preferences, goals, recurring topics. If nothing in the content is memory-worthy, respond {{"update_pages": [], "create_pages": []}}.
+"""
+
+        try:
+            triage_response = await with_retries(
+                lambda: complete_fn(
+                    [{"role": "user", "content": triage_prompt}],
+                    response_format="json", temperature=0.2,
+                ),
+                logger=memory_logger,
+            )
+            triage = json.loads(triage_response.content)
+        except Exception as e:
+            memory_logger.error(f"Error in wiki ingest triage for {self.user_id}: {e}")
+            return f"Error during consolidation: {e}"
+
+        update_refs = triage.get("update_pages") or []
+        create_specs = triage.get("create_pages") or []
+
+        if not update_refs and not create_specs:
+            return "No long-term-memory-worthy content found."
+
+        existing_pages: Dict[Tuple[str, str], Dict] = {}
+        for ref in update_refs:
+            type_dir, _, slug = str(ref).partition("/")
+            type_ = "entity" if type_dir == "entities" else "concept"
+            page = wiki_store.get_page(type_, slug)
+            if page:
+                existing_pages[(type_, slug)] = page
+
+        if not existing_pages and not create_specs:
+            return "No long-term-memory-worthy content found."
+
+        pages_context = "\n\n".join(
+            f"## Existing page {t}/{s}\n{p['body']}" for (t, s), p in existing_pages.items()
+        ) or "(none)"
+        create_context = "\n".join(
+            f"- NEW {spec.get('type', 'concept')}/{spec.get('slug', '')}: {spec.get('title', '')}"
+            for spec in create_specs
+        ) or "(none)"
+
+        edit_prompt = f"""You are editing a personal long-term-memory wiki based on new content.
+
+New content:
+{source_content}
+
+Existing pages selected for update (full current body):
+{pages_context}
+
+Pages to create:
+{create_context}
+
+For each page listed above (both existing and new), produce the FULL new body - rewrite/merge the existing content with the new information rather than just appending, keeping it as concise bullet points. Respond with ONLY a JSON object of this exact shape:
+{{"pages": [{{"type": "entity"|"concept", "slug": "...", "title": "...", "summary": "one-line summary", "tags": ["..."], "body": "- bullet\\n- bullet"}}, ...]}}
+"""
+
+        try:
+            edit_response = await with_retries(
+                lambda: complete_fn(
+                    [{"role": "user", "content": edit_prompt}],
+                    response_format="json", temperature=0.3,
+                ),
+                logger=memory_logger,
+            )
+            edit_result = json.loads(edit_response.content)
+        except Exception as e:
+            memory_logger.error(f"Error in wiki ingest edit for {self.user_id}: {e}")
+            return f"Error during consolidation: {e}"
+
+        touched = self._apply_ingest_result(edit_result.get("pages") or [], existing_pages)
+        if not touched:
+            return "No long-term-memory-worthy content found."
+
+        return f"Successfully consolidated content into {touched} wiki page(s)."
+
+    def _apply_ingest_result(self, pages: List[Dict], existing_pages: Dict[Tuple[str, str], Dict]) -> int:
+        """Write each page from an ingest edit-call's output, guarding
+        against a rewrite that silently drops most of a page's prior
+        content (a cheap defense against the LLM discarding information on
+        a full-body rewrite - reject and keep the existing page in that
+        case, logging it for manual review)."""
+        touched = 0
+        for page in pages:
+            type_ = page.get("type") or "concept"
+            slug = page.get("slug") or ""
+            title = page.get("title") or ""
+            summary = page.get("summary") or ""
+            tags = page.get("tags") or []
+            body = page.get("body") or ""
+            if not slug or not body.strip():
+                continue
+
+            old = existing_pages.get((type_, slug))
+            if old and _is_suspicious_shrink(old["body"], body):
+                memory_logger.error(
+                    f"Rejected suspicious ingest rewrite of {type_}/{slug} for {self.user_id} "
+                    f"(new body much shorter/missing content vs old) - keeping existing page"
+                )
+                continue
+
+            self._wiki_store.write_page(
+                type_=type_, slug=slug, title=title or slug.replace("-", " ").title(),
+                summary=summary, body=body, tags=tags, rebuild_index=False,
+            )
+            self._wiki_store.append_log(
+                "ingest",
+                f"{title or slug} — {'updated' if old else 'created'} via consolidation",
+            )
+            touched += 1
+
+        if touched:
+            self._wiki_store.rebuild_index()
+
+        return touched
+
+    async def lint_wiki(self) -> str:
+        """Periodic wiki health-check pass, replacing the old dedupe_facts().
+
+        Heuristic checks (no LLM, auto-applied): merge near-duplicate pages
+        and auto-link bare mentions of other pages' titles into cross-
+        references - both are safe, mechanical fixes. Orphan-page detection
+        is heuristic too but flag-only (logged, never auto-edited - even a
+        marker comment would be an unrequested edit for something this
+        judgment-laden). Contradictions and coverage gaps need an LLM call
+        and are always flag-only, since auto-resolving "which claim is
+        correct" risks silently discarding correct information.
+
+        Returns:
+            Summary of what was auto-fixed and what was flagged.
+        """
+        wiki_store = self._wiki_store
+
+        merged_count = 0
+        for keep, remove in wiki_store.find_duplicate_pages(threshold=0.95):
+            wiki_store.merge_pages(keep, remove)
+            wiki_store.append_log("lint", f"Merged duplicate page '{remove['title']}' into '{keep['title']}'")
+            merged_count += 1
+
+        linked_count = wiki_store.fix_missing_cross_references()
+        if linked_count:
+            wiki_store.append_log("lint", f"Added {linked_count} missing cross-reference(s)")
+
+        orphans = wiki_store.find_orphan_pages()
+        for page in orphans:
+            wiki_store.append_log("lint", f"Orphan page flagged (no inbound links): {page['title']}")
+
+        contradictions, coverage_gaps = await self._lint_llm_checks()
+
+        total_pages = len(wiki_store.list_pages())
+        auto_fixed = merged_count + linked_count
+        flagged = len(orphans) + len(contradictions) + len(coverage_gaps)
+
+        fixed_parts = []
+        if linked_count:
+            fixed_parts.append(f"{linked_count} cross-reference(s) added")
+        if merged_count:
+            fixed_parts.append(f"{merged_count} duplicate page(s) merged")
+        flagged_parts = []
+        if orphans:
+            flagged_parts.append(f"{len(orphans)} orphan page(s)")
+        if contradictions:
+            flagged_parts.append(f"{len(contradictions)} contradiction(s)")
+        if coverage_gaps:
+            flagged_parts.append(f"{len(coverage_gaps)} coverage gap(s)")
+
+        fixed_str = f"auto-fixed {auto_fixed} issue(s) ({', '.join(fixed_parts)})" if auto_fixed else "no auto-fixes needed"
+        flagged_str = f"flagged {flagged} for review ({', '.join(flagged_parts)})" if flagged else "nothing flagged"
+
+        return f"Lint: {fixed_str}, {flagged_str} across {total_pages} page(s)."
+
+    async def _lint_llm_checks(self) -> Tuple[List[Dict], List[Dict]]:
+        """One LLM call: find contradictions between pages and coverage gaps
+        (a theme mentioned repeatedly with no dedicated page). Both are
+        flag-only - logged to log.md, never auto-applied."""
+        wiki_store = self._wiki_store
+        pages = wiki_store.list_pages()
+        if not pages:
+            return [], []
+
+        index_text = wiki_store.read_index()
+        bodies_text = "\n\n".join(f"## {p['title']} ({p['type']}/{p['slug']})\n{p['body']}" for p in pages)
+
+        prompt = f"""You are reviewing a personal long-term-memory wiki for two kinds of issues.
+
+Wiki index:
+{index_text}
+
+Full page contents:
+{bodies_text}
+
+1. Contradictions: a claim in one page that is directly contradicted or clearly superseded by a claim in another page.
+2. Coverage gaps: a theme or entity mentioned repeatedly across pages but with no dedicated page of its own.
 
 Respond with ONLY a JSON object of this exact shape:
-{{"entries": [{{"category": "important_facts", "content": "..."}}, ...]}}
-category must be one of: important_facts, personal_preferences,
-goals_and_projects, relationships, recurring_topics, key_insights (or a
-short snake_case category if genuinely none fit). If nothing in the text
-is memory-worthy, respond {{"entries": []}}.
+{{"contradictions": [{{"page_a": "type/slug", "page_b": "type/slug", "description": "..."}}, ...], "coverage_gaps": [{{"suggested_title": "...", "suggested_type": "entity"|"concept", "description": "..."}}, ...]}}
+If there are none of either, respond with empty lists.
 """
 
         try:
             llm = get_llm_provider()
             response = await with_retries(
                 lambda: llm.complete(
-                    [{"role": "user", "content": consolidation_prompt}],
-                    response_format="json", temperature=0.3,
+                    [{"role": "user", "content": prompt}],
+                    response_format="json", temperature=0.2,
                 ),
                 logger=memory_logger,
             )
-            consolidation_result = response.content
-
-            if not consolidation_result:
-                return "No long-term-memory-worthy content found."
-
-            await self._parse_and_store_consolidation(consolidation_result)
-            return "Extracted and stored long-term memory from text."
-
+            data = json.loads(response.content)
         except Exception as e:
-            memory_logger.error(f"Error consolidating text for {self.user_id}: {e}")
-            return f"Error consolidating text: {e}"
+            memory_logger.error(f"Error in wiki lint LLM checks for {self.user_id}: {e}")
+            return [], []
 
-    async def _parse_and_store_consolidation(self, consolidation_text: str):
-        """Parse the LLM's structured JSON consolidation result and store
-        each entry in long-term memory.
+        contradictions = data.get("contradictions") or []
+        coverage_gaps = data.get("coverage_gaps") or []
 
-        Args:
-            consolidation_text: JSON string of shape
-                {"entries": [{"category": ..., "content": ...}, ...]}
-        """
-        try:
-            data = json.loads(consolidation_text)
-        except (json.JSONDecodeError, TypeError):
-            memory_logger.error(
-                f"Consolidation result was not valid JSON: {consolidation_text[:200]}"
+        for c in contradictions:
+            wiki_store.append_log(
+                "lint",
+                f"Contradiction flagged: {c.get('page_a', '?')} vs {c.get('page_b', '?')} — {c.get('description', '')}",
             )
-            return
+        for g in coverage_gaps:
+            wiki_store.append_log(
+                "lint",
+                f"Coverage gap flagged: '{g.get('suggested_title', '?')}' — {g.get('description', '')}",
+            )
 
-        for entry in data.get("entries", []):
-            category = str(entry.get("category", "")).strip().lower().replace(" ", "_")
-            content = str(entry.get("content", "")).strip()
-
-            if category and content:
-                await self.add_long_term_memory(category, content)
-
-    async def dedupe_facts(self, similarity_threshold: float = 0.85) -> str:
-        """Find near-duplicate facts within each category and delete the
-        older one of each near-duplicate pair.
-
-        Replaces the old cleanup_long_term_memories(), which LLM-rewrote a
-        whole category markdown file to approximately dedupe it - now that
-        facts are individually addressable, dedup can be exact (compare
-        individual facts, delete the stale one) instead of an LLM-rewrite
-        gamble that risked dropping unique information. No LLM call needed.
-
-        Args:
-            similarity_threshold: Facts scoring at or above this ratio
-                (difflib.SequenceMatcher) are considered near-duplicates.
-
-        Returns:
-            Summary of how many facts were removed.
-        """
-        removed_count = 0
-        categories_checked = 0
-
-        for category in self._facts_store.list_categories():
-            categories_checked += 1
-            facts = self._facts_store.list_facts(category=category)
-            removed_ids = set()
-
-            for i in range(len(facts)):
-                if facts[i]["id"] in removed_ids:
-                    continue
-                for j in range(i + 1, len(facts)):
-                    if facts[j]["id"] in removed_ids:
-                        continue
-                    ratio = SequenceMatcher(None, facts[i]["content"], facts[j]["content"]).ratio()
-                    if ratio >= similarity_threshold:
-                        older = facts[i] if facts[i]["updated_at"] <= facts[j]["updated_at"] else facts[j]
-                        self._facts_store.delete_fact(older["id"])
-                        removed_ids.add(older["id"])
-                        removed_count += 1
-                        if older["id"] == facts[i]["id"]:
-                            # facts[i] itself was removed - stop comparing
-                            # it against the remaining j's in this category.
-                            break
-
-        return f"Removed {removed_count} near-duplicate fact(s) across {categories_checked} categories."
+        return contradictions, coverage_gaps
 
 

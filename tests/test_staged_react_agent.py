@@ -40,14 +40,6 @@ def agent(tmp_path, monkeypatch):
     # don't write into the real project's memory/ folder.
     monkeypatch.setattr(config, "MEMORY_DIR", tmp_path)
 
-    # save_important_fact -> MemoryManager.add_long_term_memory tries to embed
-    # the fact for semantic search; stub it out so schema-callability tests
-    # never make a live OpenAI API call.
-    async def _fake_get_embedding(text: str):
-        return [0.1, 0.2, 0.3]
-
-    monkeypatch.setattr("src.core.embeddings.get_embedding", _fake_get_embedding)
-
     memory_manager = MagicMock()
     memory_manager.user_id = "test_user_agentic_loop"
     memory_manager.get_recent_memory = AsyncMock(return_value="")

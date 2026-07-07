@@ -1651,7 +1651,7 @@ async def delete_webcam_suggestion(suggestion_id: str):
 # ── Memory viewer ─────────────────────────────────────────────────────────────
 @app.get("/api/chatty/memory", dependencies=[Depends(require_api_key)])
 async def get_memory(days: int = Query(default=7, ge=1, le=90)):
-    from src.core.long_term_facts import LongTermFactsStore, render_category_facts
+    from src.core.wiki_store import WikiStore
 
     user_memory_dir = MEMORY_DIR / WEB_USER_ID
     result = {"short_term": [], "long_term": []}
@@ -1666,13 +1666,12 @@ async def get_memory(days: int = Query(default=7, ge=1, le=90)):
                 "filename": f.name,
             })
 
-    facts_store = LongTermFactsStore(WEB_USER_ID, user_memory_dir / "long_term")
-    for category in facts_store.list_categories():
-        facts = facts_store.list_facts(category=category)
+    wiki_store = WikiStore(WEB_USER_ID, user_memory_dir / "long_term")
+    for page in wiki_store.list_pages():
         result["long_term"].append({
-            "date": category,
-            "content": render_category_facts(category, facts),
-            "filename": f"{category}.json",
+            "date": page["title"],
+            "content": f"# {page['title']}\n\n{page['body']}",
+            "filename": f"{page['type']}s/{page['slug']}.md",
         })
 
     return result

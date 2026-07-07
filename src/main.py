@@ -52,6 +52,13 @@ user_memories: Dict[str, MemoryManager] = {}
 user_history_managers: Dict[str, ConversationHistoryManager] = {}
 authorized_users: Dict[str, str] = {}  # user_id -> phone_number
 
+# Most recent /forget candidate list per user, so a button tap can resolve
+# back to a {type, slug, line_text} match without cramming that into
+# Telegram's 64-byte callback_data limit. In-process only (not persisted) -
+# a bot restart between listing candidates and tapping a button just means
+# the tap reports "expired, try again" rather than crashing.
+_pending_forget_matches: Dict[str, List[Dict]] = {}
+
 _AUTH_FILE = Path(__file__).parent.parent / "data" / "authorized_users.json"
 
 
@@ -256,19 +263,21 @@ async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from src.core.memory_tools import MemoryTools
 
         memory_tools = MemoryTools(user_id)
-        matches = memory_tools._facts_store.search_facts(search_term)
+        matches = memory_tools._wiki_store.find_matches(search_term)
 
         if not matches:
             await safe_send_reply(update.message, f"No matching memory found for '{search_term}'.")
         elif len(matches) == 1:
-            result = await memory_tools.forget_fact(search_term)
+            result = await memory_tools.forget_match(matches[0])
             await safe_send_reply(update.message, result)
         else:
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+            candidates = matches[:10]
+            _pending_forget_matches[user_id] = candidates
             keyboard = [
-                [InlineKeyboardButton(f["content"][:40], callback_data=f"forget_del_{f['id']}")]
-                for f in matches[:10]
+                [InlineKeyboardButton(f"{m['title']}: {m['line_text'][:35]}", callback_data=f"forget_del_{i}")]
+                for i, m in enumerate(candidates)
             ]
             await safe_send_reply(
                 update.message,
@@ -737,12 +746,18 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     # -- Forget a long-term memory fact (from /forget's candidate list) -----
     if query.data.startswith("forget_del_"):
         try:
-            fact_id = query.data[len("forget_del_"):]
+            index = int(query.data[len("forget_del_"):])
+            candidates = _pending_forget_matches.get(user_id)
+            if not candidates or not (0 <= index < len(candidates)):
+                await query.edit_message_text("That list has expired — please run /forget again.")
+                return
+
             from src.core.memory_tools import MemoryTools
 
             memory_tools = MemoryTools(user_id)
-            result = await memory_tools.delete_fact_by_id(fact_id)
+            result = await memory_tools.forget_match(candidates[index])
             await query.edit_message_text(result)
+            _pending_forget_matches.pop(user_id, None)
         except Exception as e:
             logger.error(f"Error in callback_query_handler for forget: {e}", exc_info=True)
             await query.edit_message_text("An error occurred trying to forget that.")

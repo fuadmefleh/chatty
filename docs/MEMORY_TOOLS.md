@@ -6,9 +6,9 @@ Both `StagedReACTAgent` and `WebChatAgent` (see [ARCHITECTURE.md](ARCHITECTURE.m
 have access to memory via `MemoryRouter` (`src/core/memory_router.py`), which
 exposes exactly three tools to the LLM through native OpenAI/Anthropic function
 calling - not parsed from free-form text. `MemoryRouter` fans out to
-`MemoryTools`/`LongTermFactsStore` under the hood; long-term memory itself is
-stored as individually addressable facts (`src/core/long_term_facts.py`'s
-`LongTermFactsStore`), not files - see [MEMORY_SYSTEM.md](MEMORY_SYSTEM.md).
+`MemoryTools`/`WikiStore` under the hood; long-term memory itself is a
+markdown wiki (`src/core/wiki_store.py`'s `WikiStore`), not a flat fact
+list - see [MEMORY_SYSTEM.md](MEMORY_SYSTEM.md).
 
 This replaces an earlier 11-tool surface (`search_memory_grep`,
 `list_memory_files`, `read_memory_file`, `search_by_date_range`,
@@ -27,25 +27,30 @@ All three are defined once in `get_tool_definitions()`
 and dispatch (`MEMORY_TOOL_NAMES`) can't drift apart between Telegram and web.
 
 ### 1. `recall(query, top_k=5)`
-Finds memory relevant to `query`: semantically-ranked long-term facts
-(embedding cosine similarity, falling back to/topped up by substring search
-if embeddings are unavailable), plus recent short-term conversation excerpts
-(grep). Replaces having to choose between `search_memory_grep`,
+Finds memory relevant to `query`: keyword-scored wiki pages (index-first
+against `index.md`'s title/summary/tags, no embeddings - falling back to a
+full-text search on a small wiki, or one LLM call over the index on a larger
+one, if keyword scoring finds nothing), plus recent short-term conversation
+excerpts (grep). Replaces having to choose between `search_memory_grep`,
 `search_pattern`, `search_recent_mentions`, and `semantic_search_memory`.
 
 ### 2. `remember(content, category=None)`
-Saves a fact to long-term memory. `category` defaults to `important_facts`
-if omitted; any category name is accepted (not restricted to the 6 canonical
-ones - those are just a display-order hint, see `long_term_facts.py`'s
-`CANONICAL_CATEGORY_ORDER`).
+Saves a fact to long-term memory: a synchronous, LLM-free bullet-append to
+the wiki concept page named by `category` (created if it doesn't exist).
+`category` defaults to `important_facts` if omitted; any category name is
+accepted. This is deliberately a cheap heuristic append, not the richer
+LLM-driven page-editing the heartbeat's ingest pass does - see
+[MEMORY_SYSTEM.md](MEMORY_SYSTEM.md) for why.
 
 ### 3. `forget(query)`
-Deletes a long-term fact matching `query`. Auto-deletes when there's exactly
-one match; with multiple matches, asks to call `forget` again with more
-specific wording (this 3-tool surface has no id-based delete for the LLM to
-call - `main.py`'s `/forget` Telegram command still uses the id-based
-`forget_fact`/`delete_fact_by_id` flow directly via inline buttons, since a
-human tapping a button can disambiguate by id in a way the LLM can't).
+Deletes a long-term fact matching `query` (a verbatim bullet-line within a
+wiki page, found by substring search across all pages). Auto-deletes when
+there's exactly one match; with multiple matches, asks to call `forget`
+again with more specific wording (this 3-tool surface has no id-based delete
+for the LLM to call - `main.py`'s `/forget` Telegram command instead caches
+the candidate list in-process and uses index-based buttons, since a human
+tapping a button can disambiguate in a way the LLM can't, and a fact's
+verbatim text doesn't fit Telegram's `callback_data` byte limit).
 
 ## A past bug worth knowing about
 
@@ -69,5 +74,5 @@ the tool count creeps back up.
 ## Manual testing
 
 ```bash
-pytest tests/test_memory_tools.py tests/test_memory_router.py tests/test_staged_react_agent.py tests/test_web_chat_agent.py tests/test_long_term_facts.py -v
+pytest tests/test_memory_tools.py tests/test_memory_router.py tests/test_staged_react_agent.py tests/test_web_chat_agent.py tests/test_wiki_store.py -v
 ```

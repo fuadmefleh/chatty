@@ -138,8 +138,9 @@ class HeartbeatManager:
                         if result:
                             summary.append(result)
                         
-                        # Dedupe near-identical long-term memory facts
-                        result = await self._dedupe_long_term_memories(user_memories)
+                        # Lint the long-term memory wiki (merge duplicates,
+                        # fix cross-references, flag contradictions/gaps)
+                        result = await self._lint_wiki(user_memories)
                         if result:
                             summary.append(result)
 
@@ -307,41 +308,47 @@ Otherwise, just think through the checks and conclude with your assessment.
             return f"🧠 Memory consolidation: Processed memories for {len(consolidated_users)} user(s)"
         return None
     
-    async def _dedupe_long_term_memories(self, user_memories: Dict) -> str:
-        """Dedupe near-identical long-term memory facts for all users.
-
-        Unlike the old LLM-rewrite-based cleanup this replaced, no agent is
-        needed - MemoryManager.dedupe_facts() compares individual facts
-        directly (see docs/MEMORY_SYSTEM.md).
+    async def _lint_wiki(self, user_memories: Dict) -> str:
+        """Run the long-term memory wiki's lint pass for all users: merges
+        near-duplicate pages, auto-links missing cross-references, and
+        flags orphan pages/contradictions/coverage gaps for review (see
+        MemoryManager.lint_wiki(), replacing the old flat-fact dedupe_facts()).
 
         Args:
             user_memories: Dictionary of user memory managers
 
         Returns:
-            Summary string of dedup results
+            Summary string of lint results
         """
-        heartbeat_logger.info("Starting long-term memory dedup for all users...")
+        heartbeat_logger.info("Starting wiki lint for all users...")
 
-        total_removed = 0
+        total_fixed = 0
+        total_flagged = 0
         affected_users = 0
         for user_id, memory_manager in user_memories.items():
             try:
-                result = await memory_manager.dedupe_facts()
-                heartbeat_logger.info(f"User {user_id} dedupe result: {result}")
+                result = await memory_manager.lint_wiki()
+                heartbeat_logger.info(f"User {user_id} lint result: {result}")
 
-                match = re.search(r"Removed (\d+)", result)
-                removed = int(match.group(1)) if match else 0
-                if removed > 0:
-                    total_removed += removed
+                fixed_match = re.search(r"auto-fixed (\d+)", result)
+                flagged_match = re.search(r"flagged (\d+)", result)
+                fixed = int(fixed_match.group(1)) if fixed_match else 0
+                flagged = int(flagged_match.group(1)) if flagged_match else 0
+                if fixed > 0 or flagged > 0:
+                    total_fixed += fixed
+                    total_flagged += flagged
                     affected_users += 1
 
             except Exception as e:
-                heartbeat_logger.error(f"Error deduping memories for user {user_id}: {e}", exc_info=True)
+                heartbeat_logger.error(f"Error linting wiki for user {user_id}: {e}", exc_info=True)
 
-        heartbeat_logger.info("Long-term memory dedup completed for all users")
+        heartbeat_logger.info("Wiki lint completed for all users")
 
         if affected_users:
-            return f"🗂️ Memory dedup: Removed {total_removed} duplicate fact(s) for {affected_users} user(s)"
+            return (
+                f"🗂️ Wiki lint: auto-fixed {total_fixed}, flagged {total_flagged} "
+                f"issue(s) for {affected_users} user(s)"
+            )
         return None
 
     async def _process_transcription_mining(self) -> Optional[str]:

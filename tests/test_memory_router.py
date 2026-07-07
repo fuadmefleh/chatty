@@ -1,5 +1,6 @@
 """Tests for MemoryRouter (src/core/memory_router.py) - the 3-tool
-recall/remember/forget LLM-facing memory surface."""
+recall/remember/forget LLM-facing memory surface, backed by the wiki store
+(src/core/wiki_store.py). Index-first: no embeddings involved."""
 import sys
 from pathlib import Path
 
@@ -20,59 +21,42 @@ def memory_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _stub_embedding(monkeypatch, vector):
-    async def _fake_get_embedding(text: str):
-        return vector
-
-    monkeypatch.setattr("src.core.embeddings.get_embedding", _fake_get_embedding)
-
-
-def _stub_embedding_failure(monkeypatch):
-    async def _fake_get_embedding(text: str):
-        raise RuntimeError("no API key")
-
-    monkeypatch.setattr("src.core.embeddings.get_embedding", _fake_get_embedding)
-
-
 @pytest.mark.asyncio
-async def test_recall_ranks_semantic_hits_by_similarity(memory_dir, monkeypatch):
+async def test_recall_ranks_pages_by_keyword_match(memory_dir):
     router = MemoryRouter(USER_ID)
+    await router.remember("User likes sushi and other Japanese food.", category="food")
+    await router.remember("User dislikes cold weather.", category="weather")
 
-    # Store two facts with distinct embeddings, then query with an embedding
-    # closer to one of them.
-    _stub_embedding(monkeypatch, [1.0, 0.0])
-    await router.remember("User likes sushi.", category="important_facts")
-    _stub_embedding(monkeypatch, [0.0, 1.0])
-    await router.remember("User dislikes cold weather.", category="important_facts")
+    result = await router.recall("food")
 
-    _stub_embedding(monkeypatch, [1.0, 0.0])
-    result = await router.recall("food preferences")
-
-    lines = result.split("\n")
-    assert "sushi" in lines[1]
+    assert "sushi" in result
+    assert "cold weather" not in result
 
 
 @pytest.mark.asyncio
-async def test_recall_falls_back_to_substring_search_on_embedding_failure(memory_dir, monkeypatch):
+async def test_recall_falls_back_to_fulltext_when_no_keyword_hits(memory_dir):
     router = MemoryRouter(USER_ID)
+    wiki_store = router.memory_tools._wiki_store
+    wiki_store.write_page(
+        type_="entity", slug="sarah", title="Sarah", summary="User's sister.",
+        body="- Lives in Austin, TX.",
+    )
 
-    _stub_embedding(monkeypatch, [1.0, 0.0])
-    await router.remember("User's favorite color is blue.")
+    # "Austin" appears only in the page body, not its title/summary/tags -
+    # keyword scoring alone finds nothing, so this exercises the small-wiki
+    # full-text fallback.
+    result = await router.recall("Austin")
 
-    _stub_embedding_failure(monkeypatch)
-    result = await router.recall("favorite color")
-
-    assert "favorite color" in result
+    assert "Austin" in result
 
 
 @pytest.mark.asyncio
-async def test_recall_includes_short_term_excerpts(memory_dir, monkeypatch):
+async def test_recall_includes_short_term_excerpts(memory_dir):
     from src.core.memory import MemoryManager
 
     mgr = MemoryManager(USER_ID)
     await mgr.add_interaction("I just adopted a cat named Whiskers", "That's wonderful!")
 
-    _stub_embedding_failure(monkeypatch)  # no long-term facts, and no embedding needed
     router = MemoryRouter(USER_ID)
     result = await router.recall("Whiskers")
 
@@ -80,8 +64,7 @@ async def test_recall_includes_short_term_excerpts(memory_dir, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_recall_empty_when_nothing_found(memory_dir, monkeypatch):
-    _stub_embedding_failure(monkeypatch)
+async def test_recall_empty_when_nothing_found(memory_dir):
     router = MemoryRouter(USER_ID)
 
     result = await router.recall("something that was never mentioned")
@@ -90,42 +73,38 @@ async def test_recall_empty_when_nothing_found(memory_dir, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_remember_defaults_to_important_facts(memory_dir, monkeypatch):
-    _stub_embedding_failure(monkeypatch)
+async def test_remember_defaults_to_important_facts(memory_dir):
     router = MemoryRouter(USER_ID)
-
     await router.remember("User's name is Sam.")
 
-    facts = router.memory_tools._facts_store.list_facts(category="important_facts")
-    assert any(f["content"] == "User's name is Sam." for f in facts)
+    page = router.memory_tools._wiki_store.get_page("concept", "important-facts")
+    assert page is not None
+    assert "User's name is Sam." in page["body"]
 
 
 @pytest.mark.asyncio
-async def test_remember_passes_through_arbitrary_category(memory_dir, monkeypatch):
-    _stub_embedding_failure(monkeypatch)
+async def test_remember_passes_through_arbitrary_category(memory_dir):
     router = MemoryRouter(USER_ID)
-
     await router.remember("Plays guitar.", category="hobbies")
 
-    facts = router.memory_tools._facts_store.list_facts(category="hobbies")
-    assert any(f["content"] == "Plays guitar." for f in facts)
+    page = router.memory_tools._wiki_store.get_page("concept", "hobbies")
+    assert page is not None
+    assert "Plays guitar." in page["body"]
 
 
 @pytest.mark.asyncio
-async def test_forget_auto_deletes_single_match(memory_dir, monkeypatch):
-    _stub_embedding_failure(monkeypatch)
+async def test_forget_auto_deletes_single_match(memory_dir):
     router = MemoryRouter(USER_ID)
     await router.remember("User likes sushi.")
 
     result = await router.forget("sushi")
 
     assert "Forgot" in result
-    assert router.memory_tools._facts_store.list_facts(category="important_facts") == []
+    assert router.memory_tools._wiki_store.get_page("concept", "important-facts") is None
 
 
 @pytest.mark.asyncio
-async def test_forget_multiple_matches_suggests_calling_forget_again(memory_dir, monkeypatch):
-    _stub_embedding_failure(monkeypatch)
+async def test_forget_multiple_matches_suggests_calling_forget_again(memory_dir):
     router = MemoryRouter(USER_ID)
     await router.remember("User likes sushi.")
     await router.remember("User's coworker also likes sushi.")
@@ -136,12 +115,13 @@ async def test_forget_multiple_matches_suggests_calling_forget_again(memory_dir,
     assert "delete_fact_by_id" not in result
     assert "Call forget again" in result
     # nothing deleted yet - ambiguous
-    assert len(router.memory_tools._facts_store.list_facts(category="important_facts")) == 2
+    page = router.memory_tools._wiki_store.get_page("concept", "important-facts")
+    assert page is not None
+    assert page["body"].count("sushi") == 2
 
 
 @pytest.mark.asyncio
-async def test_forget_no_match(memory_dir, monkeypatch):
-    _stub_embedding_failure(monkeypatch)
+async def test_forget_no_match(memory_dir):
     router = MemoryRouter(USER_ID)
 
     result = await router.forget("nonexistent topic")

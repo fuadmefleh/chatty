@@ -1,5 +1,6 @@
 """Tests for the memory system: MemoryManager (src/core/memory.py) and
-MemoryTools (src/core/memory_tools.py)."""
+MemoryTools (src/core/memory_tools.py), backed by the wiki store
+(src/core/wiki_store.py)."""
 import json
 import sys
 from pathlib import Path
@@ -15,30 +16,33 @@ from src.core.memory_tools import MemoryTools
 
 USER_ID = "test_user"
 
-FAKE_EMBEDDING = [0.1, 0.2, 0.3]
-
 
 @pytest.fixture
 def memory_dir(tmp_path, monkeypatch):
-    """Point config.MEMORY_DIR at an isolated tmp directory for this test,
-    and stub out embedding generation so add_long_term_memory() (called by
-    most tests here) never makes a live OpenAI API call."""
+    """Point config.MEMORY_DIR at an isolated tmp directory for this test."""
     monkeypatch.setattr(config, "MEMORY_DIR", tmp_path)
-
-    async def _fake_get_embedding(text: str):
-        return FAKE_EMBEDDING
-
-    monkeypatch.setattr("src.core.embeddings.get_embedding", _fake_get_embedding)
     return tmp_path
 
 
 class StubLLM:
-    """Minimal stand-in for an LLMProvider - only needs an async complete()."""
+    """Minimal stand-in for an LLMProvider - only needs an async complete().
+    Accepts either a single canned response string (returned for every
+    call) or a list of responses returned in call order, for multi-call
+    flows like the wiki ingest's triage-then-edit."""
 
-    def __init__(self, content: str):
-        self._content = content
+    def __init__(self, content):
+        if isinstance(content, list):
+            self._responses = content
+        else:
+            self._responses = None
+            self._content = content
+        self._call_index = 0
 
     async def complete(self, messages, *, response_format="text", temperature=None):
+        if self._responses is not None:
+            response = self._responses[min(self._call_index, len(self._responses) - 1)]
+            self._call_index += 1
+            return SimpleNamespace(content=response)
         return SimpleNamespace(content=self._content)
 
 
@@ -46,8 +50,11 @@ class StubAgent:
     """Minimal stand-in for a StagedReACTAgent - consolidate_memories only
     needs agent.llm.complete(), not the full ReACT pipeline."""
 
-    def __init__(self, response: str):
+    def __init__(self, response):
         self.llm = StubLLM(response)
+
+
+_EMPTY_LINT_LLM_RESPONSE = json.dumps({"contradictions": [], "coverage_gaps": []})
 
 
 @pytest.mark.asyncio
@@ -61,17 +68,15 @@ async def test_add_interaction_and_get_recent_memory(memory_dir):
 
 
 @pytest.mark.asyncio
-async def test_add_long_term_memory_creates_fact_records(memory_dir):
+async def test_add_long_term_memory_creates_wiki_page(memory_dir):
     mgr = MemoryManager(USER_ID)
     await mgr.add_long_term_memory("important_facts", "User's name is Sam.")
     await mgr.add_long_term_memory("important_facts", "User was born in June.")
 
-    facts = mgr._facts_store.list_facts(category="important_facts")
-    assert len(facts) == 2
-    contents = [f["content"] for f in facts]
-    assert "User's name is Sam." in contents
-    assert "User was born in June." in contents
-    assert len({f["id"] for f in facts}) == 2  # distinct ids
+    page = mgr._wiki_store.get_page("concept", "important-facts")
+    assert page is not None
+    assert "User's name is Sam." in page["body"]
+    assert "User was born in June." in page["body"]
 
 
 @pytest.mark.asyncio
@@ -85,10 +90,9 @@ async def test_save_important_fact_delegates_to_add_long_term_memory(memory_dir)
     result = await tools.save_important_fact("facts", "User's favorite food is sushi.")
     assert "Successfully saved" in result
 
-    facts = tools._facts_store.list_facts(category="important_facts")
-    contents = [f["content"] for f in facts]
-    assert "User's favorite color is blue." in contents
-    assert "User's favorite food is sushi." in contents
+    page = tools._wiki_store.get_page("concept", "important-facts")
+    assert "User's favorite color is blue." in page["body"]
+    assert "User's favorite food is sushi." in page["body"]
 
 
 @pytest.mark.asyncio
@@ -96,22 +100,22 @@ async def test_save_important_fact_category_mapping(memory_dir):
     tools = MemoryTools(USER_ID)
     await tools.save_important_fact("family", "Has a sister named Jane.")
 
-    facts = tools._facts_store.list_facts(category="relationships")
-    assert len(facts) == 1
-    assert facts[0]["content"] == "Has a sister named Jane."
+    page = tools._wiki_store.get_page("concept", "relationships")
+    assert page is not None
+    assert "Has a sister named Jane." in page["body"]
 
 
 @pytest.mark.asyncio
 async def test_save_important_fact_unmapped_category_passes_through(memory_dir):
-    """An unrecognized category should be stored under its own name, not
+    """An unrecognized category should be stored under its own page, not
     silently collapsed into 'important_facts'."""
     tools = MemoryTools(USER_ID)
     await tools.save_important_fact("hobbies", "Plays guitar.")
 
-    facts = tools._facts_store.list_facts(category="hobbies")
-    assert len(facts) == 1
-    assert facts[0]["content"] == "Plays guitar."
-    assert tools._facts_store.list_facts(category="important_facts") == []
+    page = tools._wiki_store.get_page("concept", "hobbies")
+    assert page is not None
+    assert "Plays guitar." in page["body"]
+    assert tools._wiki_store.get_page("concept", "important-facts") is None
 
 
 @pytest.mark.asyncio
@@ -146,68 +150,42 @@ async def test_consolidate_memories_writes_long_term_and_archives(memory_dir):
     old_file = mgr.short_term_dir / "2020-01-01.md"
     old_file.write_text("# Memory Log - 2020-01-01\n\n**User**: My birthday is June 1st.\n")
 
-    stub_response = json.dumps({
-        "entries": [{"category": "important_facts", "content": "User's birthday is June 1st."}]
+    triage_response = json.dumps({
+        "update_pages": [],
+        "create_pages": [{"type": "concept", "slug": "important-facts", "title": "Important Facts"}],
     })
-    result = await mgr.consolidate_memories(StubAgent(stub_response))
+    edit_response = json.dumps({
+        "pages": [{
+            "type": "concept", "slug": "important-facts", "title": "Important Facts",
+            "summary": "Key facts about the user.", "tags": [],
+            "body": "- User's birthday is June 1st.",
+        }],
+    })
+    result = await mgr.consolidate_memories(StubAgent([triage_response, edit_response]))
 
     assert "Successfully consolidated" in result
     assert not old_file.exists()
     assert (mgr.short_term_dir / "archived" / "2020-01-01.md").exists()
-    facts = mgr._facts_store.list_facts(category="important_facts")
-    assert any("June 1st" in f["content"] for f in facts)
+    page = mgr._wiki_store.get_page("concept", "important-facts")
+    assert page is not None
+    assert "June 1st" in page["body"]
 
 
 @pytest.mark.asyncio
-async def test_read_memory_file_rejects_path_traversal(memory_dir):
-    tools = MemoryTools(USER_ID)
-    tools.short_term_dir.mkdir(parents=True, exist_ok=True)
-    (tools.short_term_dir / "2026-01-01.md").write_text("legit content")
-
-    # Escapes short_term_dir via ../ - should not read files outside it.
-    result = await tools.read_memory_file("../../etc/passwd", "short_term")
-    assert "not found" in result.lower()
-
-    # Absolute path should also be rejected, not read from the filesystem root.
-    result = await tools.read_memory_file("/etc/passwd", "short_term")
-    assert "not found" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_read_memory_file_reads_legitimate_file(memory_dir):
-    tools = MemoryTools(USER_ID)
-    tools.short_term_dir.mkdir(parents=True, exist_ok=True)
-    (tools.short_term_dir / "2026-01-01.md").write_text("legit content")
-
-    result = await tools.read_memory_file("2026-01-01.md", "short_term")
-    assert result == "legit content"
-
-
-@pytest.mark.asyncio
-async def test_dedupe_facts_removes_near_duplicate_and_keeps_newer(memory_dir):
+async def test_consolidate_memories_nothing_memory_worthy_still_archives(memory_dir):
     mgr = MemoryManager(USER_ID)
-    await mgr.add_long_term_memory("important_facts", "User's favorite color is blue.")
-    await mgr.add_long_term_memory("important_facts", "User's favorite color is blue!")  # near-duplicate
+    old_file = mgr.short_term_dir / "2020-01-01.md"
+    old_file.write_text("# Memory Log - 2020-01-01\n\n**User**: just saying hi.\n")
 
-    result = await mgr.dedupe_facts()
+    triage_response = json.dumps({"update_pages": [], "create_pages": []})
+    result = await mgr.consolidate_memories(StubAgent(triage_response))
 
-    assert "Removed 1" in result
-    remaining = mgr._facts_store.list_facts(category="important_facts")
-    assert len(remaining) == 1
-    assert remaining[0]["content"] == "User's favorite color is blue!"  # the newer one survives
-
-
-@pytest.mark.asyncio
-async def test_dedupe_facts_keeps_dissimilar_facts(memory_dir):
-    mgr = MemoryManager(USER_ID)
-    await mgr.add_long_term_memory("important_facts", "User's name is Sam.")
-    await mgr.add_long_term_memory("important_facts", "User lives in Seattle.")
-
-    result = await mgr.dedupe_facts()
-
-    assert "Removed 0" in result
-    remaining = mgr._facts_store.list_facts(category="important_facts")
-    assert len(remaining) == 2
+    # Matches the pre-existing contract: a successful ingest run archives
+    # the processed files regardless of whether anything memory-worthy was
+    # actually found in them.
+    assert "Successfully consolidated" in result
+    assert not old_file.exists()
+    assert (mgr.short_term_dir / "archived" / "2020-01-01.md").exists()
 
 
 @pytest.mark.asyncio
@@ -221,44 +199,16 @@ async def test_get_long_term_memory_no_truncation_by_default(memory_dir):
 
 
 @pytest.mark.asyncio
-async def test_get_long_term_memory_fair_budget_across_categories(memory_dir):
+async def test_get_long_term_memory_fair_budget_across_pages(memory_dir):
     mgr = MemoryManager(USER_ID)
-    # relationships.md sorts first (reverse-alphabetical) and is made large
-    # enough that a naive "truncate the joined blob" approach would starve
-    # important_facts.md out entirely.
+    # "relationships" sorts first alphabetically among page slugs and is
+    # made large enough that a naive "truncate the joined blob" approach
+    # would starve "important_facts" out entirely.
     await mgr.add_long_term_memory("relationships", "R" * 2000)
     await mgr.add_long_term_memory("important_facts", "IMPORTANT_MARKER")
 
     result = await mgr.get_long_term_memory(max_chars=1000)
-    # The core regression check: under the OLD behavior (truncate the
-    # concatenated, reverse-alpha-sorted blob to 1000 chars) this would fail,
-    # since "relationships" content alone consumes the whole budget.
     assert "IMPORTANT_MARKER" in result
-
-
-@pytest.mark.asyncio
-async def test_legacy_markdown_migrates_to_facts_json(memory_dir):
-    from src.core.long_term_facts import LongTermFactsStore
-
-    long_term_dir = memory_dir / USER_ID / "long_term"
-    long_term_dir.mkdir(parents=True)
-    (long_term_dir / "important_facts.md").write_text(
-        "# Long-Term Memory: important_facts\n\n"
-        "Created: 2026-01-01 10:00:00\n\n"
-        "User's name is Sam.\n"
-        "\n\n## Updated: 2026-01-02 10:00:00\n\n"
-        "User was born in June.\n"
-    )
-
-    store = LongTermFactsStore(USER_ID, long_term_dir)
-
-    facts = store.list_facts(category="important_facts")
-    contents = [f["content"] for f in facts]
-    assert "User's name is Sam." in contents
-    assert "User was born in June." in contents
-    assert (long_term_dir / "important_facts.md.bak").exists()
-    assert not (long_term_dir / "important_facts.md").exists()
-    assert (long_term_dir / "facts.json").exists()
 
 
 @pytest.mark.asyncio
@@ -269,7 +219,7 @@ async def test_forget_fact_auto_deletes_single_match(memory_dir):
     result = await tools.forget_fact("sushi")
 
     assert "Forgot" in result
-    assert tools._facts_store.list_facts(category="important_facts") == []
+    assert tools._wiki_store.get_page("concept", "important-facts") is None
 
 
 @pytest.mark.asyncio
@@ -281,14 +231,18 @@ async def test_forget_fact_lists_candidates_on_multiple_matches(memory_dir):
     result = await tools.forget_fact("sushi")
 
     assert "Found 2 matching facts" in result
-    remaining = tools._facts_store.list_facts(category="important_facts")
-    assert len(remaining) == 2  # nothing deleted yet - ambiguous
+    page = tools._wiki_store.get_page("concept", "important-facts")
+    assert page is not None
+    assert page["body"].count("sushi") == 2  # nothing deleted yet - ambiguous
 
-    # Follow-up: parse an id out of the disambiguation text and delete it.
-    fact_id = remaining[0]["id"]
-    delete_result = await tools.delete_fact_by_id(fact_id)
+    # Follow-up: find the matches again (as the LLM/Telegram caller would)
+    # and delete one via forget_match.
+    matches = tools._wiki_store.find_matches("sushi")
+    delete_result = await tools.forget_match(matches[0])
     assert "Forgot" in delete_result
-    assert len(tools._facts_store.list_facts(category="important_facts")) == 1
+    remaining = tools._wiki_store.get_page("concept", "important-facts")
+    assert remaining is not None
+    assert remaining["body"].count("sushi") == 1
 
 
 @pytest.mark.asyncio
@@ -299,7 +253,70 @@ async def test_forget_fact_no_match(memory_dir):
 
 
 @pytest.mark.asyncio
-async def test_delete_fact_by_id_unknown_id(memory_dir):
+async def test_forget_match_unknown_line_returns_not_found(memory_dir):
     tools = MemoryTools(USER_ID)
-    result = await tools.delete_fact_by_id("not-a-real-id")
+    await tools.save_important_fact("facts", "User likes sushi.")
+
+    result = await tools.forget_match({
+        "type": "concept", "slug": "important-facts", "title": "Important Facts",
+        "line_text": "- nonexistent line",
+    })
+
     assert "No fact found" in result
+
+
+@pytest.mark.asyncio
+async def test_lint_wiki_merges_near_duplicate_pages(memory_dir, monkeypatch):
+    mgr = MemoryManager(USER_ID)
+    mgr._wiki_store.write_page(type_="concept", slug="budgeting", title="Budgeting",
+                                summary="Tracks monthly spending goals for the user.", body="- a")
+    mgr._wiki_store.write_page(type_="concept", slug="budget", title="Budgeting",
+                                summary="Tracks monthly spending goals for the user!", body="- b")
+
+    monkeypatch.setattr("src.core.memory.get_llm_provider", lambda: StubLLM(_EMPTY_LINT_LLM_RESPONSE))
+
+    result = await mgr.lint_wiki()
+
+    assert "duplicate page(s) merged" in result
+    assert len(mgr._wiki_store.list_pages()) == 1
+
+
+@pytest.mark.asyncio
+async def test_lint_wiki_auto_links_cross_references(memory_dir, monkeypatch):
+    mgr = MemoryManager(USER_ID)
+    mgr._wiki_store.write_page(type_="entity", slug="sarah", title="Sarah", summary="s", body="- Sister.")
+    mgr._wiki_store.write_page(type_="concept", slug="family-trip", title="Family Trip", summary="s",
+                                body="- Went hiking with Sarah last month.")
+
+    monkeypatch.setattr("src.core.memory.get_llm_provider", lambda: StubLLM(_EMPTY_LINT_LLM_RESPONSE))
+
+    result = await mgr.lint_wiki()
+
+    assert "cross-reference(s) added" in result
+    page = mgr._wiki_store.get_page("concept", "family-trip")
+    assert "[Sarah](pages/entities/sarah.md)" in page["body"]
+
+
+@pytest.mark.asyncio
+async def test_lint_wiki_flags_orphans_contradictions_and_gaps_without_applying(memory_dir, monkeypatch):
+    mgr = MemoryManager(USER_ID)
+    mgr._wiki_store.write_page(type_="concept", slug="topic-a", title="Topic A", summary="s", body="- claim one")
+    mgr._wiki_store.write_page(type_="concept", slug="topic-b", title="Topic B", summary="s", body="- claim two")
+
+    stub_response = json.dumps({
+        "contradictions": [{"page_a": "concept/topic-a", "page_b": "concept/topic-b", "description": "conflict"}],
+        "coverage_gaps": [{"suggested_title": "New Topic", "suggested_type": "concept", "description": "gap"}],
+    })
+    monkeypatch.setattr("src.core.memory.get_llm_provider", lambda: StubLLM(stub_response))
+
+    result = await mgr.lint_wiki()
+
+    assert "orphan page(s)" in result
+    assert "1 contradiction" in result
+    assert "1 coverage gap" in result
+    # Flag-only: nothing auto-applied for these, page count/content unchanged.
+    assert len(mgr._wiki_store.list_pages()) == 2
+    log_text = mgr._wiki_store.read_log()
+    assert "Contradiction flagged" in log_text
+    assert "Coverage gap flagged" in log_text
+    assert "Orphan page flagged" in log_text

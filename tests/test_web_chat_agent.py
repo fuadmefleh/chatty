@@ -12,9 +12,9 @@ from src.core.llm import StreamChunk, ToolCallDelta
 @pytest.fixture(autouse=True)
 def _isolate_memory_dir(tmp_path, monkeypatch):
     """WebChatAgent now constructs a real MemoryRouter (-> MemoryTools ->
-    LongTermFactsStore) in __init__, which creates directories under
-    config.MEMORY_DIR - isolate every test in this file to a tmp dir so none
-    of them write into the real project's memory/ folder."""
+    WikiStore) in __init__, which creates directories under config.MEMORY_DIR
+    - isolate every test in this file to a tmp dir so none of them write
+    into the real project's memory/ folder."""
     monkeypatch.setattr(config, "MEMORY_DIR", tmp_path)
 
 

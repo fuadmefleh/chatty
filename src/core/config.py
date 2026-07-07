@@ -41,13 +41,6 @@ STT_OPENAI_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 STT_LOCAL_MODEL_SIZE = os.getenv("STT_LOCAL_MODEL_SIZE", "base")
 STT_LOCAL_DEVICE = os.getenv("STT_LOCAL_DEVICE", "cpu")
 
-# Embeddings — for long-term memory semantic search (src/core/embeddings.py).
-# Always uses real OpenAI's embeddings API via OPENAI_API_KEY directly,
-# regardless of CHAT_PROVIDER (which may be "local"/"anthropic" and can't
-# serve embeddings) - same "always real OpenAI for this one capability"
-# precedent as STT_OPENAI_MODEL above.
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-
 # TTS (text-to-speech) provider - used by the Telegram bot's speak_text skill
 # (skills/tts/) to reply with a real voice message instead of/alongside text.
 #   local (default) - the tts_engine_api microservice already running on
