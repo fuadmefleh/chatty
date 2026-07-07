@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { fetchServerHealth } from '../chattyApi';
-import type { ServerHealth, HealthGPU } from '../chattyApi';
+import { fetchServerHealth, fetchStorageBreakdown } from '../chattyApi';
+import type { ServerHealth, HealthGPU, StorageBreakdown } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
@@ -119,19 +119,99 @@ const MemoryCard: React.FC<{ mem: ServerHealth['memory']; swap: ServerHealth['sw
   </Card>
 );
 
+/* Storage breakdown row (shown inside expanded disk card) */
+const StorageBreakdownRow: React.FC<{
+  entry: { path: string; size_bytes: number; depth: number };
+  maxSize: number;
+  mountpoint: string;
+}> = ({ entry, maxSize, mountpoint }) => {
+  const pct = maxSize > 0 ? Math.min(100, (entry.size_bytes / maxSize) * 100) : 0;
+  const rel = entry.path === mountpoint ? entry.path : entry.path.replace(mountpoint, '').replace(/^\//, '') || mountpoint;
+  return (
+    <div className="group flex items-center gap-2 py-0.5">
+      <div className="flex-1 truncate font-mono text-[11px] text-muted group-hover:text-ink">
+        {rel}
+      </div>
+      <div className="w-16 text-right font-mono text-[11px] text-ink">
+        {fmtBytes(entry.size_bytes)}
+      </div>
+      <div className="w-20">
+        <div className="h-1.5 overflow-hidden rounded-full bg-surface-dim">
+          <div
+            className={`h-full rounded-full transition-[width] duration-300 ease-out ${barColorClass[pctTone(pct)]}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* Storage breakdown section */
+const StorageBreakdownCard: React.FC<{
+  mountpoint: string;
+  data: StorageBreakdown | null;
+  loading: boolean;
+}> = ({ mountpoint, data, loading }) => {
+  const entries = data?.entries.filter(e => e.mountpoint === mountpoint) ?? [];
+  const maxBytes = entries.length > 0 ? Math.max(...entries.map(e => e.size_bytes)) : 0;
+
+  return (
+    <Card padding="14px 18px" className="mt-2">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-mono text-[11px] uppercase tracking-wider text-muted">Storage Breakdown</span>
+        {loading && <Spinner size="sm" label="" />}
+      </div>
+      {entries.length === 0 && !loading && (
+        <div className="font-mono text-[11px] text-muted">No data available</div>
+      )}
+      {entries.map((entry, i) => (
+        <StorageBreakdownRow
+          key={i}
+          entry={{ path: entry.path, size_bytes: entry.size_bytes, depth: entry.depth }}
+          maxSize={maxBytes}
+          mountpoint={mountpoint}
+        />
+      ))}
+    </Card>
+  );
+};
+
 /* Disk card */
-const DiskCard: React.FC<{ disk: ServerHealth['disks'][0] }> = ({ disk }) => (
+const DiskCard: React.FC<{
+  disk: ServerHealth['disks'][0];
+  expanded: boolean;
+  breakdownData: Record<string, StorageBreakdown | null>;
+  breakdownLoading: Record<string, boolean>;
+  onLoadBreakdown: (mp: string) => void;
+}> = ({ disk, expanded, breakdownData, breakdownLoading, onLoadBreakdown }) => (
   <Card padding="14px 18px">
     <div className="flex items-baseline justify-between">
       <span className="font-mono text-[13px] font-semibold text-ink">{disk.mountpoint}</span>
-      <Badge tone={disk.percent > 85 ? 'danger' : disk.percent > 60 ? 'gold' : 'neutral'}>
-        {disk.percent.toFixed(0)}%
-      </Badge>
+      <div className="flex items-center gap-2">
+        <Badge tone={disk.percent > 85 ? 'danger' : disk.percent > 60 ? 'gold' : 'neutral'}>
+          {disk.percent.toFixed(0)}%
+        </Badge>
+        <button
+          onClick={() => onLoadBreakdown(disk.mountpoint)}
+          className="text-[10px] text-muted hover:text-ink"
+          title="Show storage breakdown"
+        >
+          {expanded ? '▴' : '▾'}
+        </button>
+      </div>
     </div>
     <div className="font-mono text-[11px] text-muted">
       {fmtBytes(disk.used_bytes)} / {fmtBytes(disk.total_bytes)} &nbsp;·&nbsp; {fmtBytes(disk.free_bytes)} free
     </div>
     <Bar value={disk.percent} />
+    {expanded && (
+      <StorageBreakdownCard
+        mountpoint={disk.mountpoint}
+        data={breakdownData[disk.mountpoint] ?? null}
+        loading={breakdownLoading[disk.mountpoint] ?? false}
+      />
+    )}
   </Card>
 );
 
@@ -189,6 +269,9 @@ const ServerHealthPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [expandedDisks, setExpandedDisks] = useState<Set<string>>(new Set());
+  const [breakdownData, setBreakdownData] = useState<Record<string, StorageBreakdown | null>>({});
+  const [breakdownLoading, setBreakdownLoading] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -203,6 +286,29 @@ const ServerHealthPage: React.FC = () => {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const loadBreakdown = useCallback(async (mp: string) => {
+    const current = expandedDisks.has(mp);
+    setExpandedDisks(prev => {
+      const next = new Set(prev);
+      if (current) next.delete(mp);
+      else next.add(mp);
+      return next;
+    });
+    if (!current) {
+      if (!breakdownData[mp]) {
+        setBreakdownLoading(prev => ({ ...prev, [mp]: true }));
+        try {
+          const bd = await fetchStorageBreakdown(mp, 1);
+          setBreakdownData(prev => ({ ...prev, [mp]: bd }));
+        } catch {
+          setBreakdownData(prev => ({ ...prev, [mp]: null }));
+        } finally {
+          setBreakdownLoading(prev => ({ ...prev, [mp]: false }));
+        }
+      }
+    }
+  }, [expandedDisks, breakdownData]);
 
   // Auto-refresh every 5 seconds
   useEffect(() => {
@@ -286,7 +392,14 @@ const ServerHealthPage: React.FC = () => {
             </h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {data.disks.map((d, i) => (
-                <DiskCard key={i} disk={d} />
+                <DiskCard
+                  key={i}
+                  disk={d}
+                  expanded={expandedDisks.has(d.mountpoint)}
+                  breakdownData={breakdownData}
+                  breakdownLoading={breakdownLoading}
+                  onLoadBreakdown={loadBreakdown}
+                />
               ))}
             </div>
           </section>
