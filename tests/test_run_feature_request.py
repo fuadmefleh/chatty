@@ -42,6 +42,8 @@ async def test_run_feature_request_no_changes_is_a_clean_noop():
 
         mock_git.side_effect = [
             (0, ""),   # worktree prune
+            (0, ""),   # fetch origin
+            (0, ""),   # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),   # worktree add
             (0, ""),   # add -A
             (0, ""),   # diff --cached --quiet -> 0 means NO diff
@@ -64,7 +66,12 @@ async def test_run_feature_request_agent_error_is_terminal():
         yield {"type": "error", "content": "Pi binary not found"}
 
     with patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git:
-        mock_git.side_effect = [(0, ""), (0, "")]  # worktree prune, worktree add
+        mock_git.side_effect = [
+            (0, ""),   # worktree prune
+            (0, ""),   # fetch origin
+            (0, ""),   # rev-list main..origin/main --count -> empty means no new commits
+            (0, ""),   # worktree add
+        ]
 
         result = await sum_.run_feature_request("req1", "do something", frm)
 
@@ -90,6 +97,8 @@ async def test_run_feature_request_test_failure_never_touches_main():
 
         mock_git.side_effect = [
             (0, ""),   # worktree prune
+            (0, ""),   # fetch origin
+            (0, ""),   # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),   # worktree add
             (0, ""),   # add -A
             (1, ""),   # diff --cached --quiet -> has a diff
@@ -119,6 +128,8 @@ async def test_run_feature_request_commit_rejected_by_hook_is_terminal():
 
         mock_git.side_effect = [
             (0, ""),                    # worktree prune
+            (0, ""),                    # fetch origin
+            (0, ""),                    # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),                    # worktree add
             (0, ""),                    # add -A
             (1, ""),                    # diff --cached --quiet -> has a diff
@@ -149,6 +160,8 @@ async def test_run_feature_request_missing_test_coverage_is_a_soft_warning():
 
         mock_git.side_effect = [
             (0, ""),             # worktree prune
+            (0, ""),             # fetch origin
+            (0, ""),             # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),             # worktree add
             (0, ""),             # add -A
             (1, ""),             # diff --cached --quiet -> has a diff
@@ -182,6 +195,8 @@ async def test_run_feature_request_aborts_merge_when_main_is_dirty():
 
         mock_git.side_effect = [
             (0, ""),                              # worktree prune
+            (0, ""),                              # fetch origin
+            (0, ""),                              # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),                              # worktree add
             (0, ""),                              # add -A
             (1, ""),                              # diff --cached --quiet -> has a diff
@@ -219,6 +234,8 @@ async def test_run_feature_request_aborts_when_main_worktree_not_on_main():
 
         mock_git.side_effect = [
             (0, ""),                               # worktree prune
+            (0, ""),                               # fetch origin
+            (0, ""),                               # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),                               # worktree add
             (0, ""),                               # add -A
             (1, ""),                               # diff --cached --quiet -> has a diff
@@ -265,6 +282,8 @@ async def test_run_feature_request_happy_path_merges_and_restarts_after_pi_exits
 
         mock_git.side_effect = [
             (0, ""),                                          # worktree prune
+            (0, ""),                                          # fetch origin
+            (0, ""),                                          # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),                                          # worktree add
             (0, ""),                                          # add -A
             (1, ""),                                          # diff --cached --quiet -> has a diff
