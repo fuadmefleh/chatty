@@ -367,6 +367,101 @@ async def server_health():
     }
 
 
+def _get_storage_breakdown(mountpoint: str, depth: int = 1) -> list[dict]:
+    """Walk a mountpoint's directories up to `depth` levels and return sizes.
+
+    Uses `du` for speed rather than Python's os.walk (which is much slower for
+    large filesystems). Returns a list of {"path", "size_bytes", "depth"} dicts
+    sorted by size descending.
+    """
+    results: list[dict] = []
+    mpath = Path(mountpoint)
+    if not mpath.exists():
+        return results
+
+    try:
+        # du -B1 gives byte-precision; --max-depth controls recursion
+        # Using absolute glob paths avoids issues with du and relative paths
+        if depth == 0:
+            # Just the mountpoint total
+            result = subprocess.run(
+                ["du", "-B1", str(mpath)],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                line = result.stdout.strip().splitlines()[-1]
+                parts = line.split("\t")
+                if len(parts) == 2:
+                    results.append({
+                        "path": parts[1],
+                        "size_bytes": int(parts[0]),
+                        "depth": 0,
+                    })
+        else:
+            result = subprocess.run(
+                ["du", "-B1", f"--max-depth={depth}", str(mpath)],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().splitlines():
+                    parts = line.split("\t")
+                    if len(parts) == 2:
+                        p = parts[1]
+                        # Calculate depth relative to mountpoint
+                        rel = Path(p).relative_to(mpath) if Path(p).is_relative_to(mpath) else Path(p)
+                        d = len(rel.parts)
+                        results.append({
+                            "path": p,
+                            "size_bytes": int(parts[0]),
+                            "depth": d,
+                        })
+        # Sort by size descending, but put the root mountpoint first
+        results.sort(key=lambda r: (0 if r["path"] == mountpoint else 1, -r["size_bytes"]))
+    except (subprocess.TimeoutExpired, Exception) as e:
+        logger.warning(f"Storage breakdown failed for {mountpoint}: {e}")
+
+    return results
+
+
+@app.get("/api/chatty/health/storage-breakdown", dependencies=[Depends(require_api_key)])
+async def storage_breakdown(
+    mountpoint: Optional[str] = Query(default=None),
+    depth: int = Query(default=1, ge=0, le=3),
+):
+    """Return a breakdown of disk usage by directory.
+
+    Without `mountpoint`, returns the top-level directories for all non-snap
+    partitions. With `mountpoint`, returns directories under that specific
+    mount. `depth` controls recursion (0 = mount total only, 1 = immediate
+    children, 2 = grand-children, etc.).
+    """
+    import psutil
+
+    partitions_to_scan: list[str] = []
+    if mountpoint:
+        partitions_to_scan = [mountpoint]
+    else:
+        for part in psutil.disk_partitions(all=False):
+            if part.fstype == "squashfs" or part.mountpoint.startswith("/snap/"):
+                continue
+            partitions_to_scan.append(part.mountpoint)
+
+    breakdown: list[dict] = []
+    for mp in partitions_to_scan:
+        entries = _get_storage_breakdown(mp, depth=depth)
+        for entry in entries:
+            entry["mountpoint"] = mp
+            entry["path_display"] = entry["path"]
+            breakdown.append(entry)
+
+    return {
+        "mountpoints": partitions_to_scan,
+        "depth": depth,
+        "entries": breakdown,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
 @app.get("/api/chatty/token-usage/summary", dependencies=[Depends(require_api_key)])
 async def token_usage_summary(days: int = 30):
     """Return aggregate LLM token usage: totals, per-model/provider breakdown, daily series."""

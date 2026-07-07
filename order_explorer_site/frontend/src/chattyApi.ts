@@ -597,6 +597,32 @@ export const fetchServerHealth = async (): Promise<ServerHealth> => {
   return res.data;
 };
 
+// ── Storage Breakdown ───────────────────────────────────────────────────────
+export interface StorageEntry {
+  path: string;
+  path_display: string;
+  size_bytes: number;
+  depth: number;
+  mountpoint: string;
+}
+
+export interface StorageBreakdown {
+  mountpoints: string[];
+  depth: number;
+  entries: StorageEntry[];
+  timestamp: string;
+}
+
+export const fetchStorageBreakdown = async (
+  mountpoint?: string,
+  depth: number = 1,
+): Promise<StorageBreakdown> => {
+  const params: Record<string, string | number> = { depth };
+  if (mountpoint) params.mountpoint = mountpoint;
+  const res = await chattyApi.get<StorageBreakdown>('/api/chatty/health/storage-breakdown', { params });
+  return res.data;
+};
+
 // ── Token usage ──────────────────────────────────────────────────────────────
 export interface TokenUsageByModel {
   provider: string;
