@@ -56,13 +56,6 @@ export default function ProgressTracker() {
     loadExercises();
   }, []);
 
-  useEffect(() => {
-    if (selectedExercise) {
-      loadProgress();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedExercise, days]);
-
   const loadProgress = async () => {
     if (!selectedExercise) return;
 
@@ -73,6 +66,13 @@ export default function ProgressTracker() {
       console.error('Error loading progress:', error);
     }
   };
+
+  useEffect(() => {
+    if (selectedExercise) {
+      loadProgress();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedExercise, days]);
 
   const selectedExerciseData = exercises.find(e => e.id === selectedExercise);
 

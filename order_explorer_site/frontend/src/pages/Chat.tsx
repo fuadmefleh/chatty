@@ -122,6 +122,7 @@ const Chat: React.FC = () => {
         const delay = backoffRef.current;
         backoffRef.current = Math.min(backoffRef.current * 2, RECONNECT_MAX_MS);
         reconnectTimerRef.current = setTimeout(() => {
+          // eslint-disable-next-line react-hooks/immutability -- connect is called in a deferred callback, after useCallback completes
           connect(sessionId, summary);
         }, delay);
       }
@@ -140,6 +141,7 @@ const Chat: React.FC = () => {
         if (data.type === 'session_loaded') {
           // Session context loaded — fetch and display its messages
           if (data.session_id !== null && data.message_count > 0) {
+            // eslint-disable-next-line react-hooks/immutability -- loadSessionMessages is called in a deferred event handler, after useCallback completes
             loadSessionMessages(data.session_id);
           }
         } else if (data.type === 'chunk') {
@@ -263,7 +265,6 @@ const Chat: React.FC = () => {
         return prev?.previewUrl === previewUrl ? null : prev;
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showToast]);
 
   const onFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
