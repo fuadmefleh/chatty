@@ -17,6 +17,7 @@ from typing import AsyncGenerator, List, Dict, Any, Optional
 from src.core import config
 from src.core.llm import get_llm_provider
 from src.core.memory import MemoryManager
+from src.core.memory_router import MemoryRouter, MEMORY_TOOL_NAMES, get_tool_definitions
 from src.core.skills_manager import SkillsManager
 
 MAX_TOOL_ITERATIONS = 8
@@ -34,19 +35,23 @@ class WebChatAgent:
         self.llm = get_llm_provider()
         self.skills_manager = skills_manager
         self.memory_manager = memory_manager
+        self.memory_router = MemoryRouter(memory_manager.user_id)
         self._history: List[Dict[str, Any]] = []
 
     def _get_tools(self) -> List[Dict]:
-        """Return OpenAI tool specs for all loaded skills."""
-        if not self.skills_manager:
-            return []
+        """Return OpenAI tool specs for all loaded skills, plus the recall/remember/forget memory tools."""
         tools = []
-        for skill in self.skills_manager.skills.values():
-            tools.extend(skill.get_openai_tools())
+        if self.skills_manager:
+            for skill in self.skills_manager.skills.values():
+                tools.extend(skill.get_openai_tools())
+        tools.extend(get_tool_definitions())
         return tools
 
     async def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
-        """Execute a skill tool and return its result as a string."""
+        """Execute a tool (memory or skill) and return its result as a string."""
+        if tool_name in MEMORY_TOOL_NAMES:
+            return await self._execute_memory_tool(tool_name, arguments)
+
         if not self.skills_manager:
             return json.dumps({"error": "Skills manager not available"})
 
@@ -57,6 +62,19 @@ class WebChatAgent:
         try:
             result = await tool.execute(**arguments)
             return result if isinstance(result, str) else json.dumps(result)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    async def _execute_memory_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+        """Execute a recall/remember/forget memory tool call."""
+        try:
+            if tool_name == "recall":
+                return await self.memory_router.recall(**arguments)
+            elif tool_name == "remember":
+                return await self.memory_router.remember(**arguments)
+            elif tool_name == "forget":
+                return await self.memory_router.forget(**arguments)
+            return json.dumps({"error": f"Unknown memory tool: {tool_name}"})
         except Exception as e:
             return json.dumps({"error": str(e)})
 

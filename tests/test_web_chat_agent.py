@@ -5,7 +5,17 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.agents.web_chat_agent import MAX_TOOL_ITERATIONS, WebChatAgent
+from src.core import config
 from src.core.llm import StreamChunk, ToolCallDelta
+
+
+@pytest.fixture(autouse=True)
+def _isolate_memory_dir(tmp_path, monkeypatch):
+    """WebChatAgent now constructs a real MemoryRouter (-> MemoryTools ->
+    LongTermFactsStore) in __init__, which creates directories under
+    config.MEMORY_DIR - isolate every test in this file to a tmp dir so none
+    of them write into the real project's memory/ folder."""
+    monkeypatch.setattr(config, "MEMORY_DIR", tmp_path)
 
 
 class FakeStreamingProvider:
@@ -42,6 +52,7 @@ def _make_agent(provider):
     skills_manager.get_tool.return_value = None
 
     memory_manager = MagicMock()
+    memory_manager.user_id = "test_web_chat_user"
     memory_manager.get_long_term_memory = AsyncMock(return_value="")
     memory_manager.get_recent_memory = AsyncMock(return_value="")
     memory_manager.add_interaction = AsyncMock()

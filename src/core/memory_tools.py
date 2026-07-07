@@ -44,6 +44,28 @@ class MemoryTools:
         self.long_term_dir = self.user_memory_dir / "long_term"
         self._facts_store = LongTermFactsStore(user_id, self.long_term_dir)
 
+    def _grep_short_term(self, search_term: str, context_lines: int = 2) -> str | None:
+        """Grep the daily short-term markdown logs for search_term. Returns
+        the raw grep output (with a header), or None if there were no
+        matches / the short_term dir doesn't exist yet. Shared by
+        search_memory_grep and MemoryRouter.recall so both search short-term
+        memory the same way."""
+        if not self.short_term_dir.exists():
+            return None
+        try:
+            cmd = [
+                'grep', '-r', '-i', '-n',
+                f'-C{context_lines}',
+                '--', search_term,
+                str(self.short_term_dir)
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.stdout:
+                return f"### Short-Term Memory Matches\n{proc.stdout}"
+        except Exception as e:
+            logger.error(f"Error searching short-term memory: {e}")
+        return None
+
     async def search_memory_grep(self, search_term: str, context_lines: int = 2) -> str:
         """Search all memory for a specific term: short-term via grep over
         the daily markdown logs, long-term via a substring match over
@@ -63,19 +85,9 @@ class MemoryTools:
         results = []
 
         # Search short-term memory
-        if self.short_term_dir.exists():
-            try:
-                cmd = [
-                    'grep', '-r', '-i', '-n',
-                    f'-C{context_lines}',
-                    '--', search_term,
-                    str(self.short_term_dir)
-                ]
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-                if proc.stdout:
-                    results.append(f"### Short-Term Memory Matches\n{proc.stdout}")
-            except Exception as e:
-                logger.error(f"Error searching short-term memory: {e}")
+        short_term_matches = self._grep_short_term(search_term, context_lines)
+        if short_term_matches:
+            results.append(short_term_matches)
 
         # Search long-term memory facts
         matches = self._facts_store.search_facts(search_term)
@@ -376,7 +388,7 @@ class MemoryTools:
         }
         
         category_clean = category.lower().replace(' ', '_')
-        file_name = category_map.get(category_clean, 'important_facts')
+        file_name = category_map.get(category_clean, category_clean)
 
         try:
             from src.core.memory import MemoryManager
@@ -470,51 +482,3 @@ class MemoryTools:
 
         lines = [f"- ({score:.2f}) [{f['category']}] {f['content']}" for f, score in results]
         return "\n".join(lines)
-
-
-def get_tools_description() -> str:
-    """Get a description of available memory tools for the system prompt.
-    
-    Returns:
-        Formatted description of tools
-    """
-    return """
-## Available Memory Tools
-
-You can use these tools to search and retrieve information from memory files:
-
-1. **search_memory_grep(search_term, context_lines=2)**
-   - Search all memory files for a specific term using grep
-   - Returns matches with surrounding context
-   - Example: search_memory_grep("pizza", 3)
-
-2. **list_memory_files(memory_type="all")**
-   - List all available memory files
-   - memory_type: "short_term", "long_term", or "all"
-   - Shows file names and sizes
-
-3. **read_memory_file(filename, memory_type="short_term")**
-   - Read the complete content of a specific memory file
-   - Example: read_memory_file("2026-01-30.md", "short_term")
-
-4. **search_by_date_range(start_date, end_date)**
-   - Get all short-term memories between two dates
-   - Dates in YYYY-MM-DD format
-   - Example: search_by_date_range("2026-01-20", "2026-01-25")
-
-5. **search_pattern(regex_pattern, memory_type="all")**
-   - Search using regular expressions for complex patterns
-   - Example: search_pattern("\\b(phone|call|contact)\\b", "all")
-
-6. **get_memory_summary()**
-   - Get an overview of available memory files and categories
-   - Shows file counts, sizes, and date ranges
-
-7. **search_recent_mentions(topic, days=7)**
-   - Find recent mentions of a topic in the last N days
-   - Returns relevant excerpts with dates
-   - Example: search_recent_mentions("project", 14)
-
-To use a tool, format your action like:
-ACTION: use tool search_memory_grep with search_term="keyword"
-"""

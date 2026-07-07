@@ -1,7 +1,9 @@
 """Tests for the memory system: MemoryManager (src/core/memory.py) and
 MemoryTools (src/core/memory_tools.py)."""
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,14 +32,22 @@ def memory_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+class StubLLM:
+    """Minimal stand-in for an LLMProvider - only needs an async complete()."""
+
+    def __init__(self, content: str):
+        self._content = content
+
+    async def complete(self, messages, *, response_format="text", temperature=None):
+        return SimpleNamespace(content=self._content)
+
+
 class StubAgent:
-    """Minimal stand-in for a ReACTAgent - only needs an async think()."""
+    """Minimal stand-in for a StagedReACTAgent - consolidate_memories only
+    needs agent.llm.complete(), not the full ReACT pipeline."""
 
     def __init__(self, response: str):
-        self._response = response
-
-    async def think(self, prompt: str, history) -> str:
-        return self._response
+        self.llm = StubLLM(response)
 
 
 @pytest.mark.asyncio
@@ -92,6 +102,19 @@ async def test_save_important_fact_category_mapping(memory_dir):
 
 
 @pytest.mark.asyncio
+async def test_save_important_fact_unmapped_category_passes_through(memory_dir):
+    """An unrecognized category should be stored under its own name, not
+    silently collapsed into 'important_facts'."""
+    tools = MemoryTools(USER_ID)
+    await tools.save_important_fact("hobbies", "Plays guitar.")
+
+    facts = tools._facts_store.list_facts(category="hobbies")
+    assert len(facts) == 1
+    assert facts[0]["content"] == "Plays guitar."
+    assert tools._facts_store.list_facts(category="important_facts") == []
+
+
+@pytest.mark.asyncio
 async def test_get_short_term_files_for_consolidation_cutoff(memory_dir):
     mgr = MemoryManager(USER_ID)
     old_file = mgr.short_term_dir / "2020-01-01.md"
@@ -123,7 +146,9 @@ async def test_consolidate_memories_writes_long_term_and_archives(memory_dir):
     old_file = mgr.short_term_dir / "2020-01-01.md"
     old_file.write_text("# Memory Log - 2020-01-01\n\n**User**: My birthday is June 1st.\n")
 
-    stub_response = "CATEGORY: Important Facts\nCONTENT: User's birthday is June 1st."
+    stub_response = json.dumps({
+        "entries": [{"category": "important_facts", "content": "User's birthday is June 1st."}]
+    })
     result = await mgr.consolidate_memories(StubAgent(stub_response))
 
     assert "Successfully consolidated" in result

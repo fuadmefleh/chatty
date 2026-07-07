@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Dict, Optional
 from src.core import config
+from src.core.llm import get_llm_provider, with_retries
 from src.core.logging_config import get_memory_logger
 from src.core.long_term_facts import LongTermFactsStore, render_category_facts
 
@@ -585,17 +586,29 @@ For each category that has relevant information, provide:
 - A clear, concise summary
 - Specific details worth remembering
 
-Format your response as:
-CATEGORY: [category name]
-CONTENT: [summary and details]
-
-If a category has no relevant information, skip it.
+Respond with ONLY a JSON object of this exact shape:
+{{"entries": [{{"category": "important_facts", "content": "..."}}, ...]}}
+category must be one of: important_facts, personal_preferences,
+goals_and_projects, relationships, recurring_topics, key_insights (or a
+short snake_case category if genuinely none fit). If nothing is
+memory-worthy, respond {{"entries": []}}.
 """
-        
+
         try:
-            # Use the agent to analyze
-            consolidation_result = await agent.think(consolidation_prompt, [])
-            
+            # Call the agent's LLM directly for a structured-output answer -
+            # agent.think() runs the entire 7-stage ReACT pipeline
+            # (decompose/memory/plan/execute/synthesize/reflect/memorize),
+            # which is unnecessary and unreliable for a single structured
+            # extraction like this.
+            response = await with_retries(
+                lambda: agent.llm.complete(
+                    [{"role": "user", "content": consolidation_prompt}],
+                    response_format="json", temperature=0.3,
+                ),
+                logger=memory_logger,
+            )
+            consolidation_result = response.content
+
             # Parse the result and store in long-term memory
             await self._parse_and_store_consolidation(consolidation_result)
             
@@ -626,8 +639,6 @@ If a category has no relevant information, skip it.
         Returns:
             Summary string of what was stored.
         """
-        from openai import AsyncOpenAI
-
         consolidation_prompt = f"""You are extracting long-term-memory-worthy information from a piece of text (e.g. a transcribed voice memo).
 
 Analyze the following text and extract important information that should be remembered long-term:
@@ -647,23 +658,26 @@ For each category that has relevant information, provide:
 - A clear, concise summary
 - Specific details worth remembering
 
-Format your response as:
-CATEGORY: [category name]
-CONTENT: [summary and details]
-
-If a category has no relevant information, skip it. If nothing in the text is memory-worthy, reply with exactly: NOTHING_NOTABLE
+Respond with ONLY a JSON object of this exact shape:
+{{"entries": [{{"category": "important_facts", "content": "..."}}, ...]}}
+category must be one of: important_facts, personal_preferences,
+goals_and_projects, relationships, recurring_topics, key_insights (or a
+short snake_case category if genuinely none fit). If nothing in the text
+is memory-worthy, respond {{"entries": []}}.
 """
 
         try:
-            client = AsyncOpenAI(api_key=config.CHAT_API_KEY, base_url=config.CHAT_BASE_URL)
-            response = await client.chat.completions.create(
-                model=config.CHAT_MODEL,
-                messages=[{"role": "user", "content": consolidation_prompt}],
-                temperature=0.3,
+            llm = get_llm_provider()
+            response = await with_retries(
+                lambda: llm.complete(
+                    [{"role": "user", "content": consolidation_prompt}],
+                    response_format="json", temperature=0.3,
+                ),
+                logger=memory_logger,
             )
-            consolidation_result = (response.choices[0].message.content or "").strip()
+            consolidation_result = response.content
 
-            if not consolidation_result or consolidation_result == "NOTHING_NOTABLE":
+            if not consolidation_result:
                 return "No long-term-memory-worthy content found."
 
             await self._parse_and_store_consolidation(consolidation_result)
@@ -674,23 +688,27 @@ If a category has no relevant information, skip it. If nothing in the text is me
             return f"Error consolidating text: {e}"
 
     async def _parse_and_store_consolidation(self, consolidation_text: str):
-        """Parse AI consolidation result and store in appropriate long-term memory files.
-        
+        """Parse the LLM's structured JSON consolidation result and store
+        each entry in long-term memory.
+
         Args:
-            consolidation_text: Text from AI containing categorized memories
+            consolidation_text: JSON string of shape
+                {"entries": [{"category": ..., "content": ...}, ...]}
         """
-        import re
-        
-        # Parse CATEGORY/CONTENT pairs
-        pattern = r'CATEGORY:\s*(.+?)\s*\nCONTENT:\s*(.+?)(?=\nCATEGORY:|$)'
-        matches = re.findall(pattern, consolidation_text, re.DOTALL)
-        
-        for category, content in matches:
-            category_clean = category.strip().lower().replace(" ", "_")
-            content_clean = content.strip()
-            
-            if content_clean:
-                await self.add_long_term_memory(category_clean, content_clean)
+        try:
+            data = json.loads(consolidation_text)
+        except (json.JSONDecodeError, TypeError):
+            memory_logger.error(
+                f"Consolidation result was not valid JSON: {consolidation_text[:200]}"
+            )
+            return
+
+        for entry in data.get("entries", []):
+            category = str(entry.get("category", "")).strip().lower().replace(" ", "_")
+            content = str(entry.get("content", "")).strip()
+
+            if category and content:
+                await self.add_long_term_memory(category, content)
 
     async def dedupe_facts(self, similarity_threshold: float = 0.85) -> str:
         """Find near-duplicate facts within each category and delete the
