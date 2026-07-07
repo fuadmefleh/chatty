@@ -1654,7 +1654,7 @@ async def get_memory(days: int = Query(default=7, ge=1, le=90)):
     from src.core.wiki_store import WikiStore
 
     user_memory_dir = MEMORY_DIR / WEB_USER_ID
-    result = {"short_term": [], "long_term": []}
+    result = {"short_term": [], "long_term": [], "wiki_index": "", "wiki_log": ""}
 
     short_term_dir = user_memory_dir / "short_term"
     if short_term_dir.exists():
@@ -1669,10 +1669,16 @@ async def get_memory(days: int = Query(default=7, ge=1, le=90)):
     wiki_store = WikiStore(WEB_USER_ID, user_memory_dir / "long_term")
     for page in wiki_store.list_pages():
         result["long_term"].append({
-            "date": page["title"],
-            "content": f"# {page['title']}\n\n{page['body']}",
-            "filename": f"{page['type']}s/{page['slug']}.md",
+            "title": page["title"],
+            "type": page["type"],
+            "slug": page["slug"],
+            "summary": page["summary"],
+            "tags": page["tags"],
+            "body": page["body"],
+            "updated": page["updated"],
         })
+    result["wiki_index"] = wiki_store.read_index()
+    result["wiki_log"] = wiki_store.read_log(tail=50)
 
     return result
 

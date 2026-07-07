@@ -231,15 +231,27 @@ export const deleteChattyReminder = async (filename: string): Promise<void> => {
 };
 
 // ── Memory ────────────────────────────────────────────────────────────────────
-export interface MemoryEntry {
+export interface ShortTermEntry {
   date: string;
   content: string;
   filename: string;
 }
 
+export interface WikiPage {
+  title: string;
+  type: 'entity' | 'concept';
+  slug: string;
+  summary: string;
+  tags: string[];
+  body: string;
+  updated: string;
+}
+
 export interface MemoryData {
-  short_term: MemoryEntry[];
-  long_term: MemoryEntry[];
+  short_term: ShortTermEntry[];
+  long_term: WikiPage[];
+  wiki_index: string;
+  wiki_log: string;
 }
 
 export const fetchChattyMemory = async (days = 7): Promise<MemoryData> => {
