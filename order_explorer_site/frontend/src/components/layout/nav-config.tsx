@@ -58,6 +58,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/memory', label: 'Memory' },
       { to: '/requests', label: 'Requests' },
       { to: '/suggestions', label: 'Suggestions' },
+      { to: '/video-production', label: 'Video Production' },
       { to: '/webcams', label: 'Webcams' },
       { to: '/system', label: 'System' },
       { to: '/server-health', label: 'Server Health' },

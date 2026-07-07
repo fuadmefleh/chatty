@@ -31,6 +31,7 @@ import Reminders from './pages/Reminders';
 import MemoryViewer from './pages/MemoryViewer';
 import Requests from './pages/Requests';
 import Suggestions from './pages/Suggestions';
+import VideoProduction from './pages/VideoProduction';
 import Webcams from './pages/Webcams';
 import SystemStatus from './pages/SystemStatus';
 import CodeBrowser from './pages/CodeBrowser';
@@ -75,6 +76,7 @@ function RoutedApp() {
           <Route path="/memory" element={<MemoryViewer />} />
           <Route path="/requests" element={<Requests />} />
           <Route path="/suggestions" element={<Suggestions />} />
+          <Route path="/video-production" element={<VideoProduction />} />
           <Route path="/webcams" element={<Webcams />} />
           <Route path="/system" element={<SystemStatus />} />
           <Route path="/server-health" element={<ServerHealth />} />

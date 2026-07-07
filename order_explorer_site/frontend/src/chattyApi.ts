@@ -648,4 +648,47 @@ export const fetchTokenUsageRecent = async (limit = 50): Promise<TokenUsageEntry
   return res.data;
 };
 
+// ── Video Production ──────────────────────────────────────────────────────
+export type VideoJobStatus = 'submitted' | 'generating' | 'completed' | 'failed';
+export type VideoResolution = '480p' | '720p' | '1080p' | 'auto';
+
+export interface VideoJob {
+  id: string;
+  prompt: string;
+  duration_seconds: number;
+  resolution: string;
+  status: VideoJobStatus;
+  url: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const fetchVideoJobs = async (limit = 50): Promise<VideoJob[]> => {
+  const res = await chattyApi.get<VideoJob[]>('/api/chatty/video-jobs', { params: { limit } });
+  return res.data;
+};
+
+export const createVideoJob = async (
+  prompt: string,
+  durationSeconds = 4,
+  resolution: VideoResolution = 'auto',
+): Promise<VideoJob> => {
+  const res = await chattyApi.post<VideoJob>('/api/chatty/video-jobs', {
+    prompt,
+    duration_seconds: durationSeconds,
+    resolution,
+  });
+  return res.data;
+};
+
+export const getVideoJob = async (jobId: string): Promise<VideoJob> => {
+  const res = await chattyApi.get<VideoJob>(`/api/chatty/video-jobs/${jobId}`);
+  return res.data;
+};
+
+export const deleteVideoJob = async (jobId: string): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/video-jobs/${jobId}`);
+};
+
 export default chattyApi;
