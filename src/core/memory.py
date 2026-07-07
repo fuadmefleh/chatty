@@ -2,10 +2,12 @@
 import json
 import aiofiles
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Dict, Optional
 from src.core import config
 from src.core.logging_config import get_memory_logger
+from src.core.long_term_facts import LongTermFactsStore, render_category_facts
 
 # Get memory logger
 memory_logger = get_memory_logger()
@@ -304,13 +306,15 @@ class MemoryManager:
         self.short_term_dir = self.user_memory_dir / "short_term"
         self.long_term_dir = self.user_memory_dir / "long_term"
         self.uploads_dir = self.user_memory_dir / "uploads"
-        
+
         # Create directories
         self.user_memory_dir.mkdir(parents=True, exist_ok=True)
         self.short_term_dir.mkdir(parents=True, exist_ok=True)
         self.long_term_dir.mkdir(parents=True, exist_ok=True)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        self._facts_store = LongTermFactsStore(user_id, self.long_term_dir)
+
         memory_logger.info(f"Initialized MemoryManager for user {user_id}")
     
     def _get_today_file(self) -> Path:
@@ -422,69 +426,70 @@ class MemoryManager:
     
     async def get_summary(self) -> Dict[str, int]:
         """Get summary statistics about user's memory.
-        
+
         Returns:
             Dictionary with memory statistics
         """
         short_term_files = list(self.short_term_dir.glob("*.md"))
-        long_term_files = list(self.long_term_dir.glob("*.md"))
-        all_files = short_term_files + long_term_files
-        total_size = sum(f.stat().st_size for f in all_files)
-        
+        total_size = sum(f.stat().st_size for f in short_term_files)
+        facts = self._facts_store.list_facts()
+        total_size += self._facts_store.storage_size_bytes()
+
         return {
             "total_days": len(short_term_files),
-            "long_term_entries": len(long_term_files),
+            "long_term_entries": len(facts),
             "total_size_bytes": total_size,
             "oldest_date": min(f.stem for f in short_term_files) if short_term_files else None,
             "newest_date": max(f.stem for f in short_term_files) if short_term_files else None,
         }
-    
-    async def get_long_term_memory(self) -> str:
+
+    async def get_long_term_memory(self, max_chars: Optional[int] = None) -> str:
         """Retrieve all long-term memory as a formatted string.
-        
+
+        Args:
+            max_chars: If given, cap total output at this many characters,
+                split evenly across categories so no single category (by
+                virtue of sort order or unbounded growth) starves out the
+                others. If None, returns full content (e.g. for the
+                heartbeat's watch-suggestion mining, which needs everything).
+
         Returns:
             Formatted long-term memory string
         """
-        long_term_files = sorted(
-            self.long_term_dir.glob("*.md"),
-            key=lambda p: p.stem,
-            reverse=True
-        )
-        
-        if not long_term_files:
+        categories = self._facts_store.list_categories()
+
+        if not categories:
             return "No long-term memories yet."
-        
+
+        per_category_budget = max_chars // len(categories) if max_chars is not None else None
+
         memory_parts = []
-        for file_path in long_term_files:
-            try:
-                async with aiofiles.open(file_path, 'r') as f:
-                    content = await f.read()
-                    memory_parts.append(content)
-            except Exception as e:
-                print(f"Error reading long-term memory file {file_path}: {e}")
-        
+        for category in categories:
+            facts = self._facts_store.list_facts(category=category)
+            memory_parts.append(render_category_facts(category, facts, max_chars=per_category_budget))
+
         return "\n\n".join(memory_parts) if memory_parts else "No long-term memories yet."
-    
+
     async def add_long_term_memory(self, title: str, content: str):
-        """Add or update a long-term memory entry.
-        
+        """Add a long-term memory entry.
+
         Args:
-            title: Title/category of the memory (e.g., 'preferences', 'important_facts')
+            title: Category of the memory (e.g., 'preferences', 'important_facts')
             content: Content to store
         """
-        memory_file = self.long_term_dir / f"{title}.md"
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # If file exists, append; otherwise create new
-        if memory_file.exists():
-            async with aiofiles.open(memory_file, 'a') as f:
-                await f.write(f"\n\n## Updated: {timestamp}\n\n")
-                await f.write(f"{content}\n")
-        else:
-            async with aiofiles.open(memory_file, 'w') as f:
-                await f.write(f"# Long-Term Memory: {title}\n\n")
-                await f.write(f"Created: {timestamp}\n\n")
-                await f.write(f"{content}\n")
+        fact = self._facts_store.add_fact(category=title, content=content)
+
+        # Best-effort: a fact must still be saved even if embedding fails
+        # (missing/invalid OPENAI_API_KEY, network error, etc.) - semantic
+        # search just skips facts with no embedding (see LongTermFactsStore
+        # .semantic_search), falling back to search_memory_grep for those.
+        try:
+            from src.core.embeddings import get_embedding
+
+            embedding = await get_embedding(content)
+            self._facts_store.update_fact_embedding(fact["id"], embedding)
+        except Exception as e:
+            memory_logger.error(f"Error embedding fact {fact['id']} for {self.user_id}: {e}")
     
     async def get_short_term_files_for_consolidation(self, days_old: int = 7) -> List[Path]:
         """Get short-term memory files older than specified days for consolidation.
@@ -687,83 +692,48 @@ If a category has no relevant information, skip it. If nothing in the text is me
             if content_clean:
                 await self.add_long_term_memory(category_clean, content_clean)
 
-    async def cleanup_long_term_memories(self, agent) -> str:
-        """Clean up and reorganize long-term memories, removing duplicates and consolidating.
-        
-        This method uses AI to analyze each long-term memory file, remove duplicates,
-        and reorganize the content in a clean, structured format.
-        
+    async def dedupe_facts(self, similarity_threshold: float = 0.85) -> str:
+        """Find near-duplicate facts within each category and delete the
+        older one of each near-duplicate pair.
+
+        Replaces the old cleanup_long_term_memories(), which LLM-rewrote a
+        whole category markdown file to approximately dedupe it - now that
+        facts are individually addressable, dedup can be exact (compare
+        individual facts, delete the stale one) instead of an LLM-rewrite
+        gamble that risked dropping unique information. No LLM call needed.
+
         Args:
-            agent: ReACTAgent instance to use for cleanup
-            
+            similarity_threshold: Facts scoring at or above this ratio
+                (difflib.SequenceMatcher) are considered near-duplicates.
+
         Returns:
-            Summary of cleanup results
+            Summary of how many facts were removed.
         """
-        if not self.long_term_dir.exists():
-            return "No long-term memory directory found."
-        
-        # Get all long-term memory files
-        memory_files = list(self.long_term_dir.glob("*.md"))
-        
-        if not memory_files:
-            return "No long-term memory files to clean up."
-        
-        cleaned_count = 0
-        errors = []
-        
-        for file_path in memory_files:
-            try:
-                # Read current content
-                async with aiofiles.open(file_path, 'r') as f:
-                    content = await f.read()
-                
-                # Skip if file is already clean (no duplicate headers, etc.)
-                if content.count("## Update [") <= 1:
+        removed_count = 0
+        categories_checked = 0
+
+        for category in self._facts_store.list_categories():
+            categories_checked += 1
+            facts = self._facts_store.list_facts(category=category)
+            removed_ids = set()
+
+            for i in range(len(facts)):
+                if facts[i]["id"] in removed_ids:
                     continue
-                
-                # Create cleanup prompt
-                cleanup_prompt = f"""You are cleaning up and organizing a long-term memory file.
+                for j in range(i + 1, len(facts)):
+                    if facts[j]["id"] in removed_ids:
+                        continue
+                    ratio = SequenceMatcher(None, facts[i]["content"], facts[j]["content"]).ratio()
+                    if ratio >= similarity_threshold:
+                        older = facts[i] if facts[i]["updated_at"] <= facts[j]["updated_at"] else facts[j]
+                        self._facts_store.delete_fact(older["id"])
+                        removed_ids.add(older["id"])
+                        removed_count += 1
+                        if older["id"] == facts[i]["id"]:
+                            # facts[i] itself was removed - stop comparing
+                            # it against the remaining j's in this category.
+                            break
 
-Current content:
-{content}
-
-Please:
-1. Remove all duplicate information
-2. Consolidate related entries
-3. Organize the content in a clear, structured format
-4. Preserve all unique information
-5. Keep the most recent/accurate version when duplicates exist
-6. Maintain the original summary header but update it if needed
-
-Format your response as a clean, organized markdown file with:
-- A clear summary section at the top
-- Well-organized details below
-- No redundant information
-- Clear, concise entries
-
-Provide ONLY the cleaned content, no explanations."""
-
-                # Use agent to clean up
-                cleaned_content = await agent.think(cleanup_prompt, [])
-                
-                # Write back the cleaned content
-                async with aiofiles.open(file_path, 'w') as f:
-                    # Ensure it starts with proper header
-                    if not cleaned_content.startswith("# Long-Term Memory:"):
-                        category_name = file_path.stem.replace("_", " ").title()
-                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        cleaned_content = f"# Long-Term Memory: {category_name}\n\nCreated: {timestamp}\n\n{cleaned_content}"
-                    await f.write(cleaned_content)
-                
-                cleaned_count += 1
-                
-            except Exception as e:
-                errors.append(f"{file_path.name}: {str(e)}")
-        
-        result = f"Cleaned {cleaned_count} long-term memory file(s)."
-        if errors:
-            result += f" Errors: {', '.join(errors)}"
-        
-        return result
+        return f"Removed {removed_count} near-duplicate fact(s) across {categories_checked} categories."
 
 

@@ -5,6 +5,7 @@ import aiofiles
 from pathlib import Path
 from datetime import datetime, timedelta
 from src.core import config
+from src.core.long_term_facts import LongTermFactsStore
 import logging
 
 logger = logging.getLogger('react')
@@ -41,21 +42,26 @@ class MemoryTools:
         self.user_memory_dir = config.MEMORY_DIR / str(user_id)
         self.short_term_dir = self.user_memory_dir / "short_term"
         self.long_term_dir = self.user_memory_dir / "long_term"
-    
+        self._facts_store = LongTermFactsStore(user_id, self.long_term_dir)
+
     async def search_memory_grep(self, search_term: str, context_lines: int = 2) -> str:
-        """Search all memory files using grep for a specific term.
-        
+        """Search all memory for a specific term: short-term via grep over
+        the daily markdown logs, long-term via a substring match over
+        stored facts.
+
         Args:
             search_term: Term to search for
-            context_lines: Number of context lines to show before/after match
-            
+            context_lines: Number of context lines to show before/after
+                match (short-term only; long-term facts are single entries
+                with no surrounding lines)
+
         Returns:
             Search results with file names and matched lines
         """
         logger.info(f"[TOOL] search_memory_grep: searching for '{search_term}' with {context_lines} context lines")
-        
+
         results = []
-        
+
         # Search short-term memory
         if self.short_term_dir.exists():
             try:
@@ -70,25 +76,16 @@ class MemoryTools:
                     results.append(f"### Short-Term Memory Matches\n{proc.stdout}")
             except Exception as e:
                 logger.error(f"Error searching short-term memory: {e}")
-        
-        # Search long-term memory
-        if self.long_term_dir.exists():
-            try:
-                cmd = [
-                    'grep', '-r', '-i', '-n',
-                    f'-C{context_lines}',
-                    '--', search_term,
-                    str(self.long_term_dir)
-                ]
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-                if proc.stdout:
-                    results.append(f"### Long-Term Memory Matches\n{proc.stdout}")
-            except Exception as e:
-                logger.error(f"Error searching long-term memory: {e}")
-        
+
+        # Search long-term memory facts
+        matches = self._facts_store.search_facts(search_term)
+        if matches:
+            lines = [f"- [{f['category']}] {f['content']}" for f in matches]
+            results.append("### Long-Term Memory Matches\n" + "\n".join(lines))
+
         if not results:
             return f"No matches found for '{search_term}'"
-        
+
         return "\n\n".join(results)
     
     async def list_memory_files(self, memory_type: str = "all") -> str:
@@ -115,40 +112,44 @@ class MemoryTools:
                         results.append(f"- {f.name} ({size_kb:.1f} KB)")
         
         if memory_type in ["long_term", "all"]:
-            if self.long_term_dir.exists():
-                files = sorted(self.long_term_dir.glob("*.md"))
-                if files:
-                    results.append("\n### Long-Term Memory Files (Categories)")
-                    for f in files:
-                        stat = f.stat()
-                        size_kb = stat.st_size / 1024
-                        results.append(f"- {f.name} ({size_kb:.1f} KB)")
-        
+            categories = self._facts_store.list_categories()
+            if categories:
+                results.append("\n### Long-Term Memory Categories")
+                for category in categories:
+                    count = len(self._facts_store.list_facts(category=category))
+                    results.append(f"- {category} ({count} facts)")
+
         if not results:
             return "No memory files found"
-        
+
         return "\n".join(results)
     
     async def read_memory_file(self, filename: str, memory_type: str = "short_term") -> str:
-        """Read a specific memory file.
-        
+        """Read a specific memory file, or (for long_term) a category's facts.
+
         Args:
-            filename: Name of the file to read (e.g., '2026-01-30.md')
+            filename: Name of the short-term file to read (e.g.,
+                '2026-01-30.md'), or a long-term category name (e.g.
+                'important_facts', with or without a trailing '.md')
             memory_type: Type of memory ('short_term' or 'long_term')
-            
+
         Returns:
-            Content of the memory file
+            Content of the memory file / category
         """
         logger.info(f"[TOOL] read_memory_file: reading {memory_type}/{filename}")
-        
-        if memory_type == "short_term":
-            base_dir = self.short_term_dir
-        elif memory_type == "long_term":
-            base_dir = self.long_term_dir
-        else:
+
+        if memory_type == "long_term":
+            category = filename[:-3] if filename.endswith(".md") else filename
+            facts = self._facts_store.list_facts(category=category)
+            if not facts:
+                return f"No long-term memory found for category '{category}'"
+            from src.core.long_term_facts import render_category_facts
+            return render_category_facts(category, facts)
+
+        if memory_type != "short_term":
             return f"Invalid memory_type '{memory_type}'. Use 'short_term' or 'long_term'"
 
-        file_path = _resolve_memory_path(base_dir, filename)
+        file_path = _resolve_memory_path(self.short_term_dir, filename)
         if file_path is None:
             return f"File not found: {filename}"
 
@@ -221,18 +222,18 @@ class MemoryTools:
             return f"Invalid regex pattern: {str(e)}"
         
         results = []
-        
+
         async def search_directory(directory: Path, label: str):
             if not directory.exists():
                 return
-            
+
             matches = []
             for file_path in directory.glob("*.md"):
                 try:
                     async with aiofiles.open(file_path, 'r') as f:
                         content = await f.read()
                         lines = content.split('\n')
-                        
+
                         for i, line in enumerate(lines):
                             if pattern.search(line):
                                 # Get context
@@ -242,19 +243,25 @@ class MemoryTools:
                                 matches.append(f"**{file_path.name}:{i+1}**\n```\n{context}\n```\n")
                 except Exception as e:
                     logger.error(f"Error searching {file_path}: {e}")
-            
+
             if matches:
                 results.append(f"### {label}\n" + "\n".join(matches))
-        
+
         if memory_type in ["short_term", "all"]:
             await search_directory(self.short_term_dir, "Short-Term Memory Matches")
-        
+
         if memory_type in ["long_term", "all"]:
-            await search_directory(self.long_term_dir, "Long-Term Memory Matches")
-        
+            fact_matches = [
+                f"**{fact['category']}/{fact['id'][:8]}**\n{fact['content']}\n"
+                for fact in self._facts_store.list_facts()
+                if pattern.search(fact["content"])
+            ]
+            if fact_matches:
+                results.append("### Long-Term Memory Matches\n" + "\n".join(fact_matches))
+
         if not results:
             return f"No matches found for pattern '{regex_pattern}'"
-        
+
         return "\n\n".join(results)
     
     async def get_memory_summary(self) -> str:
@@ -278,13 +285,12 @@ class MemoryTools:
                 summary.append(f"  - Date range: {oldest.stem} to {newest.stem}")
         
         # Long-term summary
-        if self.long_term_dir.exists():
-            files = list(self.long_term_dir.glob("*.md"))
-            total_size = sum(f.stat().st_size for f in files)
-            summary.append(f"\n**Long-Term Memory**: {len(files)} category files ({total_size/1024:.1f} KB)")
-            if files:
-                categories = [f.stem.replace('_', ' ').title() for f in files]
-                summary.append(f"  - Categories: {', '.join(categories)}")
+        facts = self._facts_store.list_facts()
+        total_size = self._facts_store.storage_size_bytes()
+        summary.append(f"\n**Long-Term Memory**: {len(facts)} facts ({total_size/1024:.1f} KB)")
+        if facts:
+            categories = self._facts_store.list_categories()
+            summary.append(f"  - Categories: {', '.join(c.replace('_', ' ').title() for c in categories)}")
         
         if not summary:
             return "No memory files found"
@@ -385,6 +391,85 @@ class MemoryTools:
             error_msg = f"Error saving to long-term memory: {e}"
             logger.error(error_msg)
             return f"❌ {error_msg}"
+
+    async def forget_fact(self, search_term: str, category: str = None) -> str:
+        """Delete a long-term memory fact the user asked to be forgotten.
+
+        Searches by content first (the LLM never knows a fact's id from
+        conversation) and auto-deletes when there's exactly one match. When
+        there are multiple matches, lists them with ids instead of deleting,
+        so a follow-up delete_fact_by_id call can finish the job once the
+        LLM has seen which one the user meant.
+
+        Args:
+            search_term: Text to search for among stored facts
+            category: Optional category to restrict the search to
+
+        Returns:
+            Confirmation message, or a disambiguation list
+        """
+        logger.info(f"[TOOL] forget_fact: searching for '{search_term}'" + (f" in {category}" if category else ""))
+
+        matches = self._facts_store.search_facts(search_term, category=category)
+        if not matches:
+            return f"No matching long-term memory found for '{search_term}'."
+
+        if len(matches) == 1:
+            deleted = self._facts_store.delete_fact(matches[0]["id"])
+            return f"✅ Forgot: \"{deleted['content']}\" (category: {deleted['category']})"
+
+        lines = [f"Found {len(matches)} matching facts - which one? Call delete_fact_by_id with the id:"]
+        for f in matches:
+            lines.append(f"- id={f['id']} [{f['category']}] {f['content']}")
+        return "\n".join(lines)
+
+    async def delete_fact_by_id(self, fact_id: str) -> str:
+        """Delete a specific long-term memory fact by its id, as returned by
+        a previous forget_fact call that found multiple candidates.
+
+        Args:
+            fact_id: The fact id from a previous forget_fact result
+
+        Returns:
+            Confirmation message
+        """
+        logger.info(f"[TOOL] delete_fact_by_id: {fact_id}")
+
+        deleted = self._facts_store.delete_fact(fact_id)
+        if deleted is None:
+            return f"No fact found with id '{fact_id}'."
+        return f"✅ Forgot: \"{deleted['content']}\" (category: {deleted['category']})"
+
+    async def semantic_search_memory(self, query: str, top_k: int = 5) -> str:
+        """Find long-term memory facts semantically related to a query, even
+        if they don't share exact keywords - best for vague/conceptual
+        recall. Additive to search_memory_grep, not a replacement: only
+        covers long-term facts (short-term daily logs aren't embedded), and
+        needs a working OPENAI_API_KEY.
+
+        Args:
+            query: Natural-language description of what to recall
+            top_k: Number of results to return
+
+        Returns:
+            Ranked matches, or a message suggesting search_memory_grep instead
+        """
+        logger.info(f"[TOOL] semantic_search_memory: '{query}' (top_k={top_k})")
+
+        try:
+            from src.core.embeddings import get_embedding
+
+            query_embedding = await get_embedding(query)
+        except Exception as e:
+            logger.error(f"Error embedding query for semantic_search_memory: {e}")
+            return f"Semantic search unavailable right now ({e}); try search_memory_grep instead."
+
+        results = self._facts_store.semantic_search(query_embedding, top_k=top_k)
+        if not results:
+            return f"No semantically relevant long-term memories found for '{query}'."
+
+        lines = [f"- ({score:.2f}) [{f['category']}] {f['content']}" for f, score in results]
+        return "\n".join(lines)
 
 
 def get_tools_description() -> str:

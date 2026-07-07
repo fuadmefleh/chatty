@@ -1651,20 +1651,29 @@ async def delete_webcam_suggestion(suggestion_id: str):
 # ── Memory viewer ─────────────────────────────────────────────────────────────
 @app.get("/api/chatty/memory", dependencies=[Depends(require_api_key)])
 async def get_memory(days: int = Query(default=7, ge=1, le=90)):
+    from src.core.long_term_facts import LongTermFactsStore, render_category_facts
+
     user_memory_dir = MEMORY_DIR / WEB_USER_ID
     result = {"short_term": [], "long_term": []}
 
-    for scope_key, folder_name in [("short_term", "short_term"), ("long_term", "long_term")]:
-        scope_dir = user_memory_dir / folder_name
-        if not scope_dir.exists():
-            continue
-        files = sorted(scope_dir.glob("*.md"), key=lambda p: p.stem, reverse=True)[:days]
+    short_term_dir = user_memory_dir / "short_term"
+    if short_term_dir.exists():
+        files = sorted(short_term_dir.glob("*.md"), key=lambda p: p.stem, reverse=True)[:days]
         for f in files:
-            result[scope_key].append({
+            result["short_term"].append({
                 "date": f.stem,
                 "content": f.read_text(encoding="utf-8"),
                 "filename": f.name,
             })
+
+    facts_store = LongTermFactsStore(WEB_USER_ID, user_memory_dir / "long_term")
+    for category in facts_store.list_categories():
+        facts = facts_store.list_facts(category=category)
+        result["long_term"].append({
+            "date": category,
+            "content": render_category_facts(category, facts),
+            "filename": f"{category}.json",
+        })
 
     return result
 

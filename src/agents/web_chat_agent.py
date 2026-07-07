@@ -67,11 +67,11 @@ class WebChatAgent:
         # Load recent + long-term memory context and prepend as system notes
         try:
             max_chars = config.MAX_MEMORY_TOKENS // 2
-            long_term_memory = await self.memory_manager.get_long_term_memory()
+            long_term_memory = await self.memory_manager.get_long_term_memory(max_chars=max_chars)
             if long_term_memory:
                 messages.insert(1, {
                     "role": "system",
-                    "content": f"Long-term memory about this user:\n{long_term_memory[:max_chars]}"
+                    "content": f"Long-term memory about this user:\n{long_term_memory}"
                 })
 
             recent_memory = await self.memory_manager.get_recent_memory(days=3)

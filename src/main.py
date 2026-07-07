@@ -239,6 +239,47 @@ Short-term memories are your recent daily conversations. Every 7 days during hea
         await safe_send_reply(update.message, "An error occurred retrieving memory stats.")
 
 
+async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /forget <text> - delete a long-term memory fact by content search."""
+    user_id = str(update.effective_user.id)
+
+    if not is_user_authorized(user_id):
+        await safe_send_reply(update.message, "🔒 Please verify your phone number first with /start")
+        return
+
+    if not context.args:
+        await safe_send_reply(update.message, "Usage: /forget <text to search for>\nExample: /forget I like sushi")
+        return
+
+    search_term = " ".join(context.args)
+    try:
+        from src.core.memory_tools import MemoryTools
+
+        memory_tools = MemoryTools(user_id)
+        matches = memory_tools._facts_store.search_facts(search_term)
+
+        if not matches:
+            await safe_send_reply(update.message, f"No matching memory found for '{search_term}'.")
+        elif len(matches) == 1:
+            result = await memory_tools.forget_fact(search_term)
+            await safe_send_reply(update.message, result)
+        else:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+            keyboard = [
+                [InlineKeyboardButton(f["content"][:40], callback_data=f"forget_del_{f['id']}")]
+                for f in matches[:10]
+            ]
+            await safe_send_reply(
+                update.message,
+                f"Found {len(matches)} matching facts - tap one to delete it:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+    except Exception as e:
+        logger.error(f"Error in forget_command: {e}", exc_info=True)
+        await safe_send_reply(update.message, "An error occurred while trying to forget that.")
+
+
 async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /skills command."""
     all_skills = skills_manager.get_all_skills()
@@ -691,6 +732,20 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         except Exception as e:
             logger.error(f"Error loading session: {e}", exc_info=True)
             await query.edit_message_text("An error occurred loading the session.")
+        return
+
+    # -- Forget a long-term memory fact (from /forget's candidate list) -----
+    if query.data.startswith("forget_del_"):
+        try:
+            fact_id = query.data[len("forget_del_"):]
+            from src.core.memory_tools import MemoryTools
+
+            memory_tools = MemoryTools(user_id)
+            result = await memory_tools.delete_fact_by_id(fact_id)
+            await query.edit_message_text(result)
+        except Exception as e:
+            logger.error(f"Error in callback_query_handler for forget: {e}", exc_info=True)
+            await query.edit_message_text("An error occurred trying to forget that.")
         return
 
     # -- Sessions list (full) ------------------------------------------------
@@ -1589,6 +1644,7 @@ def main():
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("memory", memory_command))
+    application.add_handler(CommandHandler("forget", forget_command))
     application.add_handler(CommandHandler("skills", skills_command))
     application.add_handler(CommandHandler("reminders", reminders_command))
     application.add_handler(CommandHandler("notes", notes_command))

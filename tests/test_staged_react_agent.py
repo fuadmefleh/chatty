@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from src.agents.staged_react_agent import StagedReACTAgent, ReACTState
+from src.core import config
 from src.core.llm import LLMResponse, LLMRetryableError, MAX_LLM_RETRIES
 
 
@@ -31,7 +32,21 @@ class FakeLLMProvider:
 
 
 @pytest.fixture
-def agent():
+def agent(tmp_path, monkeypatch):
+    # StagedReACTAgent constructs a real MemoryTools(user_id) internally, which
+    # resolves paths under config.MEMORY_DIR at construction time - isolate it
+    # to a tmp dir so tests that exercise memory tools (e.g. save_important_fact)
+    # don't write into the real project's memory/ folder.
+    monkeypatch.setattr(config, "MEMORY_DIR", tmp_path)
+
+    # save_important_fact -> MemoryManager.add_long_term_memory tries to embed
+    # the fact for semantic search; stub it out so schema-callability tests
+    # never make a live OpenAI API call.
+    async def _fake_get_embedding(text: str):
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr("src.core.embeddings.get_embedding", _fake_get_embedding)
+
     memory_manager = MagicMock()
     memory_manager.user_id = "test_user_agentic_loop"
     memory_manager.get_recent_memory = AsyncMock(return_value="")
@@ -234,3 +249,97 @@ class TestMemoryToolSchema:
         result = await agent._execute_memory_tool("search_memory_grep", arguments)
 
         assert not result.startswith("Error executing"), result
+
+    @pytest.mark.asyncio
+    async def test_save_important_fact_advertised_params_are_callable(self, agent):
+        tool_defs = agent._get_memory_tools_definitions()
+        save_def = next(t for t in tool_defs if t["function"]["name"] == "save_important_fact")
+        required_params = save_def["function"]["parameters"]["required"]
+
+        arguments = {param: "test" for param in required_params}
+        result = await agent._execute_memory_tool("save_important_fact", arguments)
+
+        assert not result.startswith("Error executing"), result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name", [
+        "list_memory_files",
+        "read_memory_file",
+        "search_by_date_range",
+        "search_pattern",
+        "search_recent_mentions",
+    ])
+    async def test_newly_wired_tools_advertised_params_are_callable(self, agent, tool_name):
+        tool_defs = agent._get_memory_tools_definitions()
+        tool_def = next(t for t in tool_defs if t["function"]["name"] == tool_name)
+        required_params = tool_def["function"]["parameters"]["required"]
+
+        arguments = {
+            param: "2026-01-01" if "date" in param else "test"
+            for param in required_params
+        }
+        result = await agent._execute_memory_tool(tool_name, arguments)
+
+        assert not result.startswith("Error executing"), result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name,required_arg_name", [
+        ("search_by_date_range", "start_date"),
+        ("search_pattern", "regex_pattern"),
+        ("search_recent_mentions", "topic"),
+    ])
+    async def test_new_memory_tools_are_routed_by_execute_tool(self, agent, tool_name, required_arg_name):
+        """_execute_tool's dispatch gate used to be a startswith() prefix
+        tuple that didn't match these 3 tool names at all, so advertising
+        them without fixing the gate would silently misroute every call to
+        skills_manager.execute_tool() (-> 'Unknown tool: ...') instead of
+        ever reaching MemoryTools. This exercises _execute_tool directly
+        (not _execute_memory_tool), since that's the real dispatch entry
+        point the LLM's tool calls actually go through."""
+        tool_defs = agent._get_memory_tools_definitions()
+        tool_def = next(t for t in tool_defs if t["function"]["name"] == tool_name)
+        required_params = tool_def["function"]["parameters"]["required"]
+
+        arguments = {
+            param: "2026-01-01" if "date" in param else "test"
+            for param in required_params
+        }
+        result = await agent._execute_tool(tool_name, arguments)
+
+        assert not result.startswith("Unknown tool"), result
+
+    @pytest.mark.asyncio
+    async def test_forget_fact_advertised_params_are_callable(self, agent):
+        tool_defs = agent._get_memory_tools_definitions()
+        tool_def = next(t for t in tool_defs if t["function"]["name"] == "forget_fact")
+        required_params = tool_def["function"]["parameters"]["required"]
+
+        arguments = {param: "test" for param in required_params}
+        result = await agent._execute_tool("forget_fact", arguments)
+
+        assert not result.startswith("Error executing"), result
+        assert not result.startswith("Unknown tool"), result
+
+    @pytest.mark.asyncio
+    async def test_delete_fact_by_id_advertised_params_are_callable(self, agent):
+        tool_defs = agent._get_memory_tools_definitions()
+        tool_def = next(t for t in tool_defs if t["function"]["name"] == "delete_fact_by_id")
+        required_params = tool_def["function"]["parameters"]["required"]
+
+        arguments = {param: "test" for param in required_params}
+        result = await agent._execute_tool("delete_fact_by_id", arguments)
+
+        assert not result.startswith("Error executing"), result
+        assert not result.startswith("Unknown tool"), result
+
+    @pytest.mark.asyncio
+    async def test_semantic_search_memory_advertised_params_are_callable(self, agent):
+        tool_defs = agent._get_memory_tools_definitions()
+        tool_def = next(t for t in tool_defs if t["function"]["name"] == "semantic_search_memory")
+        required_params = tool_def["function"]["parameters"]["required"]
+
+        arguments = {param: "test" for param in required_params}
+        result = await agent._execute_tool("semantic_search_memory", arguments)
+
+        assert not result.startswith("Error executing"), result
+        assert not result.startswith("Unknown tool"), result

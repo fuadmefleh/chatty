@@ -1,5 +1,6 @@
 """Heartbeat system for autonomous agent activities."""
 import asyncio
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Callable, List
@@ -137,8 +138,8 @@ class HeartbeatManager:
                         if result:
                             summary.append(result)
                         
-                        # Clean up and reorganize long-term memories
-                        result = await self._cleanup_long_term_memories(user_agents, user_memories)
+                        # Dedupe near-identical long-term memory facts
+                        result = await self._dedupe_long_term_memories(user_memories)
                         if result:
                             summary.append(result)
 
@@ -306,41 +307,41 @@ Otherwise, just think through the checks and conclude with your assessment.
             return f"🧠 Memory consolidation: Processed memories for {len(consolidated_users)} user(s)"
         return None
     
-    async def _cleanup_long_term_memories(self, user_agents: Dict, user_memories: Dict) -> str:
-        """Clean up and reorganize long-term memories for all users.
-        
+    async def _dedupe_long_term_memories(self, user_memories: Dict) -> str:
+        """Dedupe near-identical long-term memory facts for all users.
+
+        Unlike the old LLM-rewrite-based cleanup this replaced, no agent is
+        needed - MemoryManager.dedupe_facts() compares individual facts
+        directly (see docs/MEMORY_SYSTEM.md).
+
         Args:
-            user_agents: Dictionary of user agents
             user_memories: Dictionary of user memory managers
-            
+
         Returns:
-            Summary string of cleanup results
+            Summary string of dedup results
         """
-        heartbeat_logger.info("Starting long-term memory cleanup for all users...")
-        
-        cleaned_users = []
+        heartbeat_logger.info("Starting long-term memory dedup for all users...")
+
+        total_removed = 0
+        affected_users = 0
         for user_id, memory_manager in user_memories.items():
             try:
-                # Get corresponding agent
-                agent = user_agents.get(user_id)
-                if not agent:
-                    heartbeat_logger.warning(f"No agent found for user {user_id}, skipping cleanup")
-                    continue
-                
-                heartbeat_logger.info(f"Cleaning up long-term memories for user {user_id}")
-                result = await memory_manager.cleanup_long_term_memories(agent)
-                heartbeat_logger.info(f"User {user_id} cleanup result: {result}")
-                
-                if "cleaned" in result.lower() or "organized" in result.lower():
-                    cleaned_users.append(user_id)
-                
+                result = await memory_manager.dedupe_facts()
+                heartbeat_logger.info(f"User {user_id} dedupe result: {result}")
+
+                match = re.search(r"Removed (\d+)", result)
+                removed = int(match.group(1)) if match else 0
+                if removed > 0:
+                    total_removed += removed
+                    affected_users += 1
+
             except Exception as e:
-                heartbeat_logger.error(f"Error cleaning up memories for user {user_id}: {e}", exc_info=True)
-        
-        heartbeat_logger.info("Long-term memory cleanup completed for all users")
-        
-        if cleaned_users:
-            return f"🗂️ Memory cleanup: Organized memories for {len(cleaned_users)} user(s)"
+                heartbeat_logger.error(f"Error deduping memories for user {user_id}: {e}", exc_info=True)
+
+        heartbeat_logger.info("Long-term memory dedup completed for all users")
+
+        if affected_users:
+            return f"🗂️ Memory dedup: Removed {total_removed} duplicate fact(s) for {affected_users} user(s)"
         return None
 
     async def _process_transcription_mining(self) -> Optional[str]:

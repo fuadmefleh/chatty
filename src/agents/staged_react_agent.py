@@ -27,6 +27,17 @@ agent_logger = get_agent_logger()
 api_logger = get_api_logger()
 tools_logger = get_tools_logger()
 
+# Single source of truth for which tool names route to _execute_memory_tool
+# instead of the skills_manager. Used to be a startswith() prefix tuple that
+# didn't match search_by_date_range/search_pattern/search_recent_mentions -
+# an explicit set avoids that whole bug class.
+_MEMORY_TOOL_NAMES = {
+    "search_memory_grep", "save_important_fact", "get_memory_summary",
+    "list_memory_files", "read_memory_file", "search_by_date_range",
+    "search_pattern", "search_recent_mentions",
+    "forget_fact", "delete_fact_by_id", "semantic_search_memory",
+}
+
 
 class ReACTStage(Enum):
     """Stages of the ReACT reasoning process."""
@@ -264,14 +275,14 @@ Be concise. If it's a simple greeting or conversation, sub_tasks can be empty.""
         state.stage = ReACTStage.MEMORY
         
         # Load memory context with strict limits
-        short_term = await self.memory_manager.get_recent_memory(days=2)
-        long_term = await self.memory_manager.get_long_term_memory()
-        
-        # Truncate memory to prevent token bloat
         max_short = self.MAX_MEMORY_CONTEXT_CHARS // 2
         max_long = self.MAX_MEMORY_CONTEXT_CHARS // 2
+        short_term = await self.memory_manager.get_recent_memory(days=2)
+        long_term = await self.memory_manager.get_long_term_memory(max_chars=max_long)
+
+        # Truncate memory to prevent token bloat
         short_term = short_term[:max_short] if short_term else ""
-        long_term = long_term[:max_long] if long_term else ""
+        long_term = long_term if long_term else ""
         
         # Check if memory is relevant
         prompt = f"""Given this user query and available memory, determine if memory contains relevant information.
@@ -633,29 +644,28 @@ If nothing important to remember, return empty array."""
     
     async def _execute_tool(self, tool_name: str, arguments: Dict) -> str:
         """Execute a tool by name.
-        
+
         Args:
             tool_name: Name of the tool
             arguments: Tool arguments
-            
+
         Returns:
             Tool execution result
         """
         # Check if it's a memory tool
-        if tool_name.startswith(("search_memory", "read_memory", "list_memory", 
-                                  "get_memory", "save_important")):
+        if tool_name in _MEMORY_TOOL_NAMES:
             return await self._execute_memory_tool(tool_name, arguments)
-        
+
         # Otherwise, it's a skill tool
         return await self.skills_manager.execute_tool(tool_name, arguments)
-    
+
     async def _execute_memory_tool(self, tool_name: str, arguments: Dict) -> str:
         """Execute a memory tool.
-        
+
         Args:
             tool_name: Name of the memory tool
             arguments: Tool arguments
-            
+
         Returns:
             Tool result
         """
@@ -672,6 +682,16 @@ If nothing important to remember, return empty array."""
                 return await self.memory_tools.get_memory_summary()
             elif tool_name == "save_important_fact":
                 return await self.memory_tools.save_important_fact(**arguments)
+            elif tool_name == "search_by_date_range":
+                return await self.memory_tools.search_by_date_range(**arguments)
+            elif tool_name == "search_pattern":
+                return await self.memory_tools.search_pattern(**arguments)
+            elif tool_name == "forget_fact":
+                return await self.memory_tools.forget_fact(**arguments)
+            elif tool_name == "delete_fact_by_id":
+                return await self.memory_tools.delete_fact_by_id(**arguments)
+            elif tool_name == "semantic_search_memory":
+                return await self.memory_tools.semantic_search_memory(**arguments)
             else:
                 return f"Unknown memory tool: {tool_name}"
         except Exception as e:
@@ -741,10 +761,10 @@ If nothing important to remember, return empty array."""
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "fact": {"type": "string", "description": "The fact to remember"},
+                            "content": {"type": "string", "description": "The information to remember"},
                             "category": {"type": "string", "description": "Category: preference, personal, goal, other"}
                         },
-                        "required": ["fact"]
+                        "required": ["content", "category"]
                     }
                 }
             },
@@ -754,6 +774,124 @@ If nothing important to remember, return empty array."""
                     "name": "get_memory_summary",
                     "description": "Get a summary of all available memory",
                     "parameters": {"type": "object", "properties": {}, "required": []}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_memory_files",
+                    "description": "List all available memory files (short-term daily logs and/or long-term categories) with sizes.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "memory_type": {"type": "string", "enum": ["short_term", "long_term", "all"], "description": "Which memory to list"}
+                        },
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_memory_file",
+                    "description": "Read the complete content of a specific memory file by name.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "filename": {"type": "string", "description": "File name, e.g. '2026-01-30.md' for short_term"},
+                            "memory_type": {"type": "string", "enum": ["short_term", "long_term"], "description": "Which memory area the file lives in"}
+                        },
+                        "required": ["filename"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_by_date_range",
+                    "description": "Get all short-term memory conversation logs between two dates (inclusive).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "start_date": {"type": "string", "description": "Start date, YYYY-MM-DD"},
+                            "end_date": {"type": "string", "description": "End date, YYYY-MM-DD"}
+                        },
+                        "required": ["start_date", "end_date"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_pattern",
+                    "description": "Search memory using a regular expression for complex pattern matching.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "regex_pattern": {"type": "string", "description": "Regular expression to search for"},
+                            "memory_type": {"type": "string", "enum": ["short_term", "long_term", "all"], "description": "Which memory to search"}
+                        },
+                        "required": ["regex_pattern"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_recent_mentions",
+                    "description": "Find recent mentions of a topic in the last N days of short-term (daily conversation) memory.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "topic": {"type": "string", "description": "Topic/keyword to search for"},
+                            "days": {"type": "integer", "description": "Number of recent days to search"}
+                        },
+                        "required": ["topic"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "forget_fact",
+                    "description": "Delete a long-term memory fact the user asked to be forgotten. Searches by content; auto-deletes if there's exactly one match, otherwise lists candidates to disambiguate via delete_fact_by_id.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "search_term": {"type": "string", "description": "Text to search for among stored facts, e.g. 'sushi' or 'old job'"},
+                            "category": {"type": "string", "enum": ["personal_preferences", "important_facts", "goals_and_projects", "relationships", "recurring_topics", "key_insights"], "description": "Optional: restrict the search to one category"}
+                        },
+                        "required": ["search_term"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delete_fact_by_id",
+                    "description": "Delete a specific long-term memory fact by its id, as returned by a previous forget_fact call that found multiple candidates.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "fact_id": {"type": "string", "description": "The fact id from a previous forget_fact result"}
+                        },
+                        "required": ["fact_id"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "semantic_search_memory",
+                    "description": "Find long-term memory facts semantically related to a query, even if they don't share exact keywords - best for vague or conceptual recall ('what does the user like to eat?'). For exact keyword/phrase lookups, prefer search_memory_grep.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Natural-language description of what to recall"},
+                            "top_k": {"type": "integer", "description": "Number of results to return"}
+                        },
+                        "required": ["query"]
+                    }
                 }
             }
         ]
