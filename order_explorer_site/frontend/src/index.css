@@ -26,6 +26,10 @@
   --font-display: 'Space Grotesk', system-ui, sans-serif;
   --font-body: 'IBM Plex Sans', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+  /* System serif stack (no webfont load) - used only for the wiki article
+     title in WikiArticle.tsx, a deliberate register change from the rest of
+     the app's sans-serif chrome to signal "encyclopedia entry". */
+  --font-serif: Georgia, 'Times New Roman', serif;
 
   color-scheme: light;
 
@@ -79,6 +83,7 @@
   --font-display: var(--font-display);
   --font-body: var(--font-body);
   --font-mono: var(--font-mono);
+  --font-serif: var(--font-serif);
 }
 
 @layer base {

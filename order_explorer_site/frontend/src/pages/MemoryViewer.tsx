@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { fetchChattyMemory, searchChattyMemory, triggerMemoryConsolidation } from '../chattyApi';
 import type { MemoryData, ShortTermEntry, WikiPage } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
@@ -32,8 +33,7 @@ const MemoryViewer: React.FC = () => {
   const [error, setError] = useState('');
   const [days, setDays] = useState(7);
   const [activeTab, setActiveTab] = useState<'short_term' | 'long_term'>('short_term');
-  const [openKeys, setOpenKeys] = useState<Set<string>>(new Set());
-  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [openDates, setOpenDates] = useState<Set<string>>(new Set());
   const [activityOpen, setActivityOpen] = useState(false);
 
   const [query, setQuery] = useState('');
@@ -82,11 +82,11 @@ const MemoryViewer: React.FC = () => {
     }
   };
 
-  const toggleKey = (key: string) => {
-    setOpenKeys((prev) => {
+  const toggleDate = (date: string) => {
+    setOpenDates((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      if (next.has(date)) next.delete(date);
+      else next.add(date);
       return next;
     });
   };
@@ -203,12 +203,12 @@ const MemoryViewer: React.FC = () => {
       ) : activeTab === 'short_term' ? (
         <div className="flex flex-col gap-2">
           {shortTermEntries.map((entry) => {
-            const isOpen = openKeys.has(entry.filename);
+            const isOpen = openDates.has(entry.filename);
             return (
               <div key={entry.filename} className="overflow-hidden rounded-lg border border-line">
                 <button
                   type="button"
-                  onClick={() => toggleKey(entry.filename)}
+                  onClick={() => toggleDate(entry.filename)}
                   aria-expanded={isOpen}
                   className={`flex w-full items-center justify-between gap-2 rounded-none px-4 py-2.5 text-left font-mono text-sm font-semibold text-ink ${
                     isOpen ? 'bg-surface-dim' : 'bg-surface'
@@ -231,29 +231,6 @@ const MemoryViewer: React.FC = () => {
         </div>
       ) : (
         <div className="flex flex-col gap-5">
-          {/* Catalog (index.md) */}
-          <div className="overflow-hidden rounded-lg border border-line">
-            <button
-              type="button"
-              onClick={() => setCatalogOpen((v) => !v)}
-              aria-expanded={catalogOpen}
-              className={`flex w-full items-center justify-between gap-2 px-4 py-2.5 text-left text-sm font-semibold text-ink ${
-                catalogOpen ? 'bg-surface-dim' : 'bg-surface'
-              }`}
-            >
-              <span>Catalog</span>
-              <span className="flex items-center gap-1 text-xs text-signal">
-                {catalogOpen ? 'collapse' : 'expand'}
-                <ChevronIcon open={catalogOpen} />
-              </span>
-            </button>
-            {catalogOpen && (
-              <div className="overflow-x-auto border-t border-line bg-bg px-5 py-4">
-                <MarkdownContent content={data?.wiki_index || 'No pages yet.'} />
-              </div>
-            )}
-          </div>
-
           {/* Recent Activity (log.md) */}
           <div className="overflow-hidden rounded-lg border border-line">
             <button
@@ -279,45 +256,31 @@ const MemoryViewer: React.FC = () => {
             )}
           </div>
 
-          {/* Pages, grouped by type */}
+          {/* Pages, grouped by type - the wiki's front page */}
           {pagesByType.map(({ type, pages }) => (
             <div key={type} className="flex flex-col gap-2">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
                 {WIKI_TYPE_LABELS[type]} <span className="font-mono normal-case opacity-70">{pages.length}</span>
               </h2>
-              {pages.map((page) => {
-                const key = `${page.type}/${page.slug}`;
-                const isOpen = openKeys.has(key);
-                return (
-                  <div key={key} className="overflow-hidden rounded-lg border border-line">
-                    <button
-                      type="button"
-                      onClick={() => toggleKey(key)}
-                      aria-expanded={isOpen}
-                      className={`flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left ${
-                        isOpen ? 'bg-surface-dim' : 'bg-surface'
-                      }`}
-                    >
-                      <span className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="font-semibold text-ink">{page.title}</span>
-                        <Badge tone="teal">{page.type}</Badge>
-                        {page.tags.map((tag) => (
-                          <Badge key={tag} tone="neutral">{tag}</Badge>
-                        ))}
-                      </span>
-                      <span className="flex shrink-0 items-center gap-1 text-xs text-signal">
-                        {isOpen ? 'collapse' : 'expand'}
-                        <ChevronIcon open={isOpen} />
-                      </span>
-                    </button>
-                    {isOpen && (
-                      <div className="overflow-x-auto border-t border-line bg-bg px-5 py-4">
-                        <MarkdownContent content={page.body} />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              {pages.map((page) => (
+                <Link
+                  key={`${page.type}/${page.slug}`}
+                  to={`/memory/${page.type}/${page.slug}`}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-2.5 hover:bg-surface-dim"
+                >
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-ink">{page.title}</span>
+                      <Badge tone="teal">{page.type}</Badge>
+                      {page.tags.map((tag) => (
+                        <Badge key={tag} tone="neutral">{tag}</Badge>
+                      ))}
+                    </span>
+                    <span className="truncate text-sm text-muted">{page.summary}</span>
+                  </span>
+                  <ChevronIcon open />
+                </Link>
+              ))}
             </div>
           ))}
         </div>

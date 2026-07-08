@@ -259,6 +259,18 @@ export const fetchChattyMemory = async (days = 7): Promise<MemoryData> => {
   return res.data;
 };
 
+export const fetchWikiPage = async (type: string, slug: string): Promise<WikiPage | null> => {
+  try {
+    const res = await chattyApi.get<WikiPage>(
+      `/api/chatty/memory/page/${encodeURIComponent(type)}/${encodeURIComponent(slug)}`,
+    );
+    return res.data;
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) return null;
+    throw error;
+  }
+};
+
 export const searchChattyMemory = async (q: string): Promise<string> => {
   const res = await chattyApi.get<{ results: string }>('/api/chatty/memory/search', { params: { q } });
   return res.data.results;

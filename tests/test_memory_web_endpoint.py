@@ -72,3 +72,34 @@ def test_memory_endpoint_empty_wiki_returns_empty_long_term(client, isolated_mem
     data = resp.json()
     assert data["long_term"] == []
     assert "No pages yet" in data["wiki_index"]
+
+
+def test_get_memory_page_returns_full_page(client, isolated_memory_dir):
+    long_term_dir = isolated_memory_dir / USER_ID / "long_term"
+    wiki_store = WikiStore(USER_ID, long_term_dir)
+    wiki_store.write_page(
+        type_="entity", slug="sarah", title="Sarah", summary="User's sister.",
+        body="- Lives in Austin, TX.", tags=["family"],
+    )
+
+    resp = client.get("/api/chatty/memory/page/entity/sarah", headers=auth_headers())
+
+    assert resp.status_code == 200
+    page = resp.json()
+    assert page["title"] == "Sarah"
+    assert page["type"] == "entity"
+    assert page["slug"] == "sarah"
+    assert page["summary"] == "User's sister."
+    assert page["tags"] == ["family"]
+    assert "Lives in Austin" in page["body"]
+    assert "updated" in page
+
+
+def test_get_memory_page_unknown_slug_404s(client, isolated_memory_dir):
+    resp = client.get("/api/chatty/memory/page/entity/nonexistent", headers=auth_headers())
+    assert resp.status_code == 404
+
+
+def test_get_memory_page_invalid_type_400s(client, isolated_memory_dir):
+    resp = client.get("/api/chatty/memory/page/bogus-type/sarah", headers=auth_headers())
+    assert resp.status_code == 400

@@ -4,10 +4,11 @@ interface PageHeaderProps {
   eyebrow: string;
   eyebrowColor?: string;
   title: string;
+  titleClassName?: string;
   actions?: ReactNode;
 }
 
-const PageHeader: React.FC<PageHeaderProps> = ({ eyebrow, eyebrowColor, title, actions }) => (
+const PageHeader: React.FC<PageHeaderProps> = ({ eyebrow, eyebrowColor, title, titleClassName, actions }) => (
   <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
     <div>
       <div
@@ -16,7 +17,7 @@ const PageHeader: React.FC<PageHeaderProps> = ({ eyebrow, eyebrowColor, title, a
       >
         <span className={eyebrowColor ? '' : 'text-alert-amber'}>{eyebrow}</span>
       </div>
-      <h1 className="font-display text-2xl">{title}</h1>
+      <h1 className={titleClassName || 'font-display text-2xl'}>{title}</h1>
     </div>
     {actions && <div className="flex items-center gap-2.5">{actions}</div>}
   </div>

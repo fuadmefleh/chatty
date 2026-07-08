@@ -1683,6 +1683,29 @@ async def get_memory(days: int = Query(default=7, ge=1, le=90)):
     return result
 
 
+@app.get("/api/chatty/memory/page/{type}/{slug}", dependencies=[Depends(require_api_key)])
+async def get_memory_page(type: str, slug: str):
+    from src.core.wiki_store import WikiStore
+
+    if type not in ("entity", "concept"):
+        raise HTTPException(status_code=400, detail="type must be 'entity' or 'concept'")
+
+    wiki_store = WikiStore(WEB_USER_ID, MEMORY_DIR / WEB_USER_ID / "long_term")
+    page = wiki_store.get_page(type, slug)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    return {
+        "title": page["title"],
+        "type": page["type"],
+        "slug": page["slug"],
+        "summary": page["summary"],
+        "tags": page["tags"],
+        "body": page["body"],
+        "updated": page["updated"],
+    }
+
+
 @app.get("/api/chatty/memory/search", dependencies=[Depends(require_api_key)])
 async def search_memory(q: str = Query(min_length=1)):
     from src.core.memory_tools import MemoryTools
