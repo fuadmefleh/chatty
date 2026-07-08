@@ -281,6 +281,86 @@ export const triggerMemoryConsolidation = async (): Promise<string> => {
   return res.data.result;
 };
 
+export interface WikiPageInput {
+  title: string;
+  summary: string;
+  body: string;
+  tags: string[];
+}
+
+export interface WikiPageCreateInput extends WikiPageInput {
+  type: 'entity' | 'concept';
+  slug: string;
+}
+
+export interface WikiBacklink {
+  title: string;
+  type: 'entity' | 'concept';
+  slug: string;
+  summary: string;
+}
+
+export interface WikiHealthRef {
+  type: 'entity' | 'concept';
+  slug: string;
+  title: string;
+}
+
+export interface WikiHealthContradiction {
+  page_a: WikiHealthRef;
+  page_b: WikiHealthRef;
+  description: string;
+}
+
+export interface WikiHealthCoverageGap {
+  suggested_title: string;
+  suggested_type: 'entity' | 'concept';
+  description: string;
+}
+
+export interface WikiHealth {
+  generated_at: string | null;
+  total_pages: number;
+  auto_fixed: { cross_references_added?: number; duplicates_merged?: number };
+  orphans: WikiHealthRef[];
+  contradictions: WikiHealthContradiction[];
+  coverage_gaps: WikiHealthCoverageGap[];
+}
+
+export const createWikiPage = async (input: WikiPageCreateInput): Promise<WikiPage> => {
+  const res = await chattyApi.post<WikiPage>('/api/chatty/memory/page', input);
+  return res.data;
+};
+
+export const updateWikiPage = async (type: string, slug: string, input: WikiPageInput): Promise<WikiPage> => {
+  const res = await chattyApi.put<WikiPage>(
+    `/api/chatty/memory/page/${encodeURIComponent(type)}/${encodeURIComponent(slug)}`,
+    input,
+  );
+  return res.data;
+};
+
+export const deleteWikiPage = async (type: string, slug: string): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/memory/page/${encodeURIComponent(type)}/${encodeURIComponent(slug)}`);
+};
+
+export const fetchWikiBacklinks = async (type: string, slug: string): Promise<WikiBacklink[]> => {
+  const res = await chattyApi.get<WikiBacklink[]>(
+    `/api/chatty/memory/page/${encodeURIComponent(type)}/${encodeURIComponent(slug)}/backlinks`,
+  );
+  return res.data;
+};
+
+export const fetchWikiHealth = async (): Promise<WikiHealth> => {
+  const res = await chattyApi.get<WikiHealth>('/api/chatty/memory/health');
+  return res.data;
+};
+
+export const triggerWikiLint = async (): Promise<string> => {
+  const res = await chattyApi.post<{ result: string }>('/api/chatty/memory/lint');
+  return res.data.result;
+};
+
 // ── Code Browser ─────────────────────────────────────────────────────────────
 export interface CodeTreeEntry {
   name: string;

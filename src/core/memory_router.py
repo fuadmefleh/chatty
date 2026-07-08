@@ -1,4 +1,4 @@
-"""LLM-facing memory surface: recall/remember/forget.
+"""LLM-facing memory surface: recall/remember/forget/browse_wiki.
 
 The only memory tools advertised to the LLM (both StagedReACTAgent and
 WebChatAgent) - fans out to WikiStore (src/core/wiki_store.py) and MemoryTools,
@@ -8,7 +8,13 @@ of several overlapping search tools to call. MemoryTools' other methods stay
 Python-callable (main.py's /forget command and chatty_web_server.py's
 /api/chatty/memory* endpoints call them directly) but are no longer part of
 the LLM tool schema.
+
+browse_wiki is the odd one out: unlike recall (search) and remember/forget
+(mutate), it's a zero-argument "show me the catalog" lookup - for when the
+LLM needs to know what's already tracked rather than search for something
+specific. It's cheap (index.md only, no page bodies, no LLM call).
 """
+import asyncio
 import json
 import logging
 from typing import Dict, List, Optional
@@ -20,7 +26,11 @@ logger = logging.getLogger('react')
 # Single source of truth for which tool names route to the memory router,
 # imported by both staged_react_agent.py and web_chat_agent.py so they can
 # never drift apart on which names dispatch where.
-MEMORY_TOOL_NAMES = {"recall", "remember", "forget"}
+MEMORY_TOOL_NAMES = {"recall", "remember", "forget", "browse_wiki"}
+
+# How many backlink titles to surface per page in recall()'s output - kept
+# small since this is a "related" hint, not a full traversal.
+RECALL_BACKLINKS_CAP = 5
 
 # Short-term grep results are unscored and can be long; cap how many
 # separate match groups get included so recall()'s output stays bounded
@@ -48,7 +58,7 @@ def _cap_short_term_excerpts(short_term_block: str, cap: int = SHORT_TERM_EXCERP
 
 class MemoryRouter:
     """Fuses index-first long-term wiki lookup and short-term grep into a
-    single recall() call, plus remember()/forget()."""
+    single recall() call, plus remember()/forget()/browse_wiki()."""
 
     def __init__(self, user_id: str):
         self.user_id = user_id
@@ -63,7 +73,7 @@ class MemoryRouter:
         one, if keyword scoring finds nothing), plus recent short-term
         conversation excerpts."""
         wiki_store = self.memory_tools._wiki_store
-        pages = wiki_store.list_pages()
+        pages = await asyncio.to_thread(wiki_store.list_pages)
 
         selected: List[Dict] = []
         if pages:
@@ -80,7 +90,15 @@ class MemoryRouter:
             for page in selected:
                 type_label = _TYPE_LABEL.get(page["type"], page["type"])
                 header = f"#### {page['title']} ({type_label}/{page['slug']})"
-                blocks.append(f"{header}\n{page['body']}")
+                block = f"{header}\n{page['body']}"
+                backlinks = wiki_store.get_backlinks(page["type"], page["slug"])
+                if backlinks:
+                    related = ", ".join(
+                        f"{b['title']} ({_TYPE_LABEL.get(b['type'], b['type'])}/{b['slug']})"
+                        for b in backlinks[:RECALL_BACKLINKS_CAP]
+                    )
+                    block += f"\n\n_Related: {related}_"
+                blocks.append(block)
             sections.append("### Long-Term Memory\n" + "\n\n".join(blocks))
 
         short_term_matches = self.memory_tools._grep_short_term(query, context_lines=1)
@@ -147,10 +165,22 @@ class MemoryRouter:
             result += "\n\nCall forget again with more specific wording to narrow it down to one."
         return result
 
+    async def browse_wiki(self) -> str:
+        """Return the full wiki page catalog (titles, types, summaries,
+        tags for every page) - distinct from recall(), which returns only
+        keyword-matched page bodies. Use when the LLM needs to know what
+        exists rather than search for something specific."""
+        wiki_store = self.memory_tools._wiki_store
+        index_text = wiki_store.read_index()
+        if "No pages yet." in index_text:
+            return "The long-term memory wiki is empty - nothing has been remembered yet."
+        return index_text
+
 
 def get_tool_definitions() -> List[Dict]:
-    """OpenAI function-calling schema for recall/remember/forget - defined
-    once here, imported by both staged_react_agent.py and web_chat_agent.py."""
+    """OpenAI function-calling schema for recall/remember/forget/browse_wiki -
+    defined once here, imported by both staged_react_agent.py and
+    web_chat_agent.py."""
     return [
         {
             "type": "function",
@@ -210,6 +240,23 @@ def get_tool_definitions() -> List[Dict]:
                         "query": {"type": "string", "description": "Text to search for among stored facts, e.g. 'sushi' or 'old job'"},
                     },
                     "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browse_wiki",
+                "description": (
+                    "List every page currently in long-term memory (titles, types, "
+                    "summaries, tags) as a catalog. Use this to see what topics/"
+                    "entities are already tracked, instead of recall() which "
+                    "requires guessing search terms."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
                 },
             },
         },

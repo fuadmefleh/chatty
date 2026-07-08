@@ -1,12 +1,16 @@
-import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { fetchChattyMemory, searchChattyMemory, triggerMemoryConsolidation } from '../chattyApi';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
+import { fetchChattyMemory, searchChattyMemory, triggerMemoryConsolidation, createWikiPage } from '../chattyApi';
 import type { MemoryData, ShortTermEntry, WikiPage } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Spinner from '../components/ui/Spinner';
 import EmptyState from '../components/ui/EmptyState';
 import MarkdownContent from '../components/ui/MarkdownContent';
 import Badge from '../components/ui/Badge';
+import Card from '../components/ui/Card';
+import WikiPageEditor from '../components/wiki/WikiPageEditor';
+import type { WikiPageEditorValue } from '../components/wiki/WikiPageEditor';
+import { useToast } from '../hooks/useToast';
 
 const ChevronIcon: React.FC<{ open: boolean }> = ({ open }) => (
   <svg
@@ -28,6 +32,11 @@ const WIKI_TYPE_LABELS: Record<WikiPage['type'], string> = {
 };
 
 const MemoryViewer: React.FC = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { showToast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const [data, setData] = useState<MemoryData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -42,6 +51,13 @@ const MemoryViewer: React.FC = () => {
 
   const [consolidating, setConsolidating] = useState(false);
   const [consolidateStatus, setConsolidateStatus] = useState('');
+
+  const initialTag = searchParams.get('tag');
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set(initialTag ? [initialTag] : []));
+
+  const createPageState = (location.state as { createPage?: { type: WikiPage['type']; title: string } } | null)?.createPage;
+  const [creating, setCreating] = useState(Boolean(createPageState));
+  const [creatingSaving, setCreatingSaving] = useState(false);
 
   const load = async (d: number) => {
     setLoading(true);
@@ -92,13 +108,48 @@ const MemoryViewer: React.FC = () => {
   };
 
   const shortTermEntries: ShortTermEntry[] = data?.short_term ?? [];
-  const wikiPages: WikiPage[] = data?.long_term ?? [];
+  const wikiPages: WikiPage[] = useMemo(() => data?.long_term ?? [], [data]);
   const entryCount = activeTab === 'short_term' ? shortTermEntries.length : wikiPages.length;
+
+  const allTags = useMemo(
+    () => Array.from(new Set(wikiPages.flatMap((p) => p.tags))).sort(),
+    [wikiPages],
+  );
+
+  const toggleTag = (tag: string) => {
+    setSelectedTags((prev) => {
+      const next = new Set(prev);
+      if (next.has(tag)) next.delete(tag);
+      else next.add(tag);
+      if (next.size === 1) setSearchParams({ tag: Array.from(next)[0] });
+      else setSearchParams({});
+      return next;
+    });
+  };
+
+  const filteredPages = selectedTags.size === 0
+    ? wikiPages
+    : wikiPages.filter((p) => Array.from(selectedTags).every((t) => p.tags.includes(t)));
 
   const pagesByType = (['entity', 'concept'] as const).map((type) => ({
     type,
-    pages: wikiPages.filter((p) => p.type === type),
+    pages: filteredPages.filter((p) => p.type === type),
   })).filter((group) => group.pages.length > 0);
+
+  const handleCreatePage = async (value: WikiPageEditorValue) => {
+    setCreatingSaving(true);
+    try {
+      const page = await createWikiPage(value);
+      showToast('Page created', 'signal');
+      setCreating(false);
+      navigate(`/memory/${page.type}/${page.slug}`);
+    } catch {
+      showToast('Failed to create page', 'red');
+      throw new Error('create failed');
+    } finally {
+      setCreatingSaving(false);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-[900px] px-4 py-6 md:px-6">
@@ -132,6 +183,19 @@ const MemoryViewer: React.FC = () => {
             >
               {consolidating ? 'Consolidating…' : 'Consolidate now'}
             </button>
+            <button
+              type="button"
+              onClick={() => { setActiveTab('long_term'); setCreating((v) => !v); }}
+              className="rounded-md border border-line bg-surface-dim px-3 py-1 text-sm font-semibold text-ink"
+            >
+              + New page
+            </button>
+            <Link
+              to="/memory/health"
+              className="rounded-md border border-line bg-surface-dim px-3 py-1 text-sm font-semibold text-ink"
+            >
+              Wiki Health
+            </Link>
             <label htmlFor="days-select">Last</label>
             <select
               id="days-select"
@@ -192,9 +256,41 @@ const MemoryViewer: React.FC = () => {
         ))}
       </div>
 
+      {activeTab === 'long_term' && creating && (
+        <Card className="mb-5">
+          <p className="mb-3 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted">New page</p>
+          <WikiPageEditor
+            mode="create"
+            initial={{
+              type: createPageState?.type ?? 'concept',
+              slug: '',
+              title: createPageState?.title ?? '',
+              summary: '',
+              tags: [],
+              body: '',
+            }}
+            onSave={handleCreatePage}
+            onCancel={() => setCreating(false)}
+            saving={creatingSaving}
+          />
+        </Card>
+      )}
+
+      {activeTab === 'long_term' && allTags.length > 0 && (
+        <div className="mb-5 flex flex-wrap items-center gap-1.5">
+          {allTags.map((tag) => (
+            <button key={tag} type="button" onClick={() => toggleTag(tag)}>
+              <Badge tone={selectedTags.has(tag) ? 'teal' : 'neutral'}>{tag}</Badge>
+            </button>
+          ))}
+        </div>
+      )}
+
       {error && <p className="mb-4 text-sm text-alert-red">{error}</p>}
       {loading ? (
         <Spinner label="Loading memory…" />
+      ) : activeTab === 'long_term' && selectedTags.size > 0 && filteredPages.length === 0 ? (
+        <EmptyState title="No pages match these tags" description="Clear a tag filter to see more pages." />
       ) : entryCount === 0 ? (
         <EmptyState
           title="No memory entries"

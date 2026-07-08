@@ -1,13 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { fetchWikiPage } from '../chattyApi';
-import type { WikiPage } from '../chattyApi';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { fetchWikiPage, fetchWikiBacklinks, updateWikiPage, deleteWikiPage } from '../chattyApi';
+import type { WikiPage, WikiBacklink } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Spinner from '../components/ui/Spinner';
 import EmptyState from '../components/ui/EmptyState';
 import Badge from '../components/ui/Badge';
+import Modal from '../components/ui/Modal';
 import MarkdownContent from '../components/ui/MarkdownContent';
+import WikiPageEditor from '../components/wiki/WikiPageEditor';
 import { slugifyHeading } from '../lib/slugifyHeading';
+import { useToast } from '../hooks/useToast';
 
 interface TocEntry {
   level: 2 | 3;
@@ -29,19 +32,60 @@ const parseToc = (body: string): TocEntry[] => {
 
 const WikiArticle: React.FC = () => {
   const { type, slug } = useParams<{ type: string; slug: string }>();
+  const navigate = useNavigate();
+  const { showToast } = useToast();
   const [page, setPage] = useState<WikiPage | null | undefined>(undefined);
   const [error, setError] = useState('');
+  const [backlinks, setBacklinks] = useState<WikiBacklink[] | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!type || !slug) return;
     setPage(undefined);
     setError('');
+    setBacklinks(null);
+    setEditing(false);
     fetchWikiPage(type, slug)
       .then(setPage)
       .catch(() => setError('Failed to load this page.'));
+    fetchWikiBacklinks(type, slug)
+      .then(setBacklinks)
+      .catch(() => setBacklinks([]));
   }, [type, slug]);
 
   const toc = useMemo(() => (page ? parseToc(page.body) : []), [page]);
+
+  const handleSave = async (value: { title: string; summary: string; tags: string[]; body: string }) => {
+    if (!type || !slug) return;
+    setSaving(true);
+    try {
+      const updated = await updateWikiPage(type, slug, value);
+      setPage(updated);
+      setEditing(false);
+      showToast('Page saved', 'signal');
+    } catch {
+      showToast('Failed to save page', 'red');
+      throw new Error('save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!type || !slug) return;
+    setDeleting(true);
+    try {
+      await deleteWikiPage(type, slug);
+      showToast('Page deleted', 'signal');
+      navigate('/memory');
+    } catch {
+      showToast('Failed to delete page', 'red');
+      setDeleting(false);
+    }
+  };
 
   if (page === undefined) {
     if (error) {
@@ -82,12 +126,39 @@ const WikiArticle: React.FC = () => {
       </Link>
 
       <div className="mb-6 border-b border-line pb-5">
-        <PageHeader eyebrow="Assistant / Memory" eyebrowColor="var(--signal)" title={page.title} titleClassName="font-serif text-4xl" />
+        <PageHeader
+          eyebrow="Assistant / Memory"
+          eyebrowColor="var(--signal)"
+          title={page.title}
+          titleClassName="font-serif text-4xl"
+          actions={
+            !editing && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  className="rounded-md border border-line px-3 py-1 text-xs font-semibold text-ink-dim"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingDelete(true)}
+                  className="rounded-md border border-line px-3 py-1 text-xs font-semibold text-alert-red"
+                >
+                  Delete
+                </button>
+              </div>
+            )
+          }
+        />
         {page.summary && <p className="-mt-5 mb-4 italic text-muted">{page.summary}</p>}
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone="teal">{page.type}</Badge>
           {page.tags.map((tag) => (
-            <Badge key={tag} tone="neutral">{tag}</Badge>
+            <Link key={tag} to={`/memory?tag=${encodeURIComponent(tag)}`}>
+              <Badge tone="neutral">{tag}</Badge>
+            </Link>
           ))}
           <span className="ml-auto font-mono text-[11px] text-muted">
             Last updated: {page.updated}
@@ -95,28 +166,81 @@ const WikiArticle: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex flex-col gap-8 md:flex-row md:items-start">
-        <div className="min-w-0 flex-1">
-          <MarkdownContent content={page.body} anchorHeadings />
-        </div>
+      {editing ? (
+        <WikiPageEditor
+          mode="edit"
+          initial={{ type: page.type, slug: page.slug, title: page.title, summary: page.summary, tags: page.tags, body: page.body }}
+          onSave={handleSave}
+          onCancel={() => setEditing(false)}
+          saving={saving}
+        />
+      ) : (
+        <div className="flex flex-col gap-8 md:flex-row md:items-start">
+          <div className="min-w-0 flex-1">
+            <MarkdownContent content={page.body} anchorHeadings />
+          </div>
 
-        {toc.length >= 2 && (
-          <aside className="w-full shrink-0 rounded-lg border border-line bg-surface-dim p-4 md:w-64">
-            <p className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted">
-              Contents
-            </p>
-            <ol className="flex flex-col gap-1.5 text-sm">
-              {toc.map((entry, i) => (
-                <li key={entry.id} className={entry.level === 3 ? 'ml-3' : ''}>
-                  <a href={`#${entry.id}`} className="text-signal hover:underline">
-                    {i + 1}. {entry.text}
-                  </a>
-                </li>
-              ))}
-            </ol>
-          </aside>
-        )}
-      </div>
+          <div className="flex w-full shrink-0 flex-col gap-4 md:w-64">
+            {toc.length >= 2 && (
+              <aside className="rounded-lg border border-line bg-surface-dim p-4">
+                <p className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted">
+                  Contents
+                </p>
+                <ol className="flex flex-col gap-1.5 text-sm">
+                  {toc.map((entry, i) => (
+                    <li key={entry.id} className={entry.level === 3 ? 'ml-3' : ''}>
+                      <a href={`#${entry.id}`} className="text-signal hover:underline">
+                        {i + 1}. {entry.text}
+                      </a>
+                    </li>
+                  ))}
+                </ol>
+              </aside>
+            )}
+
+            <aside className="rounded-lg border border-line bg-surface-dim p-4">
+              <p className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted">
+                What links here
+              </p>
+              {backlinks === null ? (
+                <Spinner label="Loading…" />
+              ) : backlinks.length === 0 ? (
+                <p className="text-sm text-muted">No pages link here yet.</p>
+              ) : (
+                <ul className="flex flex-col gap-1.5 text-sm">
+                  {backlinks.map((b) => (
+                    <li key={`${b.type}/${b.slug}`}>
+                      <Link to={`/memory/${b.type}/${b.slug}`} className="text-signal hover:underline">
+                        {b.title}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </aside>
+          </div>
+        </div>
+      )}
+
+      <Modal open={pendingDelete} onClose={() => setPendingDelete(false)} title="Delete this page?">
+        <p className="mb-4 text-sm text-ink-dim">This will permanently remove "{page.title}" from long-term memory.</p>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={() => setPendingDelete(false)}
+            disabled={deleting}
+            className="h-9 rounded-lg border border-line px-4 text-sm font-medium text-ink-dim"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={confirmDelete}
+            disabled={deleting}
+            className="h-9 rounded-lg bg-alert-red px-4 text-sm font-semibold text-white disabled:opacity-60"
+          >
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 };

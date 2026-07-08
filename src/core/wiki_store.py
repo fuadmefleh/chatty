@@ -106,7 +106,10 @@ class WikiStore:
         self.pages_dir = self.wiki_dir / "pages"
         self.index_path = self.wiki_dir / "index.md"
         self.log_path = self.wiki_dir / "log.md"
+        self.health_path = self.wiki_dir / "health.json"
         self._lock_path = self.wiki_dir / ".wiki.lock"
+        self._pages_cache: Optional[List[Dict]] = None
+        self._pages_cache_fingerprint: Optional[Tuple] = None
 
         self.wiki_dir.mkdir(parents=True, exist_ok=True)
         for type_dir in _TYPE_DIRS.values():
@@ -168,10 +171,35 @@ class WikiStore:
 
     # -- Pages -------------------------------------------------------------
 
-    def list_pages(self, type: Optional[str] = None) -> List[Dict]:
+    def _scan_dir_fingerprint(self, dir_path: Path) -> Tuple[Tuple[str, int], ...]:
+        """(filename, mtime_ns) for every *.md file in dir_path, sorted by
+        name. A cheap stat-only directory snapshot used to detect writes
+        made by *any* WikiStore instance/process against this same
+        on-disk directory, not just this instance's own writes."""
+        entries = []
+        try:
+            with os.scandir(dir_path) as it:
+                for entry in it:
+                    if not entry.name.endswith(".md"):
+                        continue
+                    try:
+                        entries.append((entry.name, entry.stat().st_mtime_ns))
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        entries.sort()
+        return tuple(entries)
+
+    def _pages_fingerprint(self) -> Tuple:
+        return tuple(
+            (t, self._scan_dir_fingerprint(self.pages_dir / _TYPE_DIRS[t]))
+            for t in PAGE_TYPES
+        )
+
+    def _list_pages_uncached(self) -> List[Dict]:
         pages = []
-        types = [type] if type else list(PAGE_TYPES)
-        for t in types:
+        for t in PAGE_TYPES:
             dir_path = self.pages_dir / _TYPE_DIRS[t]
             if not dir_path.exists():
                 continue
@@ -180,6 +208,21 @@ class WikiStore:
                 if page:
                     pages.append(page)
         return pages
+
+    def list_pages(self, type: Optional[str] = None) -> List[Dict]:
+        """All pages (optionally filtered by type), backed by an in-memory
+        cache keyed on a stat-only fingerprint of the pages directories -
+        re-globs and re-parses page bodies only when a file was actually
+        added/removed/rewritten since the last call, by this instance or
+        any other process sharing the same on-disk wiki."""
+        fingerprint = self._pages_fingerprint()
+        if self._pages_cache is None or fingerprint != self._pages_cache_fingerprint:
+            self._pages_cache = self._list_pages_uncached()
+            self._pages_cache_fingerprint = fingerprint
+        pages = self._pages_cache
+        if type:
+            pages = [p for p in pages if p["type"] == type]
+        return list(pages)
 
     def get_page(self, type_: str, slug: str) -> Optional[Dict]:
         return self._read_page_file(self._page_path(type_, slug))
@@ -321,6 +364,24 @@ class WikiStore:
         with locked(self._lock_path):
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(f"## [{_now()}] {op} | {message}\n")
+
+    def read_health(self) -> Optional[Dict]:
+        """Return the last-persisted lint run's structured findings (see
+        MemoryManager.lint_wiki()), or None if lint has never run for this
+        user yet."""
+        if not self.health_path.exists():
+            return None
+        try:
+            return json.loads(self.health_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            memory_logger.error(f"Error reading wiki health.json for {self.user_id}: {e}")
+            return None
+
+    def write_health(self, data: Dict) -> None:
+        """Atomically overwrite the health sidecar with the latest lint
+        run's findings. No lock needed beyond the atomic write itself -
+        health.json is a snapshot, never read-modify-written."""
+        self._atomic_write(self.health_path, json.dumps(data, indent=2))
 
     def rebuild_index(self) -> None:
         with locked(self._lock_path):
@@ -474,21 +535,51 @@ class WikiStore:
                     fixed += 1
         return fixed
 
-    def find_orphan_pages(self) -> List[Dict]:
-        """Pages with zero inbound links from other pages' bodies (index.md
-        doesn't count - every page is trivially listed there)."""
-        pages = self.list_pages()
-        linked_targets = set()
+    def _build_link_index(self, pages: Optional[List[Dict]] = None) -> Dict[Tuple[str, str], List[Tuple[str, str]]]:
+        """Map each target (type, slug) page to the list of source (type,
+        slug) pages whose body links to it. Shared by find_orphan_pages
+        and get_backlinks so both parse every page's links exactly once
+        per call rather than duplicating the same regex walk."""
+        pages = pages if pages is not None else self.list_pages()
+        index: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
         for page in pages:
+            src_key = (page["type"], page["slug"])
             for match in _WIKI_LINK_RE.finditer(page["body"]):
                 target_match = _PAGE_LINK_TARGET_RE.search(match.group(1))
                 if not target_match:
                     continue
                 type_dir, slug = target_match.group(1), target_match.group(2)
                 type_ = "entity" if type_dir == "entities" else "concept"
-                if (type_, slug) != (page["type"], page["slug"]):
-                    linked_targets.add((type_, slug))
+                target_key = (type_, slug)
+                if target_key != src_key:
+                    index.setdefault(target_key, []).append(src_key)
+        return index
+
+    def find_orphan_pages(self) -> List[Dict]:
+        """Pages with zero inbound links from other pages' bodies (index.md
+        doesn't count - every page is trivially listed there)."""
+        pages = self.list_pages()
+        linked_targets = set(self._build_link_index(pages).keys())
         return [p for p in pages if (p["type"], p["slug"]) not in linked_targets]
+
+    def get_backlinks(self, type_: str, slug: str) -> List[Dict]:
+        """Pages whose body links to (type_, slug) - the 'What links here'
+        list. Recomputed on demand like the rest of this class (no
+        persisted link index); fine at this wiki's expected per-user
+        scale (dozens to low hundreds of pages)."""
+        pages = self.list_pages()
+        by_key = {(p["type"], p["slug"]): p for p in pages}
+        sources = self._build_link_index(pages).get((type_, slug), [])
+        seen = set()
+        result = []
+        for key in sources:
+            if key in seen:
+                continue
+            seen.add(key)
+            if key in by_key:
+                result.append(by_key[key])
+        result.sort(key=lambda p: p["title"].lower())
+        return result
 
     # -- Migration from the old flat facts.json format -----------------------
 

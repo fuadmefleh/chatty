@@ -320,3 +320,89 @@ async def test_lint_wiki_flags_orphans_contradictions_and_gaps_without_applying(
     assert "Contradiction flagged" in log_text
     assert "Coverage gap flagged" in log_text
     assert "Orphan page flagged" in log_text
+
+
+@pytest.mark.asyncio
+async def test_lint_wiki_persists_health_json(memory_dir, monkeypatch):
+    mgr = MemoryManager(USER_ID)
+    mgr._wiki_store.write_page(type_="concept", slug="topic-a", title="Topic A", summary="s", body="- claim one")
+    mgr._wiki_store.write_page(type_="concept", slug="topic-b", title="Topic B", summary="s", body="- claim two")
+
+    stub_response = json.dumps({
+        "contradictions": [{"page_a": "concept/topic-a", "page_b": "concept/topic-b", "description": "conflict"}],
+        "coverage_gaps": [{"suggested_title": "New Topic", "suggested_type": "concept", "description": "gap"}],
+    })
+    monkeypatch.setattr("src.core.memory.get_llm_provider", lambda: StubLLM(stub_response))
+
+    assert mgr._wiki_store.read_health() is None
+
+    await mgr.lint_wiki()
+
+    health = mgr._wiki_store.read_health()
+    assert health is not None
+    assert health["generated_at"]
+    assert health["total_pages"] == 2
+    assert len(health["orphans"]) == 2
+    assert {o["slug"] for o in health["orphans"]} == {"topic-a", "topic-b"}
+    assert health["contradictions"] == [{
+        "page_a": {"type": "concept", "slug": "topic-a", "title": "Topic A"},
+        "page_b": {"type": "concept", "slug": "topic-b", "title": "Topic B"},
+        "description": "conflict",
+    }]
+    assert health["coverage_gaps"] == [
+        {"suggested_title": "New Topic", "suggested_type": "concept", "description": "gap"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_long_term_memory_reuses_cache(memory_dir, monkeypatch):
+    mgr = MemoryManager(USER_ID)
+    await mgr.add_long_term_memory("important_facts", "User's name is Sam.")
+    first = await mgr.get_long_term_memory()
+
+    read_calls = []
+    original_read_text = Path.read_text
+
+    def spy_read_text(self, *args, **kwargs):
+        read_calls.append(self)
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", spy_read_text)
+
+    second = await mgr.get_long_term_memory()
+    assert second == first
+    assert read_calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_recent_memory_skips_reread_of_unchanged_files(memory_dir, monkeypatch):
+    mgr = MemoryManager(USER_ID)
+    await mgr.add_interaction("hello", "hi")
+    first = await mgr.get_recent_memory(days=7)
+
+    import aiofiles
+    open_calls = []
+    original_open = aiofiles.open
+
+    def spy_open(*args, **kwargs):
+        open_calls.append(args)
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(aiofiles, "open", spy_open)
+
+    second = await mgr.get_recent_memory(days=7)
+    assert second == first
+    assert open_calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_recent_memory_rereads_after_file_changes(memory_dir):
+    mgr = MemoryManager(USER_ID)
+    await mgr.add_interaction("first message", "reply one")
+    first = await mgr.get_recent_memory(days=7)
+    assert "first message" in first
+
+    await mgr.add_interaction("second message", "reply two")
+    second = await mgr.get_recent_memory(days=7)
+    assert "second message" in second
+    assert "first message" in second

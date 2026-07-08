@@ -1,6 +1,6 @@
-"""Tests for MemoryRouter (src/core/memory_router.py) - the 3-tool
-recall/remember/forget LLM-facing memory surface, backed by the wiki store
-(src/core/wiki_store.py). Index-first: no embeddings involved."""
+"""Tests for MemoryRouter (src/core/memory_router.py) - the 4-tool
+recall/remember/forget/browse_wiki LLM-facing memory surface, backed by the
+wiki store (src/core/wiki_store.py). Index-first: no embeddings involved."""
 import sys
 from pathlib import Path
 
@@ -129,12 +129,47 @@ async def test_forget_no_match(memory_dir):
     assert "No matching" in result
 
 
-def test_get_tool_definitions_returns_exactly_three_schemas():
+@pytest.mark.asyncio
+async def test_browse_wiki_returns_index_catalog(memory_dir):
+    router = MemoryRouter(USER_ID)
+    await router.remember("Plays guitar.", category="hobbies")
+
+    result = await router.browse_wiki()
+
+    assert "Hobbies" in result
+
+
+@pytest.mark.asyncio
+async def test_browse_wiki_empty_wiki_message(memory_dir):
+    router = MemoryRouter(USER_ID)
+
+    result = await router.browse_wiki()
+
+    assert "empty" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_recall_includes_backlinks_when_present(memory_dir):
+    router = MemoryRouter(USER_ID)
+    wiki_store = router.memory_tools._wiki_store
+    wiki_store.write_page(type_="entity", slug="sarah", title="Sarah", summary="User's sister.", body="- Lives in Austin.")
+    wiki_store.write_page(
+        type_="concept", slug="family-trip", title="Family Trip", summary="A recent trip.",
+        body="- Went hiking with [Sarah](pages/entities/sarah.md).",
+    )
+
+    result = await router.recall("Sarah")
+
+    assert "_Related: Family Trip" in result
+
+
+def test_get_tool_definitions_returns_exactly_four_schemas():
     tool_defs = get_tool_definitions()
     names = {t["function"]["name"] for t in tool_defs}
-    assert names == {"recall", "remember", "forget"}
+    assert names == {"recall", "remember", "forget", "browse_wiki"}
 
     by_name = {t["function"]["name"]: t for t in tool_defs}
     assert by_name["recall"]["function"]["parameters"]["required"] == ["query"]
     assert by_name["remember"]["function"]["parameters"]["required"] == ["content"]
     assert by_name["forget"]["function"]["parameters"]["required"] == ["query"]
+    assert by_name["browse_wiki"]["function"]["parameters"]["required"] == []

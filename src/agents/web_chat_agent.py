@@ -66,7 +66,7 @@ class WebChatAgent:
             return json.dumps({"error": str(e)})
 
     async def _execute_memory_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
-        """Execute a recall/remember/forget memory tool call."""
+        """Execute a recall/remember/forget/browse_wiki memory tool call."""
         try:
             if tool_name == "recall":
                 return await self.memory_router.recall(**arguments)
@@ -74,6 +74,8 @@ class WebChatAgent:
                 return await self.memory_router.remember(**arguments)
             elif tool_name == "forget":
                 return await self.memory_router.forget(**arguments)
+            elif tool_name == "browse_wiki":
+                return await self.memory_router.browse_wiki()
             return json.dumps({"error": f"Unknown memory tool: {tool_name}"})
         except Exception as e:
             return json.dumps({"error": str(e)})

@@ -1,4 +1,5 @@
 """Memory management system using daily markdown files."""
+import asyncio
 import json
 import aiofiles
 from datetime import datetime
@@ -326,6 +327,7 @@ class MemoryManager:
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
 
         self._wiki_store = WikiStore(user_id, self.long_term_dir)
+        self._recent_memory_cache: Dict[Path, Tuple[int, str]] = {}  # path -> (mtime_ns, content)
 
         memory_logger.info(f"Initialized MemoryManager for user {user_id}")
     
@@ -398,10 +400,16 @@ class MemoryManager:
         memory_parts = []
         for file_path in recent_files:
             try:
-                async with aiofiles.open(file_path, 'r') as f:
-                    content = await f.read()
-                    memory_parts.append(content)
-                    memory_logger.debug(f"Loaded memory file {file_path.name}: {len(content)} chars")
+                mtime_ns = file_path.stat().st_mtime_ns
+                cached = self._recent_memory_cache.get(file_path)
+                if cached is not None and cached[0] == mtime_ns:
+                    content = cached[1]
+                else:
+                    async with aiofiles.open(file_path, 'r') as f:
+                        content = await f.read()
+                    self._recent_memory_cache[file_path] = (mtime_ns, content)
+                memory_parts.append(content)
+                memory_logger.debug(f"Loaded memory file {file_path.name}: {len(content)} chars")
             except Exception as e:
                 memory_logger.error(f"Error reading memory file {file_path}: {e}")
         
@@ -468,7 +476,7 @@ class MemoryManager:
         Returns:
             Formatted long-term memory string
         """
-        pages = self._wiki_store.list_pages()
+        pages = await asyncio.to_thread(self._wiki_store.list_pages)
 
         if not pages:
             return "No long-term memories yet."
@@ -798,6 +806,15 @@ For each page listed above (both existing and new), produce the FULL new body - 
         auto_fixed = merged_count + linked_count
         flagged = len(orphans) + len(contradictions) + len(coverage_gaps)
 
+        wiki_store.write_health({
+            "generated_at": datetime.now().isoformat(),
+            "total_pages": total_pages,
+            "auto_fixed": {"cross_references_added": linked_count, "duplicates_merged": merged_count},
+            "orphans": [{"type": p["type"], "slug": p["slug"], "title": p["title"]} for p in orphans],
+            "contradictions": contradictions,
+            "coverage_gaps": coverage_gaps,
+        })
+
         fixed_parts = []
         if linked_count:
             fixed_parts.append(f"{linked_count} cross-reference(s) added")
@@ -858,10 +875,16 @@ If there are none of either, respond with empty lists.
             memory_logger.error(f"Error in wiki lint LLM checks for {self.user_id}: {e}")
             return [], []
 
-        contradictions = data.get("contradictions") or []
+        raw_contradictions = data.get("contradictions") or []
         coverage_gaps = data.get("coverage_gaps") or []
 
-        for c in contradictions:
+        contradictions = []
+        for c in raw_contradictions:
+            contradictions.append({
+                "page_a": self._resolve_ref(c.get("page_a", "")),
+                "page_b": self._resolve_ref(c.get("page_b", "")),
+                "description": c.get("description", ""),
+            })
             wiki_store.append_log(
                 "lint",
                 f"Contradiction flagged: {c.get('page_a', '?')} vs {c.get('page_b', '?')} — {c.get('description', '')}",
@@ -873,5 +896,15 @@ If there are none of either, respond with empty lists.
             )
 
         return contradictions, coverage_gaps
+
+    def _resolve_ref(self, ref: str) -> Dict:
+        """'entities/acme-corp' or 'entity/acme-corp' -> {type, slug, title}
+        (title falls back to slug if the referenced page can't be found -
+        the LLM's ref might be slightly off, and this stays link-able
+        regardless)."""
+        type_dir, _, slug = str(ref).partition("/")
+        type_ = "entity" if type_dir in ("entity", "entities") else "concept"
+        page = self._wiki_store.get_page(type_, slug)
+        return {"type": type_, "slug": slug, "title": page["title"] if page else slug}
 
 

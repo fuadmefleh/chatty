@@ -1649,6 +1649,34 @@ async def delete_webcam_suggestion(suggestion_id: str):
 
 
 # ── Memory viewer ─────────────────────────────────────────────────────────────
+class WikiPageCreate(BaseModel):
+    type: str
+    slug: str
+    title: str
+    summary: str = ""
+    body: str = ""
+    tags: List[str] = []
+
+
+class WikiPageUpdate(BaseModel):
+    title: str
+    summary: str = ""
+    body: str = ""
+    tags: List[str] = []
+
+
+def _wiki_page_response(page: dict) -> dict:
+    return {
+        "title": page["title"],
+        "type": page["type"],
+        "slug": page["slug"],
+        "summary": page["summary"],
+        "tags": page["tags"],
+        "body": page["body"],
+        "updated": page["updated"],
+    }
+
+
 @app.get("/api/chatty/memory", dependencies=[Depends(require_api_key)])
 async def get_memory(days: int = Query(default=7, ge=1, le=90)):
     from src.core.wiki_store import WikiStore
@@ -1695,15 +1723,106 @@ async def get_memory_page(type: str, slug: str):
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
 
-    return {
-        "title": page["title"],
-        "type": page["type"],
-        "slug": page["slug"],
-        "summary": page["summary"],
-        "tags": page["tags"],
-        "body": page["body"],
-        "updated": page["updated"],
-    }
+    return _wiki_page_response(page)
+
+
+@app.post("/api/chatty/memory/page", dependencies=[Depends(require_api_key)], status_code=201)
+async def create_memory_page(body: WikiPageCreate):
+    from src.core.wiki_store import WikiStore
+
+    if body.type not in ("entity", "concept"):
+        raise HTTPException(status_code=400, detail="type must be 'entity' or 'concept'")
+
+    wiki_store = WikiStore(WEB_USER_ID, MEMORY_DIR / WEB_USER_ID / "long_term")
+    if wiki_store.get_page(body.type, body.slug) is not None:
+        raise HTTPException(status_code=409, detail="Page already exists")
+
+    page = wiki_store.write_page(
+        type_=body.type, slug=body.slug, title=body.title,
+        summary=body.summary, body=body.body, tags=body.tags,
+    )
+    wiki_store.append_log("manual-edit", f"{page['title']} — created via dashboard")
+    return _wiki_page_response(page)
+
+
+@app.put("/api/chatty/memory/page/{type}/{slug}", dependencies=[Depends(require_api_key)])
+async def update_memory_page(type: str, slug: str, body: WikiPageUpdate):
+    from src.core.wiki_store import WikiStore
+
+    if type not in ("entity", "concept"):
+        raise HTTPException(status_code=400, detail="type must be 'entity' or 'concept'")
+
+    wiki_store = WikiStore(WEB_USER_ID, MEMORY_DIR / WEB_USER_ID / "long_term")
+    if wiki_store.get_page(type, slug) is None:
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    page = wiki_store.write_page(
+        type_=type, slug=slug, title=body.title,
+        summary=body.summary, body=body.body, tags=body.tags,
+    )
+    wiki_store.append_log("manual-edit", f"{page['title']} — edited via dashboard")
+    return _wiki_page_response(page)
+
+
+@app.delete("/api/chatty/memory/page/{type}/{slug}", dependencies=[Depends(require_api_key)])
+async def delete_memory_page(type: str, slug: str):
+    from src.core.wiki_store import WikiStore
+
+    if type not in ("entity", "concept"):
+        raise HTTPException(status_code=400, detail="type must be 'entity' or 'concept'")
+
+    wiki_store = WikiStore(WEB_USER_ID, MEMORY_DIR / WEB_USER_ID / "long_term")
+    page = wiki_store.delete_page(type, slug)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    wiki_store.append_log("manual-edit", f"{page['title']} — deleted via dashboard")
+    return {"deleted": True}
+
+
+@app.get("/api/chatty/memory/page/{type}/{slug}/backlinks", dependencies=[Depends(require_api_key)])
+async def get_memory_page_backlinks(type: str, slug: str):
+    from src.core.wiki_store import WikiStore
+
+    if type not in ("entity", "concept"):
+        raise HTTPException(status_code=400, detail="type must be 'entity' or 'concept'")
+
+    wiki_store = WikiStore(WEB_USER_ID, MEMORY_DIR / WEB_USER_ID / "long_term")
+    if wiki_store.get_page(type, slug) is None:
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    backlinks = wiki_store.get_backlinks(type, slug)
+    return [
+        {"title": p["title"], "type": p["type"], "slug": p["slug"], "summary": p["summary"]}
+        for p in backlinks
+    ]
+
+
+@app.get("/api/chatty/memory/health", dependencies=[Depends(require_api_key)])
+async def get_memory_health():
+    from src.core.wiki_store import WikiStore
+
+    wiki_store = WikiStore(WEB_USER_ID, MEMORY_DIR / WEB_USER_ID / "long_term")
+    health = wiki_store.read_health()
+    if health is None:
+        return {
+            "generated_at": None,
+            "total_pages": len(wiki_store.list_pages()),
+            "auto_fixed": {},
+            "orphans": [],
+            "contradictions": [],
+            "coverage_gaps": [],
+        }
+    return health
+
+
+@app.post("/api/chatty/memory/lint", dependencies=[Depends(require_api_key)])
+async def lint_memory():
+    from src.core.memory import MemoryManager
+
+    memory_manager = MemoryManager(WEB_USER_ID)
+    result = await memory_manager.lint_wiki()
+    return {"result": result}
 
 
 @app.get("/api/chatty/memory/search", dependencies=[Depends(require_api_key)])

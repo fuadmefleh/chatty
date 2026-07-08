@@ -250,6 +250,61 @@ def test_find_orphan_pages(long_term_dir):
     assert "isolated" in orphan_slugs
 
 
+def test_get_backlinks_returns_pages_linking_to_target(long_term_dir):
+    store = WikiStore(USER_ID, long_term_dir)
+    store.write_page(type_="entity", slug="sarah", title="Sarah", summary="s", body="- Sister.")
+    store.write_page(type_="concept", slug="family-trip", title="Family Trip", summary="s",
+                      body="- Went hiking with [Sarah](pages/entities/sarah.md).")
+
+    backlinks = store.get_backlinks("entity", "sarah")
+
+    assert len(backlinks) == 1
+    assert backlinks[0]["slug"] == "family-trip"
+    assert backlinks[0]["type"] == "concept"
+
+
+def test_get_backlinks_empty_when_no_inbound_links(long_term_dir):
+    store = WikiStore(USER_ID, long_term_dir)
+    store.write_page(type_="concept", slug="isolated", title="Isolated Topic", summary="s", body="- Nothing links here.")
+
+    assert store.get_backlinks("concept", "isolated") == []
+
+
+def test_get_backlinks_deduplicates_multiple_links_from_same_page(long_term_dir):
+    store = WikiStore(USER_ID, long_term_dir)
+    store.write_page(type_="entity", slug="sarah", title="Sarah", summary="s", body="- Sister.")
+    store.write_page(
+        type_="concept", slug="family-trip", title="Family Trip", summary="s",
+        body="- Went hiking with [Sarah](pages/entities/sarah.md).\n- Called [Sarah](pages/entities/sarah.md) after.",
+    )
+
+    backlinks = store.get_backlinks("entity", "sarah")
+
+    assert len(backlinks) == 1
+    assert backlinks[0]["slug"] == "family-trip"
+
+
+def test_read_health_returns_none_when_never_written(long_term_dir):
+    store = WikiStore(USER_ID, long_term_dir)
+    assert store.read_health() is None
+
+
+def test_write_health_then_read_health_roundtrips(long_term_dir):
+    store = WikiStore(USER_ID, long_term_dir)
+    data = {
+        "generated_at": "2026-01-01T00:00:00",
+        "total_pages": 3,
+        "auto_fixed": {"cross_references_added": 1, "duplicates_merged": 0},
+        "orphans": [{"type": "concept", "slug": "isolated", "title": "Isolated Topic"}],
+        "contradictions": [],
+        "coverage_gaps": [],
+    }
+
+    store.write_health(data)
+
+    assert store.read_health() == data
+
+
 def test_migration_from_legacy_facts_json(long_term_dir):
     long_term_dir.mkdir(parents=True)
     facts = [
@@ -318,3 +373,61 @@ def test_write_page_uses_file_lock(long_term_dir, monkeypatch):
     store.write_page(type_="concept", slug="budgeting", title="Budgeting", summary="s", body="- a")
 
     assert any(str(p).endswith(".wiki.lock") for p in calls)
+
+
+def test_list_pages_uses_cache_when_unchanged(long_term_dir, monkeypatch):
+    store = WikiStore(USER_ID, long_term_dir)
+    store.write_page(type_="concept", slug="a", title="A", summary="s", body="- x")
+    store.write_page(type_="concept", slug="b", title="B", summary="s", body="- y")
+
+    first = store.list_pages()
+    assert len(first) == 2
+
+    read_calls = []
+    original_read_text = Path.read_text
+
+    def spy_read_text(self, *args, **kwargs):
+        read_calls.append(self)
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", spy_read_text)
+
+    second = store.list_pages()
+    assert second == first
+    assert read_calls == []
+
+
+def test_list_pages_type_filter_reuses_cache(long_term_dir, monkeypatch):
+    store = WikiStore(USER_ID, long_term_dir)
+    store.write_page(type_="entity", slug="sarah", title="Sarah", summary="s", body="- a")
+    store.write_page(type_="concept", slug="budgeting", title="Budgeting", summary="s", body="- a")
+    store.list_pages()  # populate cache
+
+    read_calls = []
+    original_read_text = Path.read_text
+
+    def spy_read_text(self, *args, **kwargs):
+        read_calls.append(self)
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", spy_read_text)
+
+    assert [p["slug"] for p in store.list_pages(type="concept")] == ["budgeting"]
+    assert read_calls == []
+
+
+def test_list_pages_detects_write_from_a_different_wikistore_instance(long_term_dir):
+    """Proves cache invalidation is a stat-based diff against disk state,
+    not a self-tracked dirty flag - store2 never writes anything itself
+    but must still notice store1's writes on its next list_pages() call."""
+    store1 = WikiStore(USER_ID, long_term_dir)
+    store2 = WikiStore(USER_ID, long_term_dir)
+
+    store1.write_page(type_="concept", slug="a", title="A", summary="s", body="- x")
+    assert {p["slug"] for p in store2.list_pages()} == {"a"}
+
+    store1.write_page(type_="concept", slug="b", title="B", summary="s", body="- y")
+    assert {p["slug"] for p in store2.list_pages()} == {"a", "b"}
+
+    store1.delete_page("concept", "a")
+    assert {p["slug"] for p in store2.list_pages()} == {"b"}

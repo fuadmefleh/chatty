@@ -1,6 +1,7 @@
 """Tests for GET /api/chatty/memory - confirms the wiki's structure (pages
 with type/tags/summary, plus the index/log) is actually exposed to the web
 dashboard, not squashed into the old flat {date, content, filename} shape."""
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -103,3 +104,156 @@ def test_get_memory_page_unknown_slug_404s(client, isolated_memory_dir):
 def test_get_memory_page_invalid_type_400s(client, isolated_memory_dir):
     resp = client.get("/api/chatty/memory/page/bogus-type/sarah", headers=auth_headers())
     assert resp.status_code == 400
+
+
+def test_create_memory_page_endpoint(client, isolated_memory_dir):
+    resp = client.post(
+        "/api/chatty/memory/page",
+        headers=auth_headers(),
+        json={"type": "concept", "slug": "budgeting", "title": "Budgeting", "summary": "s", "body": "- a", "tags": ["money"]},
+    )
+
+    assert resp.status_code == 201
+    page = resp.json()
+    assert page["title"] == "Budgeting"
+    assert page["slug"] == "budgeting"
+    assert page["tags"] == ["money"]
+
+    long_term_dir = isolated_memory_dir / USER_ID / "long_term"
+    wiki_store = WikiStore(USER_ID, long_term_dir)
+    assert wiki_store.get_page("concept", "budgeting") is not None
+    assert "created via dashboard" in wiki_store.read_log()
+
+
+def test_create_memory_page_duplicate_slug_409s(client, isolated_memory_dir):
+    long_term_dir = isolated_memory_dir / USER_ID / "long_term"
+    WikiStore(USER_ID, long_term_dir).write_page(type_="concept", slug="budgeting", title="Budgeting", summary="s", body="- a")
+
+    resp = client.post(
+        "/api/chatty/memory/page",
+        headers=auth_headers(),
+        json={"type": "concept", "slug": "budgeting", "title": "Budgeting", "summary": "s", "body": "- a"},
+    )
+    assert resp.status_code == 409
+
+
+def test_create_memory_page_invalid_type_400s(client, isolated_memory_dir):
+    resp = client.post(
+        "/api/chatty/memory/page",
+        headers=auth_headers(),
+        json={"type": "bogus-type", "slug": "x", "title": "X"},
+    )
+    assert resp.status_code == 400
+
+
+def test_update_memory_page_endpoint(client, isolated_memory_dir):
+    long_term_dir = isolated_memory_dir / USER_ID / "long_term"
+    WikiStore(USER_ID, long_term_dir).write_page(type_="concept", slug="budgeting", title="Budgeting", summary="old", body="- old")
+
+    resp = client.put(
+        "/api/chatty/memory/page/concept/budgeting",
+        headers=auth_headers(),
+        json={"title": "Budgeting", "summary": "new", "body": "- new", "tags": ["money"]},
+    )
+
+    assert resp.status_code == 200
+    page = resp.json()
+    assert page["summary"] == "new"
+    assert "new" in page["body"]
+
+    wiki_store = WikiStore(USER_ID, long_term_dir)
+    assert "edited via dashboard" in wiki_store.read_log()
+
+
+def test_update_memory_page_unknown_404s(client, isolated_memory_dir):
+    resp = client.put(
+        "/api/chatty/memory/page/concept/nonexistent",
+        headers=auth_headers(),
+        json={"title": "X", "summary": "s", "body": "- a"},
+    )
+    assert resp.status_code == 404
+
+
+def test_delete_memory_page_endpoint(client, isolated_memory_dir):
+    long_term_dir = isolated_memory_dir / USER_ID / "long_term"
+    WikiStore(USER_ID, long_term_dir).write_page(type_="concept", slug="budgeting", title="Budgeting", summary="s", body="- a")
+
+    resp = client.delete("/api/chatty/memory/page/concept/budgeting", headers=auth_headers())
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": True}
+
+    follow_up = client.get("/api/chatty/memory/page/concept/budgeting", headers=auth_headers())
+    assert follow_up.status_code == 404
+
+
+def test_delete_memory_page_unknown_404s(client, isolated_memory_dir):
+    resp = client.delete("/api/chatty/memory/page/concept/nonexistent", headers=auth_headers())
+    assert resp.status_code == 404
+
+
+def test_get_memory_page_backlinks_endpoint(client, isolated_memory_dir):
+    long_term_dir = isolated_memory_dir / USER_ID / "long_term"
+    wiki_store = WikiStore(USER_ID, long_term_dir)
+    wiki_store.write_page(type_="entity", slug="sarah", title="Sarah", summary="s", body="- Sister.")
+    wiki_store.write_page(
+        type_="concept", slug="family-trip", title="Family Trip", summary="s",
+        body="- Went hiking with [Sarah](pages/entities/sarah.md).",
+    )
+
+    resp = client.get("/api/chatty/memory/page/entity/sarah/backlinks", headers=auth_headers())
+
+    assert resp.status_code == 200
+    backlinks = resp.json()
+    assert len(backlinks) == 1
+    assert backlinks[0]["slug"] == "family-trip"
+    assert backlinks[0]["type"] == "concept"
+
+
+def test_get_memory_page_backlinks_unknown_page_404s(client, isolated_memory_dir):
+    resp = client.get("/api/chatty/memory/page/entity/nonexistent/backlinks", headers=auth_headers())
+    assert resp.status_code == 404
+
+
+def test_get_memory_health_endpoint_empty_before_lint(client, isolated_memory_dir):
+    resp = client.get("/api/chatty/memory/health", headers=auth_headers())
+
+    assert resp.status_code == 200
+    health = resp.json()
+    assert health["generated_at"] is None
+    assert health["orphans"] == []
+    assert health["contradictions"] == []
+    assert health["coverage_gaps"] == []
+
+
+class _StubLLM:
+    """Minimal async LLM stand-in so lint_wiki()'s contradiction/coverage-gap
+    check doesn't make a real network call in this test."""
+
+    async def complete(self, messages, *, response_format="text", temperature=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(content=json.dumps({"contradictions": [], "coverage_gaps": []}))
+
+
+@pytest.mark.asyncio
+async def test_get_memory_health_endpoint_after_lint_run(client, isolated_memory_dir, monkeypatch):
+    from src.core import config
+    from src.core.memory import MemoryManager
+
+    # MemoryManager resolves paths off config.MEMORY_DIR, a separate binding
+    # from this file's server.MEMORY_DIR - both must point at the same
+    # isolated tmp dir or lint_wiki() would touch the real memory/ directory.
+    monkeypatch.setattr(config, "MEMORY_DIR", isolated_memory_dir)
+    monkeypatch.setattr("src.core.memory.get_llm_provider", lambda: _StubLLM())
+
+    long_term_dir = isolated_memory_dir / USER_ID / "long_term"
+    WikiStore(USER_ID, long_term_dir).write_page(type_="concept", slug="lonely", title="Lonely Page", summary="s", body="- unlinked")
+
+    manager = MemoryManager(USER_ID)
+    await manager.lint_wiki()
+
+    resp = client.get("/api/chatty/memory/health", headers=auth_headers())
+
+    assert resp.status_code == 200
+    health = resp.json()
+    assert health["generated_at"] is not None
+    assert any(o["slug"] == "lonely" for o in health["orphans"])

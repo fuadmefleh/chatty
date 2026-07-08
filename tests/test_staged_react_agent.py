@@ -225,14 +225,14 @@ class TestBackgroundedReflectAndMemorize:
 
 
 class TestMemoryToolSchema:
-    """The OpenAI-advertised parameter names for the recall/remember/forget
-    memory tools (get_tool_definitions, src/core/memory_router.py) must
-    match what _execute_memory_tool actually passes through to MemoryRouter
-    - a past mismatch across the old 11-tool surface (advertised "pattern"
-    vs. the real "search_term") meant the LLM's schema-conformant call
-    would always throw, silently swallowed by the dispatcher's try/except
-    into an "Error executing ..." string. This class also guards against
-    that 11-tool surface creeping back."""
+    """The OpenAI-advertised parameter names for the recall/remember/forget/
+    browse_wiki memory tools (get_tool_definitions, src/core/memory_router.py)
+    must match what _execute_memory_tool actually passes through to
+    MemoryRouter - a past mismatch across the old 11-tool surface (advertised
+    "pattern" vs. the real "search_term") meant the LLM's schema-conformant
+    call would always throw, silently swallowed by the dispatcher's
+    try/except into an "Error executing ..." string. This class also guards
+    against that 11-tool surface creeping back."""
 
     @pytest.mark.asyncio
     async def test_recall_advertised_params_are_callable(self, agent):
@@ -268,9 +268,20 @@ class TestMemoryToolSchema:
         assert not result.startswith("Error executing"), result
         assert not result.startswith("Unknown tool"), result
 
-    def test_memory_tool_surface_is_exactly_three(self):
+    @pytest.mark.asyncio
+    async def test_browse_wiki_advertised_params_are_callable(self, agent):
+        tool_defs = get_tool_definitions()
+        tool_def = next(t for t in tool_defs if t["function"]["name"] == "browse_wiki")
+        required_params = tool_def["function"]["parameters"]["required"]
+
+        arguments = {param: "test" for param in required_params}
+        result = await agent._execute_memory_tool("browse_wiki", arguments)
+
+        assert not result.startswith("Error executing"), result
+
+    def test_memory_tool_surface_is_exactly_four(self):
         """Regression guard: the LLM-facing memory surface should stay at
-        exactly recall/remember/forget, not regrow into the old 11-tool
-        sprawl."""
+        exactly recall/remember/forget/browse_wiki, not regrow into the old
+        11-tool sprawl."""
         names = {t["function"]["name"] for t in get_tool_definitions()}
-        assert names == {"recall", "remember", "forget"}
+        assert names == {"recall", "remember", "forget", "browse_wiki"}

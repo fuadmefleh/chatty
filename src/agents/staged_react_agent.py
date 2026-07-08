@@ -667,6 +667,8 @@ If nothing important to remember, return empty array."""
                 return await self.memory_router.remember(**arguments)
             elif tool_name == "forget":
                 return await self.memory_router.forget(**arguments)
+            elif tool_name == "browse_wiki":
+                return await self.memory_router.browse_wiki()
             else:
                 return f"Unknown memory tool: {tool_name}"
         except Exception as e:

@@ -30,6 +30,7 @@ import Insights from './pages/Insights';
 import Reminders from './pages/Reminders';
 import MemoryViewer from './pages/MemoryViewer';
 import WikiArticle from './pages/WikiArticle';
+import WikiHealth from './pages/WikiHealth';
 import Requests from './pages/Requests';
 import Suggestions from './pages/Suggestions';
 import VideoProduction from './pages/VideoProduction';
@@ -75,6 +76,7 @@ function RoutedApp() {
           <Route path="/insights" element={<Insights />} />
           <Route path="/reminders" element={<Reminders />} />
           <Route path="/memory" element={<MemoryViewer />} />
+          <Route path="/memory/health" element={<WikiHealth />} />
           <Route path="/memory/:type/:slug" element={<WikiArticle />} />
           <Route path="/requests" element={<Requests />} />
           <Route path="/suggestions" element={<Suggestions />} />
