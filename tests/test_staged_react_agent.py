@@ -140,7 +140,7 @@ class TestBackgroundedReflectAndMemorize:
         async def fake_decompose(state, history):
             return state
 
-        async def fake_memory(state):
+        async def fake_memory(state, memory_task=None):
             return state
 
         async def fake_plan(state):
@@ -193,7 +193,7 @@ class TestBackgroundedReflectAndMemorize:
         async def fake_decompose(state, history):
             return state
 
-        async def fake_memory(state):
+        async def fake_memory(state, memory_task=None):
             return state
 
         async def fake_plan(state):

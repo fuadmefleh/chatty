@@ -308,6 +308,97 @@ class TranscriptionsManager:
 
         return None
 
+    def set_speaker_label(self, user_id: str, transcription_id: str, local_speaker: str, name: str) -> Optional[Transcription]:
+        """Atomically set one local_speaker -> name mapping on a transcript:
+        loads speaker_labels fresh and merges the single key under the same
+        lock as the write, so a concurrent edit to a *different*
+        local_speaker on this transcript (or an in-flight auto-tag rescan,
+        see add_speaker_labels_if_absent) can never be silently dropped by a
+        stale full-dict overwrite. This is the manual-edit write path -
+        manual edits always win, unconditionally overwriting whatever was
+        there (auto-matched or previously manual)."""
+        pending_path = self._get_user_file(user_id)
+        archived_path = self._get_archived_file(user_id)
+        with locked(pending_path), locked(archived_path):
+            pending = self._load(pending_path)
+            for t in pending:
+                if t.id == transcription_id:
+                    labels = dict(t.speaker_labels or {})
+                    labels[local_speaker] = name
+                    self._apply_update(t, {"speaker_labels": labels})
+                    self._save(pending_path, pending)
+                    return t
+
+            archived = self._load(archived_path)
+            for t in archived:
+                if t.id == transcription_id:
+                    labels = dict(t.speaker_labels or {})
+                    labels[local_speaker] = name
+                    self._apply_update(t, {"speaker_labels": labels})
+                    self._save(archived_path, archived)
+                    return t
+
+        return None
+
+    def add_speaker_labels_if_absent(self, user_id: str, updates: Dict[str, Dict[str, str]]) -> int:
+        """Auto-tag write path: for each transcript id, add the given
+        local_speaker -> name candidates only where that transcript doesn't
+        *currently* (re-checked fresh, under the lock) already have a label
+        for that local_speaker. Unlike a blind full-dict replace, a
+        candidate that's gone stale by the time this runs - because a
+        manual edit (set_speaker_label) or another auto-tag pass landed on
+        that same transcript first - is just silently dropped instead of
+        clobbering the newer data.
+
+        Returns the number of transcriptions actually touched.
+        """
+        if not updates:
+            return 0
+
+        pending_path = self._get_user_file(user_id)
+        archived_path = self._get_archived_file(user_id)
+        touched = 0
+        with locked(pending_path), locked(archived_path):
+            pending = self._load(pending_path)
+            pending_changed = False
+            for t in pending:
+                if t.id not in updates:
+                    continue
+                labels = dict(t.speaker_labels or {})
+                changed = False
+                for local_speaker, name in updates[t.id].items():
+                    if labels.get(local_speaker):
+                        continue
+                    labels[local_speaker] = name
+                    changed = True
+                if changed:
+                    self._apply_update(t, {"speaker_labels": labels})
+                    pending_changed = True
+                    touched += 1
+            if pending_changed:
+                self._save(pending_path, pending)
+
+            archived = self._load(archived_path)
+            archived_changed = False
+            for t in archived:
+                if t.id not in updates:
+                    continue
+                labels = dict(t.speaker_labels or {})
+                changed = False
+                for local_speaker, name in updates[t.id].items():
+                    if labels.get(local_speaker):
+                        continue
+                    labels[local_speaker] = name
+                    changed = True
+                if changed:
+                    self._apply_update(t, {"speaker_labels": labels})
+                    archived_changed = True
+                    touched += 1
+            if archived_changed:
+                self._save(archived_path, archived)
+
+        return touched
+
     def update_transcriptions_batch(self, user_id: str, updates: Dict[str, Dict]) -> int:
         """Apply many per-id field updates in one lock/load/save cycle per file
         (not per record) - used by retroactive speaker relabeling so a single

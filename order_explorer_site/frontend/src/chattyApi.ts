@@ -361,6 +361,53 @@ export const triggerWikiLint = async (): Promise<string> => {
   return res.data.result;
 };
 
+// Runs the full agent tool loop server-side (not a scripted fix) - expect
+// this to take a couple of minutes, not seconds. No axios timeout is set
+// on this client, so a slow response just waits rather than erroring out.
+export const resolveWikiContradiction = async (
+  contradiction: WikiHealthContradiction,
+  guidance: string,
+): Promise<string> => {
+  const res = await chattyApi.post<{ result: string }>('/api/chatty/memory/health/resolve-contradiction', {
+    page_a: contradiction.page_a,
+    page_b: contradiction.page_b,
+    description: contradiction.description,
+    guidance,
+  });
+  return res.data.result;
+};
+
+export interface ReorganizeTargetPage {
+  type: 'entity' | 'concept';
+  slug: string;
+  title: string;
+  summary: string;
+  source_pages: string[];
+  already_exists: boolean;
+}
+
+export interface ReorganizeProposal {
+  target_pages: ReorganizeTargetPage[];
+  error?: string;
+}
+
+// One LLM call over the whole wiki - read-only, writes nothing. Expect
+// tens of seconds, not instant.
+export const proposeWikiReorganization = async (): Promise<ReorganizeProposal> => {
+  const res = await chattyApi.post<ReorganizeProposal>('/api/chatty/memory/reorganize/propose');
+  return res.data;
+};
+
+// Executes a (possibly user-trimmed) plan from proposeWikiReorganization().
+// Only ever creates/overwrites the listed target pages - never deletes
+// their source pages.
+export const applyWikiReorganization = async (targetPages: ReorganizeTargetPage[]): Promise<string> => {
+  const res = await chattyApi.post<{ result: string }>('/api/chatty/memory/reorganize/apply', {
+    target_pages: targetPages,
+  });
+  return res.data.result;
+};
+
 // ── Code Browser ─────────────────────────────────────────────────────────────
 export interface CodeTreeEntry {
   name: string;
@@ -418,6 +465,31 @@ export interface SystemStatus {
 
 export const fetchChattySystem = async (): Promise<SystemStatus> => {
   const res = await chattyApi.get<SystemStatus>('/api/chatty/system');
+  return res.data;
+};
+
+// ── Integrations (Gmail) ─────────────────────────────────────────────────────
+export interface GmailStatus {
+  status: 'connected' | 'expired' | 'disconnected' | 'not_configured';
+  reconnect_available: boolean;
+}
+
+export const fetchGmailStatus = async (): Promise<GmailStatus> => {
+  const res = await chattyApi.get<GmailStatus>('/api/chatty/gmail/status');
+  return res.data;
+};
+
+// Returns Google's consent-screen URL; the caller does a full-page navigation
+// to it (window.location.href), not a fetch - Google's own redirect back to
+// our /api/chatty/gmail/callback can't carry our X-API-Key header either, so
+// that leg of the flow is a plain browser round trip, not an API call.
+export const fetchGmailConnectUrl = async (): Promise<string> => {
+  const res = await chattyApi.get<{ url: string }>('/api/chatty/gmail/connect-url');
+  return res.data.url;
+};
+
+export const disconnectGmail = async (): Promise<GmailStatus> => {
+  const res = await chattyApi.post<GmailStatus>('/api/chatty/gmail/disconnect');
   return res.data;
 };
 

@@ -1,11 +1,22 @@
 """Gmail Integration for reading and searching emails."""
+import os
+
+# Google's OAuth server sometimes grants a superset of the requested scopes
+# (e.g. tacking on https://www.googleapis.com/auth/cse for accounts with
+# Gmail client-side encryption enabled) - oauthlib treats any scope mismatch
+# as a hard error by default (`raise Warning(...)`, which is a real Exception
+# in Python), aborting an otherwise-successful token exchange. Must be set
+# before oauthlib's OAuth2Session is constructed, hence top-of-module.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
 import pickle
 import base64
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -21,6 +32,26 @@ SCOPES = [
 SKILLS_DIR = Path(__file__).parent
 CREDENTIALS_FILE = SKILLS_DIR / 'credentials.json'
 TOKEN_FILE = Path(__file__).parent.parent.parent / 'data' / 'gmail_token.json'
+
+# Separate client for the web-based reconnect flow (chatty_web_server's
+# /api/chatty/gmail/* routes): Google's "Desktop app" OAuth client type used
+# by CREDENTIALS_FILE above only supports loopback redirect URIs (that's why
+# get_gmail_service() opens a browser on the server host via run_local_server
+# instead of redirecting anywhere). A custom HTTPS redirect_uri - required so
+# the *user's* browser can complete the flow against the real server -
+# requires a "Web application" OAuth client instead, downloaded separately
+# from Google Cloud Console and placed here.
+WEB_CREDENTIALS_FILE = SKILLS_DIR / 'web_credentials.json'
+GMAIL_OAUTH_REDIRECT_URI = os.getenv(
+    "GMAIL_OAUTH_REDIRECT_URI", "https://fuadmefleh.fyi/api/chatty/gmail/callback"
+)
+OAUTH_STATE_TTL_SECONDS = 600
+
+# In-memory CSRF state for the web reconnect flow: state -> (code_verifier,
+# issued_at). Single-user app, so no need to persist this anywhere durable -
+# it only has to survive the few seconds between redirecting to Google's
+# consent screen and Google redirecting back.
+_pending_oauth_states: Dict[str, Tuple[str, float]] = {}
 
 
 def get_gmail_service():
@@ -75,6 +106,94 @@ def get_gmail_service():
             pickle.dump(creds, token)
     
     return build('gmail', 'v1', credentials=creds)
+
+
+def get_gmail_status() -> Dict[str, Any]:
+    """Report Gmail connection status for the web dashboard without
+    triggering any auth flow or network call - just inspects what's on disk.
+    Deliberately doesn't attempt a token refresh here (that happens lazily,
+    on actual use, inside get_gmail_service); this is a cheap read-only
+    check, not an action."""
+    if not TOKEN_FILE.exists():
+        return {"status": "disconnected", "reconnect_available": WEB_CREDENTIALS_FILE.exists()}
+    try:
+        with open(TOKEN_FILE, 'rb') as token:
+            creds = pickle.load(token)
+    except Exception:
+        return {"status": "disconnected", "reconnect_available": WEB_CREDENTIALS_FILE.exists()}
+
+    if creds and creds.valid:
+        status = "connected"
+    elif creds and creds.expired and creds.refresh_token:
+        status = "expired"
+    else:
+        status = "disconnected"
+    return {"status": status, "reconnect_available": WEB_CREDENTIALS_FILE.exists()}
+
+
+def _prune_expired_oauth_states() -> None:
+    cutoff = time.time() - OAUTH_STATE_TTL_SECONDS
+    for state, (_, issued_at) in list(_pending_oauth_states.items()):
+        if issued_at < cutoff:
+            del _pending_oauth_states[state]
+
+
+def get_gmail_auth_url() -> str:
+    """Build the Google consent-screen URL for the web-based reconnect flow
+    and stash the PKCE verifier for this attempt under its `state`, so
+    complete_gmail_auth can finish the exchange when Google redirects back.
+    Distinct from get_gmail_service's local-server flow, which opens a
+    browser on the server host and doesn't work from a remote web UI."""
+    if not WEB_CREDENTIALS_FILE.exists():
+        raise FileNotFoundError(
+            f"Web OAuth client not found at {WEB_CREDENTIALS_FILE}. Create a 'Web application' "
+            f"OAuth client in Google Cloud Console with authorized redirect URI "
+            f"{GMAIL_OAUTH_REDIRECT_URI!r} and save its downloaded JSON there."
+        )
+    flow = Flow.from_client_secrets_file(
+        str(WEB_CREDENTIALS_FILE), scopes=SCOPES, redirect_uri=GMAIL_OAUTH_REDIRECT_URI,
+        autogenerate_code_verifier=True,
+    )
+    auth_url, state = flow.authorization_url(
+        access_type='offline', prompt='consent', include_granted_scopes='true',
+    )
+    _prune_expired_oauth_states()
+    _pending_oauth_states[state] = (flow.code_verifier, time.time())
+    return auth_url
+
+
+def complete_gmail_auth(code: str, state: str) -> None:
+    """Exchange an authorization code from the OAuth callback for a token,
+    completing the web reconnect flow started by get_gmail_auth_url. Saves
+    the result in the same pickle format get_gmail_service() reads, so
+    existing Gmail skill calls pick it up transparently.
+
+    Raises ValueError if `state` doesn't match one we issued (forged/replayed
+    callback, or one that's aged out past OAUTH_STATE_TTL_SECONDS)."""
+    _prune_expired_oauth_states()
+    pending = _pending_oauth_states.pop(state, None)
+    if pending is None:
+        raise ValueError("Unknown or expired OAuth state")
+    code_verifier, _ = pending
+
+    flow = Flow.from_client_secrets_file(
+        str(WEB_CREDENTIALS_FILE), scopes=SCOPES, redirect_uri=GMAIL_OAUTH_REDIRECT_URI,
+        autogenerate_code_verifier=False, code_verifier=code_verifier,
+    )
+    flow.fetch_token(code=code)
+
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(TOKEN_FILE, 'wb') as token:
+        pickle.dump(flow.credentials, token)
+
+
+def disconnect_gmail() -> bool:
+    """Delete the stored Gmail token, forcing the next use to reconnect.
+    Returns whether a token was actually present to delete."""
+    if TOKEN_FILE.exists():
+        TOKEN_FILE.unlink()
+        return True
+    return False
 
 
 def parse_email_body(payload: Dict[str, Any]) -> str:

@@ -1,12 +1,80 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { fetchWikiHealth, triggerWikiLint } from '../chattyApi';
-import type { WikiHealth as WikiHealthData, WikiHealthCoverageGap } from '../chattyApi';
+import { fetchWikiHealth, triggerWikiLint, resolveWikiContradiction } from '../chattyApi';
+import type { WikiHealth as WikiHealthData, WikiHealthCoverageGap, WikiHealthContradiction } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Spinner from '../components/ui/Spinner';
 import EmptyState from '../components/ui/EmptyState';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
+
+const ContradictionCard: React.FC<{
+  contradiction: WikiHealthContradiction;
+  onDismiss: () => void;
+}> = ({ contradiction, onDismiss }) => {
+  const [guidance, setGuidance] = useState('');
+  const [resolving, setResolving] = useState(false);
+  const [response, setResponse] = useState('');
+  const [error, setError] = useState('');
+
+  const handleSend = async () => {
+    if (!guidance.trim()) return;
+    setResolving(true);
+    setError('');
+    try {
+      setResponse(await resolveWikiContradiction(contradiction, guidance.trim()));
+      setGuidance('');
+    } catch {
+      setError('Failed to send to Chatty.');
+    } finally {
+      setResolving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <p className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-ink">
+        <Link to={`/memory/${contradiction.page_a.type}/${contradiction.page_a.slug}`} className="text-signal hover:underline">{contradiction.page_a.title}</Link>
+        <span className="text-muted">vs.</span>
+        <Link to={`/memory/${contradiction.page_b.type}/${contradiction.page_b.slug}`} className="text-signal hover:underline">{contradiction.page_b.title}</Link>
+      </p>
+      <p className="mb-3 text-sm text-muted">{contradiction.description}</p>
+
+      {response && (
+        <div className="mb-3 rounded-lg border border-line bg-surface-dim px-3 py-2.5 text-sm text-ink">
+          <p className="mb-1 flex items-center justify-between gap-2 font-mono text-[11px] font-semibold uppercase tracking-wider text-signal">
+            Chatty
+            <button type="button" onClick={onDismiss} className="normal-case text-muted hover:text-ink">
+              Dismiss
+            </button>
+          </p>
+          {response}
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <textarea
+          value={guidance}
+          onChange={(e) => setGuidance(e.target.value)}
+          placeholder="Tell Chatty how to resolve this, e.g. &quot;There are only 2 children - fix Important Facts&quot;…"
+          rows={2}
+          disabled={resolving}
+          className="w-full flex-1 resize-vertical rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-signal disabled:opacity-60"
+        />
+        <button
+          type="button"
+          onClick={handleSend}
+          disabled={resolving || !guidance.trim()}
+          className="h-9 shrink-0 self-start rounded-lg bg-signal px-4 text-sm font-bold text-white disabled:opacity-60 sm:self-end"
+        >
+          {resolving ? 'Sending…' : 'Send to Chatty'}
+        </button>
+      </div>
+      {resolving && <p className="mt-2 text-xs text-muted">This runs Chatty's full tool loop and can take a couple of minutes.</p>}
+      {error && <p className="mt-2 text-sm text-alert-red">{error}</p>}
+    </Card>
+  );
+};
 
 const WikiHealth: React.FC = () => {
   const navigate = useNavigate();
@@ -53,11 +121,7 @@ const WikiHealth: React.FC = () => {
   );
 
   return (
-    <div className="mx-auto max-w-[900px] px-4 py-6 md:px-6">
-      <Link to="/memory" className="mb-4 inline-block text-sm font-medium text-signal">
-        ← Back to memory
-      </Link>
-
+    <>
       <PageHeader eyebrow="Assistant / Memory" eyebrowColor="var(--signal)" title="Wiki Health" actions={lintButton} />
 
       {error && <p className="mb-4 text-sm text-alert-red">{error}</p>}
@@ -87,14 +151,14 @@ const WikiHealth: React.FC = () => {
               <p className="text-sm text-muted">No contradictions flagged.</p>
             ) : (
               health.contradictions.map((c, i) => (
-                <Card key={i}>
-                  <p className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-ink">
-                    <Link to={`/memory/${c.page_a.type}/${c.page_a.slug}`} className="text-signal hover:underline">{c.page_a.title}</Link>
-                    <span className="text-muted">vs.</span>
-                    <Link to={`/memory/${c.page_b.type}/${c.page_b.slug}`} className="text-signal hover:underline">{c.page_b.title}</Link>
-                  </p>
-                  <p className="text-sm text-muted">{c.description}</p>
-                </Card>
+                <ContradictionCard
+                  key={i}
+                  contradiction={c}
+                  onDismiss={() => setHealth((h) => h && {
+                    ...h,
+                    contradictions: h.contradictions.filter((_, j) => j !== i),
+                  })}
+                />
               ))
             )}
           </section>
@@ -146,7 +210,7 @@ const WikiHealth: React.FC = () => {
           </section>
         </div>
       )}
-    </div>
+    </>
   );
 };
 

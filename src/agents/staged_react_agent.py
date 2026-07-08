@@ -11,7 +11,7 @@ This agent implements a structured reasoning process with explicit stages:
 """
 import asyncio
 import json
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import tiktoken
@@ -147,14 +147,21 @@ class StagedReACTAgent:
         
         # Initialize state
         state = ReACTState(user_query=user_message)
-        
+
+        # Kick off memory reads immediately - they don't depend on DECOMPOSE's
+        # output (only the later relevance-check LLM call in _stage_memory
+        # does), so overlapping them with DECOMPOSE's LLM round-trip removes
+        # them from the sequential critical path entirely instead of paying
+        # for them afterward.
+        memory_task = asyncio.create_task(self._load_memory_context())
+
         try:
             # Stage 1: DECOMPOSE
             state = await self._stage_decompose(state, conversation_history)
             agent_logger.info(f"[DECOMPOSE] Query type: {state.query_type}, Sub-tasks: {state.sub_tasks}")
-            
+
             # Stage 2: MEMORY
-            state = await self._stage_memory(state)
+            state = await self._stage_memory(state, memory_task)
             agent_logger.info(f"[MEMORY] Relevant: {state.memory_relevant}")
             
             # Stage 3: PLAN
@@ -257,15 +264,11 @@ Be concise. If it's a simple greeting or conversation, sub_tasks can be empty.""
         
         return state
     
-    async def _stage_memory(self, state: ReACTState) -> ReACTState:
-        """Stage 2: Check if memory can answer the query.
-        
-        Searches memory for relevant information that could help answer
-        the user's query without needing external tools.
-        """
-        state.stage = ReACTStage.MEMORY
-        
-        # Load memory context with strict limits
+    async def _load_memory_context(self) -> Tuple[str, str]:
+        """Fetch short-term + long-term memory context (started as a task at
+        the top of think(), before DECOMPOSE runs - see its call site) so the
+        disk/wiki reads overlap with DECOMPOSE's LLM round-trip instead of
+        running after it."""
         max_short = self.MAX_MEMORY_CONTEXT_CHARS // 2
         max_long = self.MAX_MEMORY_CONTEXT_CHARS // 2
         short_term = await self.memory_manager.get_recent_memory(days=2)
@@ -274,7 +277,18 @@ Be concise. If it's a simple greeting or conversation, sub_tasks can be empty.""
         # Truncate memory to prevent token bloat
         short_term = short_term[:max_short] if short_term else ""
         long_term = long_term if long_term else ""
-        
+        return short_term, long_term
+
+    async def _stage_memory(self, state: ReACTState, memory_task: "asyncio.Task") -> ReACTState:
+        """Stage 2: Check if memory can answer the query.
+
+        Searches memory for relevant information that could help answer
+        the user's query without needing external tools.
+        """
+        state.stage = ReACTStage.MEMORY
+
+        short_term, long_term = await memory_task
+
         # Check if memory is relevant
         prompt = f"""Given this user query and available memory, determine if memory contains relevant information.
 

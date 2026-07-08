@@ -61,6 +61,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/video-production', label: 'Video Production' },
       { to: '/webcams', label: 'Webcams' },
       { to: '/system', label: 'System' },
+      { to: '/settings', label: 'Settings' },
       { to: '/server-health', label: 'Server Health' },
       { to: '/token-usage', label: 'Token Usage' },
       { to: '/code', label: 'Code' },

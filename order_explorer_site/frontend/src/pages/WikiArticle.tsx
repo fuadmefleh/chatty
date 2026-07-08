@@ -11,6 +11,7 @@ import MarkdownContent from '../components/ui/MarkdownContent';
 import WikiPageEditor from '../components/wiki/WikiPageEditor';
 import { slugifyHeading } from '../lib/slugifyHeading';
 import { useToast } from '../hooks/useToast';
+import { useWikiSidebar } from '../hooks/useWikiSidebar';
 
 interface TocEntry {
   level: 2 | 3;
@@ -34,6 +35,7 @@ const WikiArticle: React.FC = () => {
   const { type, slug } = useParams<{ type: string; slug: string }>();
   const navigate = useNavigate();
   const { showToast } = useToast();
+  const { refreshPages } = useWikiSidebar();
   const [page, setPage] = useState<WikiPage | null | undefined>(undefined);
   const [error, setError] = useState('');
   const [backlinks, setBacklinks] = useState<WikiBacklink[] | null>(null);
@@ -66,6 +68,7 @@ const WikiArticle: React.FC = () => {
       setPage(updated);
       setEditing(false);
       showToast('Page saved', 'signal');
+      refreshPages();
     } catch {
       showToast('Failed to save page', 'red');
       throw new Error('save failed');
@@ -89,41 +92,22 @@ const WikiArticle: React.FC = () => {
 
   if (page === undefined) {
     if (error) {
-      return (
-        <div className="mx-auto max-w-[1100px] px-4 py-6 md:px-6">
-          <Link to="/memory" className="mb-4 inline-block text-sm font-medium text-signal">
-            ← Back to memory
-          </Link>
-          <EmptyState title="Something went wrong" description={error} />
-        </div>
-      );
+      return <EmptyState title="Something went wrong" description={error} />;
     }
-    return (
-      <div className="mx-auto max-w-[1100px] px-4 py-6 md:px-6">
-        <Spinner label="Loading article…" />
-      </div>
-    );
+    return <Spinner label="Loading article…" />;
   }
 
   if (page === null) {
     return (
-      <div className="mx-auto max-w-[1100px] px-4 py-6 md:px-6">
-        <Link to="/memory" className="mb-4 inline-block text-sm font-medium text-signal">
-          ← Back to memory
-        </Link>
-        <EmptyState
-          title="Page not found"
-          description={`No wiki page found for ${type}/${slug}.`}
-        />
-      </div>
+      <EmptyState
+        title="Page not found"
+        description={`No wiki page found for ${type}/${slug}.`}
+      />
     );
   }
 
   return (
-    <div className="mx-auto max-w-[1100px] px-4 py-6 md:px-6">
-      <Link to="/memory" className="mb-4 inline-block text-sm font-medium text-signal">
-        ← Back to memory
-      </Link>
+    <>
 
       <div className="mb-6 border-b border-line pb-5">
         <PageHeader
@@ -241,7 +225,7 @@ const WikiArticle: React.FC = () => {
           </button>
         </div>
       </Modal>
-    </div>
+    </>
   );
 };
 

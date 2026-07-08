@@ -25,7 +25,19 @@ interface Message {
   content: string;
   streaming?: boolean;
   attachment?: ChatAttachment;
+  durationMs?: number;
 }
+
+// e.g. "0.8s", "12.3s", "1m 05s" — mirrors the backend's `duration_ms`
+// (wall-clock time from generation start to done/stopped), sent on the
+// `done`/`stopped` WS frames.
+const formatDuration = (ms: number): string => {
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const m = Math.floor(totalSeconds / 60);
+  const s = Math.round(totalSeconds % 60);
+  return `${m}m ${s.toString().padStart(2, '0')}s`;
+};
 
 // A file the user picked but hasn't sent yet: `previewUrl` is a local object
 // URL (instant preview while `uploading`); `id`/`kind`/`url` come back from
@@ -162,7 +174,7 @@ const Chat: React.FC = () => {
           pendingIdRef.current = null;
           if (targetId !== null) {
             setMessages((prev) =>
-              prev.map((m) => (m.id === targetId ? { ...m, streaming: false } : m))
+              prev.map((m) => (m.id === targetId ? { ...m, streaming: false, durationMs: data.duration_ms } : m))
             );
           }
         } else if (data.type === 'error') {
@@ -919,27 +931,32 @@ const MessageBubble: React.FC<MessageBubbleProps> = React.memo(function MessageB
       )}
 
       {!isEditingThis && (
-        <div className="mt-1 flex items-center gap-3 px-1 text-[11px] text-muted opacity-0 transition-opacity group-hover:opacity-100">
-          {msg.content && (
-            <button onClick={() => onCopy(msg.content)} className="hover:text-ink" title="Copy">
-              ⧉ Copy
-            </button>
+        <div className="mt-1 flex items-center gap-3 px-1 text-[11px] text-muted">
+          {msg.role === 'assistant' && !msg.streaming && msg.durationMs !== undefined && (
+            <span title="Response time">{formatDuration(msg.durationMs)}</span>
           )}
-          {showEdit && (
-            <button onClick={onStartEdit} className="hover:text-ink" title="Edit and resend">
-              ✎ Edit
-            </button>
-          )}
-          {showRetry && (
-            <button onClick={onRetry} className="hover:text-ink" title="Retry">
-              ↻ Retry
-            </button>
-          )}
-          {showRegenerate && (
-            <button onClick={onRegenerate} className="hover:text-ink" title="Regenerate response">
-              ↻ Regenerate
-            </button>
-          )}
+          <div className="flex items-center gap-3 opacity-0 transition-opacity group-hover:opacity-100">
+            {msg.content && (
+              <button onClick={() => onCopy(msg.content)} className="hover:text-ink" title="Copy">
+                ⧉ Copy
+              </button>
+            )}
+            {showEdit && (
+              <button onClick={onStartEdit} className="hover:text-ink" title="Edit and resend">
+                ✎ Edit
+              </button>
+            )}
+            {showRetry && (
+              <button onClick={onRetry} className="hover:text-ink" title="Retry">
+                ↻ Retry
+              </button>
+            )}
+            {showRegenerate && (
+              <button onClick={onRegenerate} className="hover:text-ink" title="Regenerate response">
+                ↻ Regenerate
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

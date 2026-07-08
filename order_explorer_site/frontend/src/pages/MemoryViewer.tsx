@@ -1,12 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { fetchChattyMemory, searchChattyMemory, triggerMemoryConsolidation, createWikiPage } from '../chattyApi';
 import type { MemoryData, ShortTermEntry, WikiPage } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Spinner from '../components/ui/Spinner';
 import EmptyState from '../components/ui/EmptyState';
 import MarkdownContent from '../components/ui/MarkdownContent';
-import Badge from '../components/ui/Badge';
 import Card from '../components/ui/Card';
 import WikiPageEditor from '../components/wiki/WikiPageEditor';
 import type { WikiPageEditorValue } from '../components/wiki/WikiPageEditor';
@@ -26,16 +25,10 @@ const ChevronIcon: React.FC<{ open: boolean }> = ({ open }) => (
   </svg>
 );
 
-const WIKI_TYPE_LABELS: Record<WikiPage['type'], string> = {
-  entity: 'Entities',
-  concept: 'Concepts',
-};
-
 const MemoryViewer: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { showToast } = useToast();
-  const [searchParams, setSearchParams] = useSearchParams();
 
   const [data, setData] = useState<MemoryData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -52,10 +45,7 @@ const MemoryViewer: React.FC = () => {
   const [consolidating, setConsolidating] = useState(false);
   const [consolidateStatus, setConsolidateStatus] = useState('');
 
-  const initialTag = searchParams.get('tag');
-  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set(initialTag ? [initialTag] : []));
-
-  const createPageState = (location.state as { createPage?: { type: WikiPage['type']; title: string } } | null)?.createPage;
+  const createPageState = (location.state as { createPage?: { type?: WikiPage['type']; title?: string } } | null)?.createPage;
   const [creating, setCreating] = useState(Boolean(createPageState));
   const [creatingSaving, setCreatingSaving] = useState(false);
 
@@ -108,33 +98,8 @@ const MemoryViewer: React.FC = () => {
   };
 
   const shortTermEntries: ShortTermEntry[] = data?.short_term ?? [];
-  const wikiPages: WikiPage[] = useMemo(() => data?.long_term ?? [], [data]);
+  const wikiPages: WikiPage[] = data?.long_term ?? [];
   const entryCount = activeTab === 'short_term' ? shortTermEntries.length : wikiPages.length;
-
-  const allTags = useMemo(
-    () => Array.from(new Set(wikiPages.flatMap((p) => p.tags))).sort(),
-    [wikiPages],
-  );
-
-  const toggleTag = (tag: string) => {
-    setSelectedTags((prev) => {
-      const next = new Set(prev);
-      if (next.has(tag)) next.delete(tag);
-      else next.add(tag);
-      if (next.size === 1) setSearchParams({ tag: Array.from(next)[0] });
-      else setSearchParams({});
-      return next;
-    });
-  };
-
-  const filteredPages = selectedTags.size === 0
-    ? wikiPages
-    : wikiPages.filter((p) => Array.from(selectedTags).every((t) => p.tags.includes(t)));
-
-  const pagesByType = (['entity', 'concept'] as const).map((type) => ({
-    type,
-    pages: filteredPages.filter((p) => p.type === type),
-  })).filter((group) => group.pages.length > 0);
 
   const handleCreatePage = async (value: WikiPageEditorValue) => {
     setCreatingSaving(true);
@@ -152,7 +117,7 @@ const MemoryViewer: React.FC = () => {
   };
 
   return (
-    <div className="mx-auto max-w-[900px] px-4 py-6 md:px-6">
+    <>
       <PageHeader
         eyebrow="Assistant / Memory"
         eyebrowColor="var(--signal)"
@@ -183,19 +148,6 @@ const MemoryViewer: React.FC = () => {
             >
               {consolidating ? 'Consolidating…' : 'Consolidate now'}
             </button>
-            <button
-              type="button"
-              onClick={() => { setActiveTab('long_term'); setCreating((v) => !v); }}
-              className="rounded-md border border-line bg-surface-dim px-3 py-1 text-sm font-semibold text-ink"
-            >
-              + New page
-            </button>
-            <Link
-              to="/memory/health"
-              className="rounded-md border border-line bg-surface-dim px-3 py-1 text-sm font-semibold text-ink"
-            >
-              Wiki Health
-            </Link>
             <label htmlFor="days-select">Last</label>
             <select
               id="days-select"
@@ -276,21 +228,9 @@ const MemoryViewer: React.FC = () => {
         </Card>
       )}
 
-      {activeTab === 'long_term' && allTags.length > 0 && (
-        <div className="mb-5 flex flex-wrap items-center gap-1.5">
-          {allTags.map((tag) => (
-            <button key={tag} type="button" onClick={() => toggleTag(tag)}>
-              <Badge tone={selectedTags.has(tag) ? 'teal' : 'neutral'}>{tag}</Badge>
-            </button>
-          ))}
-        </div>
-      )}
-
       {error && <p className="mb-4 text-sm text-alert-red">{error}</p>}
       {loading ? (
         <Spinner label="Loading memory…" />
-      ) : activeTab === 'long_term' && selectedTags.size > 0 && filteredPages.length === 0 ? (
-        <EmptyState title="No pages match these tags" description="Clear a tag filter to see more pages." />
       ) : entryCount === 0 ? (
         <EmptyState
           title="No memory entries"
@@ -351,37 +291,9 @@ const MemoryViewer: React.FC = () => {
               </div>
             )}
           </div>
-
-          {/* Pages, grouped by type - the wiki's front page */}
-          {pagesByType.map(({ type, pages }) => (
-            <div key={type} className="flex flex-col gap-2">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
-                {WIKI_TYPE_LABELS[type]} <span className="font-mono normal-case opacity-70">{pages.length}</span>
-              </h2>
-              {pages.map((page) => (
-                <Link
-                  key={`${page.type}/${page.slug}`}
-                  to={`/memory/${page.type}/${page.slug}`}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-2.5 hover:bg-surface-dim"
-                >
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="flex flex-wrap items-center gap-2">
-                      <span className="font-semibold text-ink">{page.title}</span>
-                      <Badge tone="teal">{page.type}</Badge>
-                      {page.tags.map((tag) => (
-                        <Badge key={tag} tone="neutral">{tag}</Badge>
-                      ))}
-                    </span>
-                    <span className="truncate text-sm text-muted">{page.summary}</span>
-                  </span>
-                  <ChevronIcon open />
-                </Link>
-              ))}
-            </div>
-          ))}
         </div>
       )}
-    </div>
+    </>
   );
 };
 

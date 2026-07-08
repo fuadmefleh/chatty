@@ -165,6 +165,71 @@ def test_update_transcriptions_batch_empty_updates_is_noop():
     assert mgr.update_transcriptions_batch("user1", {}) == 0
 
 
+def test_set_speaker_label_merges_without_dropping_other_local_speakers():
+    mgr = make_manager()
+    segments = [
+        {"start": 0.0, "end": 1.0, "local_speaker": "SPEAKER_00", "text": "hi"},
+        {"start": 1.0, "end": 2.0, "local_speaker": "SPEAKER_01", "text": "hello"},
+    ]
+    t = mgr.add_transcription("user1", render_segments(segments), segments=segments)
+    mgr.set_speaker_label("user1", t.id, "SPEAKER_00", "Fuad")
+
+    updated = mgr.set_speaker_label("user1", t.id, "SPEAKER_01", "Sarah")
+
+    assert updated.speaker_labels == {"SPEAKER_00": "Fuad", "SPEAKER_01": "Sarah"}
+    assert updated.content == "Fuad: hi\nSarah: hello"
+
+
+def test_set_speaker_label_overwrites_an_existing_label():
+    """A manual correction always wins, even over a previous manual/auto label."""
+    mgr = make_manager()
+    segments = [{"start": 0.0, "end": 1.0, "local_speaker": "SPEAKER_00", "text": "hi"}]
+    t = mgr.add_transcription("user1", render_segments(segments), segments=segments,
+                               speaker_labels={"SPEAKER_00": "Wrong Match"})
+
+    updated = mgr.set_speaker_label("user1", t.id, "SPEAKER_00", "Fuad")
+
+    assert updated.speaker_labels == {"SPEAKER_00": "Fuad"}
+
+
+def test_add_speaker_labels_if_absent_skips_already_labeled_speakers():
+    mgr = make_manager()
+    segments = [
+        {"start": 0.0, "end": 1.0, "local_speaker": "SPEAKER_00", "text": "hi"},
+        {"start": 1.0, "end": 2.0, "local_speaker": "SPEAKER_01", "text": "hello"},
+    ]
+    t = mgr.add_transcription("user1", render_segments(segments), segments=segments,
+                               speaker_labels={"SPEAKER_00": "Fuad"})
+
+    touched = mgr.add_speaker_labels_if_absent("user1", {
+        t.id: {"SPEAKER_00": "Someone Else", "SPEAKER_01": "Sarah"},
+    })
+
+    assert touched == 1
+    assert mgr.get_pending("user1")[0].speaker_labels == {"SPEAKER_00": "Fuad", "SPEAKER_01": "Sarah"}
+
+
+def test_add_speaker_labels_if_absent_never_clobbers_a_label_set_after_the_snapshot():
+    """Reproduces the race the auto-tag rescan used to be vulnerable to: the
+    caller computed `updates` from a stale snapshot (SPEAKER_00 unlabeled),
+    but a manual edit landed in between and set it before this call runs.
+    The absent-check must be re-done fresh under the lock, not trusted from
+    the caller's snapshot, so the manual edit must survive untouched."""
+    mgr = make_manager()
+    segments = [{"start": 0.0, "end": 1.0, "local_speaker": "SPEAKER_00", "text": "hi"}]
+    t = mgr.add_transcription("user1", render_segments(segments), segments=segments)
+
+    # Simulates a manual edit landing after the rescan took its snapshot but
+    # before it writes - set_speaker_label goes straight to disk here.
+    mgr.set_speaker_label("user1", t.id, "SPEAKER_00", "Fuad")
+
+    # Stale candidate from the rescan's earlier (pre-manual-edit) snapshot.
+    touched = mgr.add_speaker_labels_if_absent("user1", {t.id: {"SPEAKER_00": "Wrong Auto Match"}})
+
+    assert touched == 0
+    assert mgr.get_pending("user1")[0].speaker_labels == {"SPEAKER_00": "Fuad"}
+
+
 def test_save_audio_remuxes_caf_into_playable_mp4():
     """iOS chunks are sometimes wrapped in a CAF container rather than real MP4 -
     browsers can't play CAF, so save_audio must remux (not just store raw bytes).

@@ -28,14 +28,17 @@ import Transcriptions from './pages/Transcriptions';
 import Speakers from './pages/Speakers';
 import Insights from './pages/Insights';
 import Reminders from './pages/Reminders';
+import WikiLayout from './pages/WikiLayout';
 import MemoryViewer from './pages/MemoryViewer';
 import WikiArticle from './pages/WikiArticle';
 import WikiHealth from './pages/WikiHealth';
+import WikiReorganize from './pages/WikiReorganize';
 import Requests from './pages/Requests';
 import Suggestions from './pages/Suggestions';
 import VideoProduction from './pages/VideoProduction';
 import Webcams from './pages/Webcams';
 import SystemStatus from './pages/SystemStatus';
+import Settings from './pages/Settings';
 import CodeBrowser from './pages/CodeBrowser';
 import ServerHealth from './pages/ServerHealth';
 import TokenUsage from './pages/TokenUsage';
@@ -75,14 +78,18 @@ function RoutedApp() {
           <Route path="/speakers" element={<Speakers />} />
           <Route path="/insights" element={<Insights />} />
           <Route path="/reminders" element={<Reminders />} />
-          <Route path="/memory" element={<MemoryViewer />} />
-          <Route path="/memory/health" element={<WikiHealth />} />
-          <Route path="/memory/:type/:slug" element={<WikiArticle />} />
+          <Route path="/memory" element={<WikiLayout />}>
+            <Route index element={<MemoryViewer />} />
+            <Route path="health" element={<WikiHealth />} />
+            <Route path="reorganize" element={<WikiReorganize />} />
+            <Route path=":type/:slug" element={<WikiArticle />} />
+          </Route>
           <Route path="/requests" element={<Requests />} />
           <Route path="/suggestions" element={<Suggestions />} />
           <Route path="/video-production" element={<VideoProduction />} />
           <Route path="/webcams" element={<Webcams />} />
           <Route path="/system" element={<SystemStatus />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="/server-health" element={<ServerHealth />} />
           <Route path="/token-usage" element={<TokenUsage />} />
           <Route path="/code" element={<CodeBrowser />} />

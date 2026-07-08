@@ -46,6 +46,7 @@ ENV/
 # Personal / sensitive data
 data/
 credentials.json
+web_credentials.json
 *_token*.json
 *_tokens.json
 *.pickle

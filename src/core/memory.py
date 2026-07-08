@@ -601,6 +601,244 @@ class MemoryManager:
 
         return f"Successfully consolidated {len(files_to_consolidate)} day(s) of memories into long-term storage."
 
+    @staticmethod
+    def _build_contradiction_resolution_prompt(
+        page_a: Dict, page_b: Dict, description: str, guidance: str,
+    ) -> str:
+        """Build the one-shot task prompt for resolve_contradiction(), kept
+        as a pure function so its wording can be unit-tested without
+        constructing a real agent."""
+        a_label = f"{page_a.get('title') or page_a.get('slug', '?')} ({page_a.get('type', '?')}/{page_a.get('slug', '?')})"
+        b_label = f"{page_b.get('title') or page_b.get('slug', '?')} ({page_b.get('type', '?')}/{page_b.get('slug', '?')})"
+        return (
+            "A lint pass over your long-term memory wiki flagged a contradiction "
+            "between two pages:\n\n"
+            f"- {a_label}\n"
+            f"- {b_label}\n\n"
+            f"Contradiction: {description}\n\n"
+            f'The user has clarified how to resolve it: "{guidance}"\n\n'
+            "Use your memory tools to correct the wiki so it reflects the user's "
+            "clarification and both pages stay internally consistent afterward. "
+            "Briefly summarize what you changed."
+        )
+
+    async def resolve_contradiction(
+        self, page_a: Dict, page_b: Dict, description: str, guidance: str, agent,
+    ) -> str:
+        """Ask `agent` (a live StagedReACTAgent, with full recall/remember/
+        forget/browse_wiki tool access) to fix a lint-flagged contradiction
+        between two wiki pages, incorporating the user's clarification.
+
+        Unlike consolidate_memories()/consolidate_text()'s narrow ingest
+        pipeline (one triage call + one edit call, LLM-only), this runs the
+        agent's *full* ReACT tool loop - the fix may need to read/edit more
+        than the two flagged pages (e.g. a third page repeating the wrong
+        claim), which the ingest pipeline's fixed two-call shape can't do
+        but the agent's tool loop can, by calling recall/remember/forget as
+        many times as it judges necessary.
+
+        Args:
+            page_a, page_b: {"type", "slug", "title"} refs, as returned by
+                WikiStore.read_health()'s contradictions list
+            description: the lint pass's description of the contradiction
+            guidance: free-text clarification from the user
+            agent: StagedReACTAgent instance whose tool loop performs the fix
+
+        Returns:
+            The agent's final response describing what it did
+        """
+        prompt = self._build_contradiction_resolution_prompt(page_a, page_b, description, guidance)
+        return await agent.think(prompt, [])
+
+    # Per-page char cap when building a full-wiki prompt (propose/apply
+    # reorganization) - this system's local LLM backend has been observed
+    # to return an empty/unparseable response for very large single-shot
+    # prompts (the same failure lint_wiki()'s full-body contradiction scan
+    # can hit), so bound the payload rather than sending every page in full.
+    REORG_BODY_CHARS_PER_PAGE = 1500
+
+    async def _complete_json_retrying_empty(
+        self, complete_fn, prompt: str, *, temperature: float, retries: int = 1,
+    ) -> Optional[Dict]:
+        """Call complete_fn(prompt), parsing the response as JSON, retrying
+        up to `retries` more times if the response is empty/unparseable.
+        This is a *logical* retry on top of with_retries()'s transport-level
+        one - with_retries only retries on exceptions (rate limits,
+        connection errors), not on a 200 response whose content is empty or
+        not valid JSON, which is the failure mode actually observed here."""
+        last_error: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            try:
+                response = await with_retries(
+                    lambda: complete_fn(
+                        [{"role": "user", "content": prompt}],
+                        response_format="json", temperature=temperature,
+                    ),
+                    logger=memory_logger,
+                )
+                return json.loads(response.content)
+            except Exception as e:
+                last_error = e
+                memory_logger.error(
+                    f"Empty/invalid JSON from LLM for {self.user_id} "
+                    f"(attempt {attempt + 1}/{retries + 1}): {e}"
+                )
+        if last_error:
+            raise last_error
+        return None
+
+    def _truncated_page_block(self, page: Dict, header: str) -> str:
+        body = page["body"]
+        if len(body) > self.REORG_BODY_CHARS_PER_PAGE:
+            body = body[: self.REORG_BODY_CHARS_PER_PAGE].rstrip() + "\n…(truncated)"
+        return f"{header}\n{body}"
+
+    async def propose_reorganization(self) -> Dict:
+        """One read-only LLM call: given the full current wiki, propose a
+        more granular target page structure - a dedicated entity page per
+        distinct named person/place instead of lumped catch-all pages
+        (e.g. splitting a single 'Relationships' page into one page per
+        family member). Writes nothing; the plan this returns is meant to
+        be reviewed (and optionally trimmed) by the user before being
+        passed to apply_reorganization().
+
+        Returns:
+            {"target_pages": [{"type", "slug", "title", "summary",
+            "source_pages": ["type/slug", ...], "already_exists": bool}, ...]}
+            (plus an "error" key if the LLM call itself failed)
+        """
+        wiki_store = self._wiki_store
+        pages = wiki_store.list_pages()
+        if not pages:
+            return {"target_pages": []}
+
+        bodies_text = "\n\n".join(
+            self._truncated_page_block(p, f"## {p['type']}/{p['slug']}: {p['title']}") for p in pages
+        )
+        existing_keys = {(p["type"], p["slug"]) for p in pages}
+
+        prompt = f"""You are redesigning the structure of a personal long-term-memory wiki to be more like a real wiki - one dedicated page per distinct subject, not lumped catch-all pages.
+
+Current wiki pages (type/slug: title, then body):
+{bodies_text}
+
+Propose a target page structure: a dedicated ENTITY page for each distinct named person (the primary user, their spouse, each named child individually, other named individuals mentioned repeatedly) and each distinct named place, plus CONCEPT pages for themes/goals/preferences/topics that aren't tied to one person or place. Do not propose splitting things that are already well-separated - only propose splitting lumped/mixed pages and filling real gaps.
+
+For each target page, list which existing page(s) its content should be drawn from. Respond with ONLY a JSON object of this exact shape:
+{{"target_pages": [{{"type": "entity"|"concept", "slug": "...", "title": "...", "summary": "one-line summary", "source_pages": ["type/slug", ...]}}, ...]}}
+Use lowercase hyphenated slugs. If the wiki is already well-structured, respond {{"target_pages": []}}.
+"""
+
+        try:
+            llm = get_llm_provider()
+            data = await self._complete_json_retrying_empty(llm.complete, prompt, temperature=0.2)
+        except Exception as e:
+            memory_logger.error(f"Error proposing wiki reorganization for {self.user_id}: {e}")
+            return {"target_pages": [], "error": str(e)}
+
+        target_pages = []
+        for t in data.get("target_pages") or []:
+            type_ = t.get("type") if t.get("type") in ("entity", "concept") else "concept"
+            slug = _slugify(t.get("slug") or t.get("title") or "")
+            source_pages = [s for s in (t.get("source_pages") or []) if isinstance(s, str)]
+            target_pages.append({
+                "type": type_, "slug": slug, "title": t.get("title") or slug.replace("-", " ").title(),
+                "summary": t.get("summary") or "", "source_pages": source_pages,
+                "already_exists": (type_, slug) in existing_keys,
+            })
+        return {"target_pages": target_pages}
+
+    async def apply_reorganization(self, target_pages: List[Dict]) -> str:
+        """Execute a (possibly user-trimmed) plan from propose_reorganization():
+        draft each target page's body from its source pages' content via one
+        batched LLM call, then write it. Source pages are never deleted -
+        this only ever adds/overwrites the target pages, so the user can
+        review the result and delete stale lumped pages themselves once
+        satisfied nothing was lost (same "don't act destructively without
+        review" posture as lint_wiki()'s flag-only contradiction/gap
+        checks)."""
+        if not target_pages:
+            return "Nothing to reorganize."
+
+        wiki_store = self._wiki_store
+
+        seen_sources = set()
+        source_context_parts = []
+        for t in target_pages:
+            for ref in t.get("source_pages") or []:
+                if ref in seen_sources:
+                    continue
+                seen_sources.add(ref)
+                type_dir, _, slug = str(ref).partition("/")
+                type_ = "entity" if type_dir in ("entity", "entities") else "concept"
+                page = wiki_store.get_page(type_, slug)
+                if page:
+                    source_context_parts.append(
+                        self._truncated_page_block(page, f"## Source page {type_}/{slug}: {page['title']}")
+                    )
+        source_context = "\n\n".join(source_context_parts) or "(none)"
+
+        targets_context = "\n".join(
+            f"- {t['type']}/{t['slug']} \"{t['title']}\" - draw from: "
+            f"{', '.join(t.get('source_pages') or []) or '(no sources - draft from general context only)'}"
+            for t in target_pages
+        )
+
+        prompt = f"""You are drafting new, more granular wiki pages as part of a reorganization.
+
+Source page content to draw from:
+{source_context}
+
+Target pages to draft (each should pull only the content relevant to its own subject from the source pages listed for it):
+{targets_context}
+
+For each target page, produce its FULL body - concise bullet points, only the facts relevant to that specific subject. Respond with ONLY a JSON object of this exact shape:
+{{"pages": [{{"type": "entity"|"concept", "slug": "...", "title": "...", "summary": "one-line summary", "tags": ["..."], "body": "- bullet\\n- bullet"}}, ...]}}
+"""
+
+        try:
+            llm = get_llm_provider()
+            edit_result = await self._complete_json_retrying_empty(llm.complete, prompt, temperature=0.3)
+        except Exception as e:
+            memory_logger.error(f"Error applying wiki reorganization for {self.user_id}: {e}")
+            return f"Error during reorganization: {e}"
+
+        touched = 0
+        for page in edit_result.get("pages") or []:
+            type_ = page.get("type") or "concept"
+            slug = page.get("slug") or ""
+            title = page.get("title") or ""
+            summary = page.get("summary") or ""
+            tags = page.get("tags") or []
+            body = page.get("body") or ""
+            if not slug or not body.strip():
+                continue
+
+            existing = wiki_store.get_page(type_, slug)
+            if existing and _is_suspicious_shrink(existing["body"], body):
+                memory_logger.error(
+                    f"Rejected suspicious reorganization rewrite of {type_}/{slug} for {self.user_id} "
+                    f"(new body much shorter/missing content vs old) - keeping existing page"
+                )
+                continue
+
+            wiki_store.write_page(
+                type_=type_, slug=slug, title=title or slug.replace("-", " ").title(),
+                summary=summary, body=body, tags=tags, rebuild_index=False,
+            )
+            wiki_store.append_log("reorganize", f"{title or slug} — created/updated via reorganization")
+            touched += 1
+
+        if touched:
+            wiki_store.rebuild_index()
+
+        if not touched:
+            return "No pages were created."
+        return (
+            f"Reorganized into {touched} page(s). Original source pages were left untouched - "
+            "review them and delete any that are now redundant once you've confirmed nothing was lost."
+        )
+
     async def consolidate_text(self, text: str) -> str:
         """Extract and store long-term-memory-worthy content from arbitrary
         text (e.g. a mined transcription) via the same wiki-editing ingest
@@ -654,7 +892,7 @@ New content to incorporate:
 
 Decide which EXISTING pages (if any) this content should update, and which NEW pages (if any) should be created. Respond with ONLY a JSON object of this exact shape:
 {{"update_pages": ["concepts/budgeting", ...], "create_pages": [{{"type": "entity", "slug": "acme-corp", "title": "Acme Corp"}}, ...]}}
-Use lowercase hyphenated slugs. "entity" pages are for people/organizations/places/products; "concept" pages are for themes, preferences, goals, recurring topics. If nothing in the content is memory-worthy, respond {{"update_pages": [], "create_pages": []}}.
+Use lowercase hyphenated slugs. "entity" pages are for people/organizations/places/products; "concept" pages are for themes, preferences, goals, recurring topics. Prefer one dedicated entity page per distinct named person or place over folding them into a general/catch-all page (e.g. a new fact about a specific named child belongs on that child's own page, not a shared "family" or "relationships" page) - this keeps the wiki a real encyclopedia of individually addressable subjects rather than a few large lumped ones. If nothing in the content is memory-worthy, respond {{"update_pages": [], "create_pages": []}}.
 """
 
         try:
@@ -843,7 +1081,9 @@ For each page listed above (both existing and new), produce the FULL new body - 
             return [], []
 
         index_text = wiki_store.read_index()
-        bodies_text = "\n\n".join(f"## {p['title']} ({p['type']}/{p['slug']})\n{p['body']}" for p in pages)
+        bodies_text = "\n\n".join(
+            self._truncated_page_block(p, f"## {p['title']} ({p['type']}/{p['slug']})") for p in pages
+        )
 
         prompt = f"""You are reviewing a personal long-term-memory wiki for two kinds of issues.
 
@@ -863,14 +1103,7 @@ If there are none of either, respond with empty lists.
 
         try:
             llm = get_llm_provider()
-            response = await with_retries(
-                lambda: llm.complete(
-                    [{"role": "user", "content": prompt}],
-                    response_format="json", temperature=0.2,
-                ),
-                logger=memory_logger,
-            )
-            data = json.loads(response.content)
+            data = await self._complete_json_retrying_empty(llm.complete, prompt, temperature=0.2)
         except Exception as e:
             memory_logger.error(f"Error in wiki lint LLM checks for {self.user_id}: {e}")
             return [], []

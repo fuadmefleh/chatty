@@ -406,3 +406,180 @@ async def test_get_recent_memory_rereads_after_file_changes(memory_dir):
     second = await mgr.get_recent_memory(days=7)
     assert "second message" in second
     assert "first message" in second
+
+
+class StubThinkAgent:
+    """Minimal stand-in for a StagedReACTAgent - resolve_contradiction only
+    needs agent.think(), unlike consolidate_memories' StubAgent (which only
+    needs agent.llm.complete). Records every prompt it's called with so
+    tests can assert on wording without a real ReACT tool loop."""
+
+    def __init__(self, response: str = "Fixed it."):
+        self.response = response
+        self.prompts: list = []
+
+    async def think(self, user_message: str, conversation_history=None):
+        self.prompts.append(user_message)
+        return self.response
+
+
+@pytest.mark.asyncio
+async def test_resolve_contradiction_prompts_agent_with_context_and_guidance(memory_dir):
+    mgr = MemoryManager(USER_ID)
+    agent = StubThinkAgent("Updated both pages to say two children.")
+
+    result = await mgr.resolve_contradiction(
+        page_a={"type": "concept", "slug": "important-facts", "title": "Important Facts"},
+        page_b={"type": "concept", "slug": "relationships", "title": "Relationships"},
+        description="Important Facts lists 3 children; Relationships lists 2.",
+        guidance="There are only 2 children, Nedal and Rayyan - fix Important Facts.",
+        agent=agent,
+    )
+
+    assert result == "Updated both pages to say two children."
+    assert len(agent.prompts) == 1
+    prompt = agent.prompts[0]
+    assert "Important Facts (concept/important-facts)" in prompt
+    assert "Relationships (concept/relationships)" in prompt
+    assert "Important Facts lists 3 children; Relationships lists 2." in prompt
+    assert "There are only 2 children, Nedal and Rayyan - fix Important Facts." in prompt
+
+
+@pytest.mark.asyncio
+async def test_resolve_contradiction_falls_back_to_slug_when_title_missing(memory_dir):
+    mgr = MemoryManager(USER_ID)
+    agent = StubThinkAgent()
+
+    await mgr.resolve_contradiction(
+        page_a={"type": "concept", "slug": "topic-a", "title": ""},
+        page_b={"type": "concept", "slug": "topic-b", "title": ""},
+        description="conflict",
+        guidance="pick topic-a",
+        agent=agent,
+    )
+
+    assert "topic-a (concept/topic-a)" in agent.prompts[0]
+    assert "topic-b (concept/topic-b)" in agent.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_propose_reorganization_empty_wiki_returns_empty_plan(memory_dir):
+    mgr = MemoryManager(USER_ID)
+
+    result = await mgr.propose_reorganization()
+
+    assert result == {"target_pages": []}
+
+
+@pytest.mark.asyncio
+async def test_propose_reorganization_retries_once_on_empty_llm_response(memory_dir, monkeypatch):
+    """The local LLM backend has been observed to occasionally return an
+    empty/unparseable response under load; propose_reorganization should
+    recover by retrying the same call once rather than failing outright."""
+    mgr = MemoryManager(USER_ID)
+    mgr._wiki_store.write_page(type_="concept", slug="topic", title="Topic", summary="s", body="- a")
+
+    valid_response = json.dumps({"target_pages": []})
+    monkeypatch.setattr("src.core.memory.get_llm_provider", lambda: StubLLM(["", valid_response]))
+
+    result = await mgr.propose_reorganization()
+
+    assert result == {"target_pages": []}
+    assert "error" not in result
+
+
+@pytest.mark.asyncio
+async def test_propose_reorganization_reports_error_after_exhausting_retries(memory_dir, monkeypatch):
+    mgr = MemoryManager(USER_ID)
+    mgr._wiki_store.write_page(type_="concept", slug="topic", title="Topic", summary="s", body="- a")
+
+    monkeypatch.setattr("src.core.memory.get_llm_provider", lambda: StubLLM(["", ""]))
+
+    result = await mgr.propose_reorganization()
+
+    assert result["target_pages"] == []
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_propose_reorganization_returns_target_pages_with_exists_flag(memory_dir, monkeypatch):
+    mgr = MemoryManager(USER_ID)
+    mgr._wiki_store.write_page(
+        type_="concept", slug="relationships", title="Relationships", summary="s",
+        body="- Spouse: Jane.\n- Child: Sam.",
+    )
+    mgr._wiki_store.write_page(type_="entity", slug="jane", title="Jane", summary="s", body="- Spouse.")
+
+    stub_response = json.dumps({
+        "target_pages": [
+            {"type": "entity", "slug": "jane", "title": "Jane", "summary": "Spouse.", "source_pages": ["concept/relationships"]},
+            {"type": "entity", "slug": "sam", "title": "Sam", "summary": "Child.", "source_pages": ["concept/relationships"]},
+        ],
+    })
+    monkeypatch.setattr("src.core.memory.get_llm_provider", lambda: StubLLM(stub_response))
+
+    result = await mgr.propose_reorganization()
+
+    by_slug = {t["slug"]: t for t in result["target_pages"]}
+    assert by_slug["jane"]["already_exists"] is True
+    assert by_slug["sam"]["already_exists"] is False
+    assert by_slug["sam"]["source_pages"] == ["concept/relationships"]
+
+
+@pytest.mark.asyncio
+async def test_apply_reorganization_empty_plan_returns_message(memory_dir):
+    mgr = MemoryManager(USER_ID)
+
+    result = await mgr.apply_reorganization([])
+
+    assert result == "Nothing to reorganize."
+
+
+@pytest.mark.asyncio
+async def test_apply_reorganization_writes_new_pages_and_keeps_sources(memory_dir, monkeypatch):
+    mgr = MemoryManager(USER_ID)
+    mgr._wiki_store.write_page(
+        type_="concept", slug="relationships", title="Relationships", summary="s",
+        body="- Spouse: Jane.\n- Child: Sam.",
+    )
+
+    edit_response = json.dumps({
+        "pages": [
+            {"type": "entity", "slug": "jane", "title": "Jane", "summary": "Spouse", "tags": [], "body": "- Spouse: Jane."},
+            {"type": "entity", "slug": "sam", "title": "Sam", "summary": "Child", "tags": [], "body": "- Child: Sam."},
+        ],
+    })
+    monkeypatch.setattr("src.core.memory.get_llm_provider", lambda: StubLLM(edit_response))
+
+    result = await mgr.apply_reorganization([
+        {"type": "entity", "slug": "jane", "title": "Jane", "summary": "", "source_pages": ["concept/relationships"], "already_exists": False},
+        {"type": "entity", "slug": "sam", "title": "Sam", "summary": "", "source_pages": ["concept/relationships"], "already_exists": False},
+    ])
+
+    assert "Reorganized into 2 page(s)" in result
+    assert mgr._wiki_store.get_page("entity", "jane")["body"] == "- Spouse: Jane."
+    assert mgr._wiki_store.get_page("entity", "sam")["body"] == "- Child: Sam."
+    # Source page is untouched - reorganization never deletes/edits sources.
+    source = mgr._wiki_store.get_page("concept", "relationships")
+    assert source is not None
+    assert "Spouse: Jane" in source["body"]
+    assert "Child: Sam" in source["body"]
+
+
+@pytest.mark.asyncio
+async def test_apply_reorganization_rejects_suspicious_shrink_on_existing_page(memory_dir, monkeypatch):
+    mgr = MemoryManager(USER_ID)
+    long_body = "\n".join(f"- Detail line {i} with enough content to matter." for i in range(10))
+    mgr._wiki_store.write_page(type_="entity", slug="jane", title="Jane", summary="s", body=long_body)
+
+    edit_response = json.dumps({
+        "pages": [{"type": "entity", "slug": "jane", "title": "Jane", "summary": "s", "tags": [], "body": "- one line"}],
+    })
+    monkeypatch.setattr("src.core.memory.get_llm_provider", lambda: StubLLM(edit_response))
+
+    result = await mgr.apply_reorganization([
+        {"type": "entity", "slug": "jane", "title": "Jane", "summary": "", "source_pages": [], "already_exists": True},
+    ])
+
+    assert result == "No pages were created."
+    assert mgr._wiki_store.get_page("entity", "jane")["body"] == long_body
