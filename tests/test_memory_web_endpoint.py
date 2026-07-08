@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import chatty_web_server as server
 from src.core.wiki_store import WikiStore
+from src.web import config as web_config
 
 USER_ID = "test_web_memory_user"
 
@@ -25,13 +26,13 @@ def client():
 @pytest.fixture(autouse=True)
 def isolated_memory_dir(monkeypatch):
     tmp_dir = Path(tempfile.mkdtemp())
-    monkeypatch.setattr(server, "MEMORY_DIR", tmp_dir)
-    monkeypatch.setattr(server, "WEB_USER_ID", USER_ID)
+    monkeypatch.setattr(web_config, "MEMORY_DIR", tmp_dir)
+    monkeypatch.setattr(web_config, "WEB_USER_ID", USER_ID)
     return tmp_dir
 
 
 def auth_headers():
-    return {"X-API-Key": server.API_KEY}
+    return {"X-API-Key": web_config.API_KEY}
 
 
 def test_memory_endpoint_exposes_wiki_pages_and_catalog(client, isolated_memory_dir):
@@ -239,9 +240,9 @@ async def test_get_memory_health_endpoint_after_lint_run(client, isolated_memory
     from src.core import config
     from src.core.memory import MemoryManager
 
-    # MemoryManager resolves paths off config.MEMORY_DIR, a separate binding
-    # from this file's server.MEMORY_DIR - both must point at the same
-    # isolated tmp dir or lint_wiki() would touch the real memory/ directory.
+    # MemoryManager resolves paths off src.core.config.MEMORY_DIR, a separate
+    # binding from this file's src.web.config.MEMORY_DIR - both must point at
+    # the same isolated tmp dir or lint_wiki() would touch the real memory/ dir.
     monkeypatch.setattr(config, "MEMORY_DIR", isolated_memory_dir)
     monkeypatch.setattr("src.core.memory.get_llm_provider", lambda: _StubLLM())
 

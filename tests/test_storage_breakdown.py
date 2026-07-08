@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import chatty_web_server as server
+from src.web import config
+from src.web.routers import health
 
 
 @pytest.fixture
@@ -17,7 +19,7 @@ def client():
 
 
 def _headers():
-    return {"X-API-Key": server.API_KEY}
+    return {"X-API-Key": config.API_KEY}
 
 
 def test_wrong_api_key_rejected(client):
@@ -28,7 +30,7 @@ def test_wrong_api_key_rejected(client):
 # ── _get_storage_breakdown unit tests ────────────────────────────────────────
 
 def test_get_storage_breakdown_missing_path():
-    result = server._get_storage_breakdown("/nonexistent/path/xyz", depth=1)
+    result = health._get_storage_breakdown("/nonexistent/path/xyz", depth=1)
     assert result == []
 
 
@@ -40,7 +42,7 @@ def test_get_storage_breakdown_depth_0():
     mock_result.stdout = mock_stdout
 
     with patch("subprocess.run", return_value=mock_result):
-        result = server._get_storage_breakdown("/tmp", depth=0)
+        result = health._get_storage_breakdown("/tmp", depth=0)
 
     assert len(result) == 1
     assert result[0]["path"] == "/tmp"
@@ -60,7 +62,7 @@ def test_get_storage_breakdown_depth_1():
     mock_result.stdout = mock_stdout
 
     with patch("subprocess.run", return_value=mock_result):
-        result = server._get_storage_breakdown("/tmp", depth=1)
+        result = health._get_storage_breakdown("/tmp", depth=1)
 
     assert len(result) == 3
     # Root mountpoint should be first
@@ -81,7 +83,7 @@ def test_get_storage_breakdown_depth_1_calculation():
     mock_result.stdout = mock_stdout
 
     with patch("subprocess.run", return_value=mock_result):
-        result = server._get_storage_breakdown("/tmp", depth=1)
+        result = health._get_storage_breakdown("/tmp", depth=1)
 
     # /tmp should be depth 0 (the mountpoint itself)
     root_entry = [r for r in result if r["path"] == "/tmp"][0]
@@ -95,7 +97,7 @@ def test_get_storage_breakdown_subprocess_timeout():
     """TimeoutExpired is caught and empty result returned."""
     import subprocess as submod
     with patch("subprocess.run", side_effect=submod.TimeoutExpired("du", 60)):
-        result = server._get_storage_breakdown("/tmp", depth=1)
+        result = health._get_storage_breakdown("/tmp", depth=1)
     assert result == []
 
 
@@ -109,7 +111,7 @@ def test_storage_breakdown_endpoint_no_mountpoint(client):
 
     with (
         patch("psutil.disk_partitions", return_value=mock_partitions),
-        patch.object(server, "_get_storage_breakdown", return_value=[
+        patch.object(health, "_get_storage_breakdown", return_value=[
             {"path": "/", "size_bytes": 50000000000, "depth": 0},
             {"path": "/home", "size_bytes": 30000000000, "depth": 1},
             {"path": "/var", "size_bytes": 15000000000, "depth": 1},
@@ -131,7 +133,7 @@ def test_storage_breakdown_endpoint_no_mountpoint(client):
 def test_storage_breakdown_endpoint_with_mountpoint(client):
     """With mountpoint param, returns breakdown for that partition only."""
     with (
-        patch.object(server, "_get_storage_breakdown", return_value=[
+        patch.object(health, "_get_storage_breakdown", return_value=[
             {"path": "/mnt/data", "size_bytes": 1000000, "depth": 0},
             {"path": "/mnt/data/photos", "size_bytes": 800000, "depth": 1},
         ]),
@@ -151,7 +153,7 @@ def test_storage_breakdown_endpoint_with_mountpoint(client):
 def test_storage_breakdown_endpoint_depth_param(client):
     """depth parameter is passed through to _get_storage_breakdown."""
     with (
-        patch.object(server, "_get_storage_breakdown", return_value=[
+        patch.object(health, "_get_storage_breakdown", return_value=[
             {"path": "/", "size_bytes": 100, "depth": 0},
         ]),
         patch("psutil.disk_partitions", return_value=[
@@ -173,7 +175,7 @@ def test_storage_breakdown_skips_snap_partitions(client):
 
     with (
         patch("psutil.disk_partitions", return_value=mock_partitions),
-        patch.object(server, "_get_storage_breakdown", return_value=[
+        patch.object(health, "_get_storage_breakdown", return_value=[
             {"path": "/", "size_bytes": 100, "depth": 0},
         ]),
     ):

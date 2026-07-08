@@ -11,17 +11,18 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import chatty_web_server as server
+from src.web import config, state
 
 
 @pytest.fixture
 def client():
     # Plain TestClient (not used as a context manager) does NOT run the
-    # @app.on_event("startup") handler, so this never touches SkillsManager.
+    # app's lifespan handler, so this never touches SkillsManager.
     return TestClient(server.app)
 
 
 def _headers(**overrides):
-    headers = {"X-API-Key": server.API_KEY}
+    headers = {"X-API-Key": config.API_KEY}
     headers.update(overrides)
     return headers
 
@@ -40,9 +41,9 @@ def test_retry_merges_delegates_and_returns_summaries(client):
     assert resp.json() == {"summaries": ["🔧 Deferred merge completed: fix a bug"]}
     mock_retry.assert_awaited_once()
     args, kwargs = mock_retry.await_args
-    assert args[0] is server.feature_requests_manager
+    assert args[0] is state.feature_requests_manager
     assert kwargs["send_message_callback"] is None
-    assert kwargs["user_id"] == server.WEB_USER_ID
+    assert kwargs["user_id"] == config.WEB_USER_ID
 
 
 def test_retry_merges_empty_when_nothing_pending(client):

@@ -9,7 +9,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import chatty_web_server as server
+from src.web import state
+from src.web.routers import audio
 
 
 class FakeWebChatAgent:
@@ -40,24 +41,24 @@ def fake_agent(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def clear_connections():
-    server._active_chat_connections.clear()
+    state._active_chat_connections.clear()
     yield
-    server._active_chat_connections.clear()
+    state._active_chat_connections.clear()
 
 
 @pytest.mark.asyncio
 async def test_no_open_connection_drops_silently():
     # No connection registered for this device - should not raise.
-    await server._push_assistant_response("device-none", "what's the weather")
+    await audio._push_assistant_response("device-none", "what's the weather")
     assert FakeWebChatAgent.last_instance is None
 
 
 @pytest.mark.asyncio
 async def test_open_connection_streams_chunks_then_done():
-    connection = server._ChatConnection(websocket=AsyncMock())
-    server._active_chat_connections["device-123"] = connection
+    connection = state._ChatConnection(websocket=AsyncMock())
+    state._active_chat_connections["device-123"] = connection
 
-    await server._push_assistant_response("device-123", "what's the weather")
+    await audio._push_assistant_response("device-123", "what's the weather")
 
     assert FakeWebChatAgent.last_instance.query == "what's the weather"
     calls = [json.loads(c.args[0]) for c in connection.websocket.send_text.await_args_list]
@@ -71,9 +72,9 @@ async def test_open_connection_streams_chunks_then_done():
 
 @pytest.mark.asyncio
 async def test_send_failure_is_logged_not_raised():
-    connection = server._ChatConnection(websocket=AsyncMock())
+    connection = state._ChatConnection(websocket=AsyncMock())
     connection.websocket.send_text = AsyncMock(side_effect=RuntimeError("socket closed"))
-    server._active_chat_connections["device-123"] = connection
+    state._active_chat_connections["device-123"] = connection
 
     # Should not raise even though the underlying send fails.
-    await server._push_assistant_response("device-123", "what's the weather")
+    await audio._push_assistant_response("device-123", "what's the weather")

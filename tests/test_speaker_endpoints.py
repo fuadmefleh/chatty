@@ -12,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import chatty_web_server as server
 from skills.speakers.speaker_manager import SpeakerManager
+from skills.transcriptions.transcriptions_manager import TranscriptionsManager
+from src.web import config, state
 
 
 @pytest.fixture
@@ -21,14 +23,14 @@ def client():
 
 @pytest.fixture(autouse=True)
 def isolated_managers(monkeypatch):
-    monkeypatch.setattr(server, "transcriptions_manager", server.TranscriptionsManager(data_dir=tempfile.mkdtemp()))
-    monkeypatch.setattr(server, "speaker_manager", SpeakerManager(data_dir=tempfile.mkdtemp()))
-    monkeypatch.setattr(server, "WEB_USER_ID", "web_user")
+    monkeypatch.setattr(state, "transcriptions_manager", TranscriptionsManager(data_dir=tempfile.mkdtemp()))
+    monkeypatch.setattr(state, "speaker_manager", SpeakerManager(data_dir=tempfile.mkdtemp()))
+    monkeypatch.setattr(config, "WEB_USER_ID", "web_user")
     yield
 
 
 def auth_headers():
-    return {"X-API-Key": server.API_KEY}
+    return {"X-API-Key": config.API_KEY}
 
 
 def unit_vector(seed: int, dim: int = 8):
@@ -45,7 +47,7 @@ def make_transcription_with_segments(embeddings=None):
         {"start": 2.0, "end": 4.0, "local_speaker": "SPEAKER_01", "text": "hello back"},
     ]
     embeddings = embeddings or {"SPEAKER_00": unit_vector(1), "SPEAKER_01": unit_vector(2)}
-    return server.transcriptions_manager.add_transcription(
+    return state.transcriptions_manager.add_transcription(
         "web_user", "SPEAKER_00: hi there\nSPEAKER_01: hello back",
         segments=segments, speaker_embeddings=embeddings,
     )

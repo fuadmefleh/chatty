@@ -15,30 +15,31 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import chatty_web_server as server
 from src.core.memory import ConversationHistoryManager
+from src.web import config as web_config, media_processing
 
 
 @pytest.fixture
 def client():
     # Plain TestClient (not used as a context manager) does NOT run the
-    # @app.on_event("startup") handler, so this never touches SkillsManager.
+    # app's lifespan handler, so this never touches SkillsManager.
     return TestClient(server.app)
 
 
 @pytest.fixture(autouse=True)
 def isolated_uploads(monkeypatch, tmp_path):
-    monkeypatch.setattr(server, "MEMORY_DIR", tmp_path)
-    monkeypatch.setattr(server, "WEB_USER_ID", "web_user")
+    monkeypatch.setattr(web_config, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr(web_config, "WEB_USER_ID", "web_user")
     yield
 
 
 def _auth_headers(**overrides):
-    headers = {"X-API-Key": server.API_KEY}
+    headers = {"X-API-Key": web_config.API_KEY}
     headers.update(overrides)
     return headers
 
 
 def _seed_file(name: str, data: bytes = b"hello") -> str:
-    path = server._chat_uploads_dir() / name
+    path = media_processing._chat_uploads_dir() / name
     path.write_bytes(data)
     return name
 
@@ -73,7 +74,7 @@ def test_upload_empty_file_rejected(client):
 
 
 def test_upload_oversize_file_rejected(client, monkeypatch):
-    monkeypatch.setattr(server, "CHAT_ATTACHMENT_MAX_BYTES", 10)
+    monkeypatch.setattr(web_config, "CHAT_ATTACHMENT_MAX_BYTES", 10)
     resp = client.post(
         "/api/chatty/chat/attachments",
         files={"file": ("photo.jpg", b"x" * 20, "image/jpeg")},
@@ -94,7 +95,7 @@ def test_upload_image_success_writes_file_and_returns_metadata(client):
     assert body["id"].endswith(".jpg")
     assert body["url"] == f"/api/chatty/chat-media/{body['id']}"
 
-    stored = server._chat_uploads_dir() / body["id"]
+    stored = media_processing._chat_uploads_dir() / body["id"]
     assert stored.read_bytes() == b"fake-jpeg-bytes"
 
 
@@ -126,7 +127,7 @@ def test_get_chat_media_accepts_header_auth(client):
 
 def test_get_chat_media_accepts_query_param_auth(client):
     name = _seed_file("11111111-1111-1111-1111-111111111113.mp4", b"videodata")
-    resp = client.get(f"/api/chatty/chat-media/{name}?api_key={server.API_KEY}")
+    resp = client.get(f"/api/chatty/chat-media/{name}?api_key={web_config.API_KEY}")
     assert resp.status_code == 200
     assert resp.content == b"videodata"
     assert resp.headers["content-type"] == "video/mp4"
@@ -161,11 +162,11 @@ def test_get_chat_media_missing_file_404s(client):
 
 @pytest.mark.asyncio
 async def test_build_attachment_context_image(monkeypatch):
-    monkeypatch.setattr(server, "_convert_image_to_jpeg_b64", lambda data, ext: "b64data")
+    monkeypatch.setattr(media_processing, "_convert_image_to_jpeg_b64", lambda data, ext: "b64data")
     describe_mock = AsyncMock(return_value="A photo of a cat on a windowsill.")
-    monkeypatch.setattr(server, "_describe_image", describe_mock)
+    monkeypatch.setattr(media_processing, "_describe_image", describe_mock)
 
-    result = await server._build_attachment_context(b"fake-bytes", "jpg", "image", "look at my cat")
+    result = await media_processing._build_attachment_context(b"fake-bytes", "jpg", "image", "look at my cat")
 
     assert result == "A photo of a cat on a windowsill."
     describe_mock.assert_awaited_once()
@@ -176,16 +177,16 @@ async def test_build_attachment_context_image(monkeypatch):
 @pytest.mark.asyncio
 async def test_build_attachment_context_video_combines_frames_and_transcript(monkeypatch):
     monkeypatch.setattr(
-        server, "_extract_video_parts", lambda data, ext: ([b"frame1", b"frame2"], b"audio-bytes")
+        media_processing, "_extract_video_parts", lambda data, ext: ([b"frame1", b"frame2"], b"audio-bytes")
     )
     describe_mock = AsyncMock(side_effect=["A person waving.", "A dog running."])
-    monkeypatch.setattr(server, "_describe_image", describe_mock)
+    monkeypatch.setattr(media_processing, "_describe_image", describe_mock)
 
     fake_stt = MagicMock()
     fake_stt.transcribe = AsyncMock(return_value=MagicMock(text="hello from the video"))
-    monkeypatch.setattr(server, "get_stt_provider", lambda: fake_stt)
+    monkeypatch.setattr(media_processing, "get_stt_provider", lambda: fake_stt)
 
-    result = await server._build_attachment_context(b"fake-video-bytes", "mp4", "video", "check this out")
+    result = await media_processing._build_attachment_context(b"fake-video-bytes", "mp4", "video", "check this out")
 
     assert "Frame 1: A person waving." in result
     assert "Frame 2: A dog running." in result
@@ -195,10 +196,10 @@ async def test_build_attachment_context_video_combines_frames_and_transcript(mon
 
 @pytest.mark.asyncio
 async def test_build_attachment_context_video_no_frames_or_audio(monkeypatch):
-    monkeypatch.setattr(server, "_extract_video_parts", lambda data, ext: ([], None))
-    monkeypatch.setattr(server, "get_stt_provider", lambda: MagicMock())
+    monkeypatch.setattr(media_processing, "_extract_video_parts", lambda data, ext: ([], None))
+    monkeypatch.setattr(media_processing, "get_stt_provider", lambda: MagicMock())
 
-    result = await server._build_attachment_context(b"bytes", "mp4", "video", None)
+    result = await media_processing._build_attachment_context(b"bytes", "mp4", "video", None)
     assert "couldn't be analyzed" in result
 
 
@@ -206,14 +207,14 @@ async def test_build_attachment_context_video_no_frames_or_audio(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_load_chat_attachment_context_invalid_id():
-    context, meta = await server._load_chat_attachment_context("../../etc/passwd", None)
+    context, meta = await media_processing._load_chat_attachment_context("../../etc/passwd", None)
     assert meta is None
     assert "invalid" in context.lower()
 
 
 @pytest.mark.asyncio
 async def test_load_chat_attachment_context_missing_file():
-    context, meta = await server._load_chat_attachment_context(
+    context, meta = await media_processing._load_chat_attachment_context(
         "22222222-2222-2222-2222-222222222222.jpg", None
     )
     assert meta is None
@@ -224,9 +225,9 @@ async def test_load_chat_attachment_context_missing_file():
 async def test_load_chat_attachment_context_success(monkeypatch):
     name = _seed_file("33333333-3333-3333-3333-333333333333.jpg", b"jpegbytes")
     describe_mock = AsyncMock(return_value="A sunset over the mountains.")
-    monkeypatch.setattr(server, "_build_attachment_context", describe_mock)
+    monkeypatch.setattr(media_processing, "_build_attachment_context", describe_mock)
 
-    context, meta = await server._load_chat_attachment_context(name, "look at this")
+    context, meta = await media_processing._load_chat_attachment_context(name, "look at this")
 
     assert meta == {"kind": "image", "url": f"/api/chatty/chat-media/{name}"}
     assert "sunset over the mountains" in context

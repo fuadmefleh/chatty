@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import chatty_web_server as server
 from src.managers.webcam_manager import WebcamSourcesManager, WebcamSuggestionsManager
+from src.web import config, state
 
 
 @pytest.fixture
@@ -22,13 +23,13 @@ def client():
 @pytest.fixture(autouse=True)
 def isolated_managers(monkeypatch):
     data_dir = tempfile.mkdtemp()
-    monkeypatch.setattr(server, "webcam_sources_manager", WebcamSourcesManager(data_dir=data_dir))
-    monkeypatch.setattr(server, "webcam_suggestions_manager", WebcamSuggestionsManager(data_dir=data_dir))
+    monkeypatch.setattr(state, "webcam_sources_manager", WebcamSourcesManager(data_dir=data_dir))
+    monkeypatch.setattr(state, "webcam_suggestions_manager", WebcamSuggestionsManager(data_dir=data_dir))
     yield
 
 
 def auth_headers():
-    return {"X-API-Key": server.API_KEY}
+    return {"X-API-Key": config.API_KEY}
 
 
 def test_sources_list_starts_empty(client):
@@ -100,14 +101,14 @@ def test_delete_unknown_source_404s(client):
 
 
 def test_suggestions_scan_returns_list(client):
-    with patch("chatty_web_server.run_webcam_discovery_scan", new=AsyncMock(return_value="ok")):
+    with patch("src.web.routers.webcam.run_webcam_discovery_scan", new=AsyncMock(return_value="ok")):
         resp = client.post("/api/chatty/webcam-suggestions/scan", headers=auth_headers())
     assert resp.status_code == 200
     assert resp.json() == []
 
 
 def test_approve_suggestion_creates_linked_source(client):
-    suggestion = server.webcam_suggestions_manager.create(
+    suggestion = state.webcam_suggestions_manager.create(
         name="Discovered Cam", url="https://cam.example/discovered",
         discovered_url="https://reddit.com/thread", kind="snapshot", location="NYC", rationale="looks real",
     )
@@ -131,7 +132,7 @@ def test_approve_suggestion_creates_linked_source(client):
 
 
 def test_dismiss_and_delete_suggestion(client):
-    suggestion = server.webcam_suggestions_manager.create(
+    suggestion = state.webcam_suggestions_manager.create(
         name="Cam", url="https://cam.example", discovered_url="https://reddit.com/x",
     )
 

@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from fastapi.testclient import TestClient
 import chatty_web_server
 from skills.video_production import video_manager
+from src.web import config
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +29,7 @@ def clean_jobs_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def api_key(monkeypatch):
     key = "test-key-123"
-    monkeypatch.setattr(chatty_web_server, "API_KEY", key)
+    monkeypatch.setattr(config, "API_KEY", key)
     return key
 
 
@@ -220,7 +221,7 @@ def test_delete_video_job_not_found(client, api_key):
 # -- background generation integration --
 
 
-@patch("chatty_web_server._video_api")
+@patch("src.web.routers.video_production._video_api")
 def test_create_video_job_generates_success(mock_video_api, client, api_key):
     """Verify that creating a job triggers generation and updates status on success."""
     mock_video_api.generate_video = AsyncMock(return_value={"success": True, "url": "/api/chatty/chat-media/test.mp4?api_key=abc"})
@@ -237,7 +238,7 @@ def test_create_video_job_generates_success(mock_video_api, client, api_key):
     assert "test.mp4" in job["url"]
 
 
-@patch("chatty_web_server._video_api")
+@patch("src.web.routers.video_production._video_api")
 def test_create_video_job_generates_failure(mock_video_api, client, api_key):
     """Verify that a failed generation is recorded in the job."""
     mock_video_api.generate_video = AsyncMock(return_value={"success": False, "error": "API error"})
@@ -253,7 +254,7 @@ def test_create_video_job_generates_failure(mock_video_api, client, api_key):
     assert "API error" in job["error"]
 
 
-@patch("chatty_web_server._video_api")
+@patch("src.web.routers.video_production._video_api")
 def test_create_video_job_generation_exception(mock_video_api, client, api_key):
     """Verify that exceptions during generation are caught and recorded."""
     mock_video_api.generate_video = AsyncMock(side_effect=RuntimeError("network down"))

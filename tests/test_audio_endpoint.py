@@ -10,26 +10,29 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import chatty_web_server as server
+from skills.transcriptions.transcriptions_manager import TranscriptionsManager
+from src.web import config, state
+from src.web.routers import audio
 
 
 @pytest.fixture
 def client():
     # Plain TestClient (not used as a context manager) does NOT run the
-    # @app.on_event("startup") handler, so this never touches SkillsManager.
+    # app's lifespan handler, so this never touches SkillsManager.
     return TestClient(server.app)
 
 
 @pytest.fixture(autouse=True)
 def isolated_transcriptions_manager(monkeypatch):
     tmpdir = tempfile.mkdtemp()
-    monkeypatch.setattr(server, "transcriptions_manager", server.TranscriptionsManager(data_dir=tmpdir))
-    monkeypatch.setattr(server, "WEB_USER_ID", "web_user")
+    monkeypatch.setattr(state, "transcriptions_manager", TranscriptionsManager(data_dir=tmpdir))
+    monkeypatch.setattr(config, "WEB_USER_ID", "web_user")
     yield
 
 
 def _headers(**overrides):
     headers = {
-        "X-API-Key": server.API_KEY,
+        "X-API-Key": config.API_KEY,
         "X-Device-Id": "device-123",
         "X-Chunk-Start": "2026-07-03T21:08:00.000Z",
         "X-Chunk-Duration": "20.00",
@@ -82,7 +85,7 @@ def test_valid_chunk_accepted_and_transcribed_plain_text(client):
     assert call_kwargs["files"]["file"][1] == b"fake-m4a-bytes"
     assert call_kwargs["data"]["diarize"] == "true"
 
-    pending = server.transcriptions_manager.get_pending("web_user")
+    pending = state.transcriptions_manager.get_pending("web_user")
     assert len(pending) == 1
     assert "buy milk tomorrow" in pending[0].content
     assert "device-123" in pending[0].content
@@ -105,7 +108,7 @@ def test_diarized_segments_formatted_per_speaker(client):
         resp = client.post("/api/chatty/audio", content=b"fake-m4a-bytes", headers=_headers())
 
     assert resp.status_code == 202
-    pending = server.transcriptions_manager.get_pending("web_user")
+    pending = state.transcriptions_manager.get_pending("web_user")
     assert len(pending) == 1
     assert "SPEAKER_00: how's the rocket project going" in pending[0].content
     assert "SPEAKER_01: pretty well, launch is next week" in pending[0].content
@@ -118,7 +121,7 @@ def test_no_speech_produces_no_pending_transcription(client):
         resp = client.post("/api/chatty/audio", content=b"fake-m4a-bytes", headers=_headers())
 
     assert resp.status_code == 202
-    assert server.transcriptions_manager.get_pending("web_user") == []
+    assert state.transcriptions_manager.get_pending("web_user") == []
 
 
 def test_stt_engine_failure_still_returns_202_but_stores_nothing(client):
@@ -129,7 +132,7 @@ def test_stt_engine_failure_still_returns_202_but_stores_nothing(client):
 
     # Client already got 202 before the background task ran the failing STT call.
     assert resp.status_code == 202
-    assert server.transcriptions_manager.get_pending("web_user") == []
+    assert state.transcriptions_manager.get_pending("web_user") == []
 
 
 # ── Assistant mode (X-Mode: assistant + wake-word push) ─────────────────────
@@ -139,7 +142,7 @@ def test_assistant_mode_without_wake_word_transcribed_normally(client):
     mock_post = AsyncMock(return_value=_mock_stt_response({"text": "buy milk tomorrow", "segments": [], "language": "en"}))
     mock_push = AsyncMock()
 
-    with patch("httpx.AsyncClient.post", mock_post), patch.object(server, "_push_assistant_response", mock_push):
+    with patch("httpx.AsyncClient.post", mock_post), patch.object(audio, "_push_assistant_response", mock_push):
         resp = client.post(
             "/api/chatty/audio",
             content=b"fake-m4a-bytes",
@@ -148,7 +151,7 @@ def test_assistant_mode_without_wake_word_transcribed_normally(client):
 
     assert resp.status_code == 202
     mock_push.assert_not_awaited()
-    pending = server.transcriptions_manager.get_pending("web_user")
+    pending = state.transcriptions_manager.get_pending("web_user")
     assert len(pending) == 1
     assert "buy milk tomorrow" in pending[0].content
 
@@ -159,12 +162,12 @@ def test_non_assistant_mode_ignores_wake_word(client):
     mock_post = AsyncMock(return_value=_mock_stt_response({"text": "hey chatty remind me to call mom", "segments": [], "language": "en"}))
     mock_push = AsyncMock()
 
-    with patch("httpx.AsyncClient.post", mock_post), patch.object(server, "_push_assistant_response", mock_push):
+    with patch("httpx.AsyncClient.post", mock_post), patch.object(audio, "_push_assistant_response", mock_push):
         resp = client.post("/api/chatty/audio", content=b"fake-m4a-bytes", headers=_headers())
 
     assert resp.status_code == 202
     mock_push.assert_not_awaited()
-    pending = server.transcriptions_manager.get_pending("web_user")
+    pending = state.transcriptions_manager.get_pending("web_user")
     assert len(pending) == 1
     assert "hey chatty remind me to call mom" in pending[0].content
 
@@ -175,7 +178,7 @@ def test_assistant_mode_wake_word_triggers_push_and_skips_mining(client):
     ))
     mock_push = AsyncMock()
 
-    with patch("httpx.AsyncClient.post", mock_post), patch.object(server, "_push_assistant_response", mock_push):
+    with patch("httpx.AsyncClient.post", mock_post), patch.object(audio, "_push_assistant_response", mock_push):
         resp = client.post(
             "/api/chatty/audio",
             content=b"fake-m4a-bytes",
@@ -185,7 +188,7 @@ def test_assistant_mode_wake_word_triggers_push_and_skips_mining(client):
     assert resp.status_code == 202
     mock_push.assert_awaited_once_with("device-123", "what's the weather today")
     # Skipped mining: the wake-word chunk never enters the pending queue.
-    assert server.transcriptions_manager.get_pending("web_user") == []
+    assert state.transcriptions_manager.get_pending("web_user") == []
 
 
 def test_assistant_mode_wake_word_alone_uses_fallback_prompt(client):
@@ -194,7 +197,7 @@ def test_assistant_mode_wake_word_alone_uses_fallback_prompt(client):
     mock_post = AsyncMock(return_value=_mock_stt_response({"text": "Chatty", "segments": [], "language": "en"}))
     mock_push = AsyncMock()
 
-    with patch("httpx.AsyncClient.post", mock_post), patch.object(server, "_push_assistant_response", mock_push):
+    with patch("httpx.AsyncClient.post", mock_post), patch.object(audio, "_push_assistant_response", mock_push):
         resp = client.post(
             "/api/chatty/audio",
             content=b"fake-m4a-bytes",
@@ -205,5 +208,5 @@ def test_assistant_mode_wake_word_alone_uses_fallback_prompt(client):
     mock_push.assert_awaited_once()
     call_args = mock_push.await_args.args
     assert call_args[0] == "device-123"
-    assert call_args[1] == server._ASSISTANT_FALLBACK_PROMPT
-    assert server.transcriptions_manager.get_pending("web_user") == []
+    assert call_args[1] == audio._ASSISTANT_FALLBACK_PROMPT
+    assert state.transcriptions_manager.get_pending("web_user") == []
