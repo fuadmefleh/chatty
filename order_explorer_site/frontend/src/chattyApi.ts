@@ -386,26 +386,46 @@ export interface ReorganizeTargetPage {
   already_exists: boolean;
 }
 
-export interface ReorganizeProposal {
-  target_pages: ReorganizeTargetPage[];
-  error?: string;
+export type ReorganizeStatus =
+  | 'idle'
+  | 'proposing'
+  | 'proposed'
+  | 'propose_error'
+  | 'applying'
+  | 'applied'
+  | 'apply_error';
+
+export interface ReorganizeState {
+  status: ReorganizeStatus;
+  target_pages: ReorganizeTargetPage[] | null;
+  // "type/slug" keys already applied from the current proposal - accumulates
+  // across multiple apply calls, so applying a subset doesn't hide the rest.
+  applied_keys: string[];
+  error: string | null;
+  apply_result: string | null;
+  updated_at: string | null;
 }
 
-// One LLM call over the whole wiki - read-only, writes nothing. Expect
-// tens of seconds, not instant.
-export const proposeWikiReorganization = async (): Promise<ReorganizeProposal> => {
-  const res = await chattyApi.post<ReorganizeProposal>('/api/chatty/memory/reorganize/propose');
+// Both propose and apply run as background jobs server-side (one LLM call
+// each, tens of seconds or more) - these just kick a job off or read its
+// current state; the caller is free to navigate away and poll back later.
+export const getReorganizeStatus = async (): Promise<ReorganizeState> => {
+  const res = await chattyApi.get<ReorganizeState>('/api/chatty/memory/reorganize/status');
   return res.data;
 };
 
-// Executes a (possibly user-trimmed) plan from proposeWikiReorganization().
+export const proposeWikiReorganization = async (): Promise<ReorganizeState> => {
+  const res = await chattyApi.post<ReorganizeState>('/api/chatty/memory/reorganize/propose');
+  return res.data;
+};
+
 // Only ever creates/overwrites the listed target pages - never deletes
 // their source pages.
-export const applyWikiReorganization = async (targetPages: ReorganizeTargetPage[]): Promise<string> => {
-  const res = await chattyApi.post<{ result: string }>('/api/chatty/memory/reorganize/apply', {
+export const applyWikiReorganization = async (targetPages: ReorganizeTargetPage[]): Promise<ReorganizeState> => {
+  const res = await chattyApi.post<ReorganizeState>('/api/chatty/memory/reorganize/apply', {
     target_pages: targetPages,
   });
-  return res.data.result;
+  return res.data;
 };
 
 // ── Code Browser ─────────────────────────────────────────────────────────────

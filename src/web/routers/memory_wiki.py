@@ -1,8 +1,9 @@
-from typing import List
+from typing import Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from src.managers import wiki_reorganize_manager
 from src.web import config, helpers, state
 from src.web.auth import require_api_key
 
@@ -213,28 +214,73 @@ async def resolve_memory_contradiction(body: ContradictionResolveRequest):
     return {"result": result}
 
 
-@router.post("/reorganize/propose")
-async def propose_memory_reorganization():
-    """Read-only: one LLM call over the whole wiki proposing a more
-    granular target page structure. Nothing is written - the frontend
-    shows this plan for review before /reorganize/apply executes it."""
+@router.get("/reorganize/status")
+async def get_reorganize_status():
+    """Poll the current propose/apply job state - see
+    src/managers/wiki_reorganize_manager.py. Lets the frontend disconnect
+    while a job runs in the background and pick the result back up later."""
+    return wiki_reorganize_manager.get_state(config.WEB_USER_ID)
+
+
+async def _run_propose_reorganization(user_id: str) -> None:
     from src.core.memory import MemoryManager
 
-    memory_manager = MemoryManager(config.WEB_USER_ID)
-    return await memory_manager.propose_reorganization()
+    memory_manager = MemoryManager(user_id)
+    try:
+        result = await memory_manager.propose_reorganization()
+    except Exception as e:
+        wiki_reorganize_manager.set_propose_error(user_id, str(e))
+        return
+    if result.get("error"):
+        wiki_reorganize_manager.set_propose_error(user_id, result["error"])
+    else:
+        wiki_reorganize_manager.set_proposed(user_id, result["target_pages"])
+
+
+@router.post("/reorganize/propose")
+async def propose_memory_reorganization(background_tasks: BackgroundTasks):
+    """Kick off a read-only LLM pass over the whole wiki proposing a more
+    granular target page structure, in the background - nothing is written,
+    and the caller doesn't have to stay connected while it runs. Poll
+    /reorganize/status for the result; the frontend shows it for review
+    before /reorganize/apply executes it."""
+    current = wiki_reorganize_manager.get_state(config.WEB_USER_ID)
+    if current["status"] == "proposing":
+        return current
+    new_state = wiki_reorganize_manager.start_proposing(config.WEB_USER_ID)
+    background_tasks.add_task(_run_propose_reorganization, config.WEB_USER_ID)
+    return new_state
+
+
+async def _run_apply_reorganization(user_id: str, target_pages: List[Dict]) -> None:
+    from src.core.memory import MemoryManager
+
+    applied_keys = [f"{t['type']}/{t['slug']}" for t in target_pages]
+    memory_manager = MemoryManager(user_id)
+    try:
+        result = await memory_manager.apply_reorganization(target_pages)
+    except Exception as e:
+        wiki_reorganize_manager.set_apply_error(user_id, str(e))
+        return
+    wiki_reorganize_manager.set_applied(user_id, applied_keys, result)
 
 
 @router.post("/reorganize/apply")
-async def apply_memory_reorganization(body: ReorganizeApplyRequest):
-    """Executes a (possibly user-trimmed) plan from /reorganize/propose.
-    Only ever creates/overwrites the listed target pages - never deletes
-    their source pages, so this is safe to re-run and safe to review
-    afterward before manually cleaning up stale pages."""
-    from src.core.memory import MemoryManager
-
-    memory_manager = MemoryManager(config.WEB_USER_ID)
-    result = await memory_manager.apply_reorganization([t.model_dump() for t in body.target_pages])
-    return {"result": result}
+async def apply_memory_reorganization(body: ReorganizeApplyRequest, background_tasks: BackgroundTasks):
+    """Kick off execution of a (possibly user-trimmed) plan from
+    /reorganize/propose, in the background. Only ever creates/overwrites the
+    listed target pages - never deletes their source pages, so this is safe
+    to re-run and safe to review afterward before manually cleaning up stale
+    pages. The full proposal (/reorganize/status's target_pages) is
+    unaffected by which subset gets applied here, so pages left unchecked
+    can be applied in a later call. Poll /reorganize/status for the result."""
+    current = wiki_reorganize_manager.get_state(config.WEB_USER_ID)
+    if current["status"] == "applying":
+        return current
+    target_pages = [t.model_dump() for t in body.target_pages]
+    new_state = wiki_reorganize_manager.start_applying(config.WEB_USER_ID)
+    background_tasks.add_task(_run_apply_reorganization, config.WEB_USER_ID, target_pages)
+    return new_state
 
 
 @router.get("/search")
