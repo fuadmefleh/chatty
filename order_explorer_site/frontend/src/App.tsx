@@ -42,6 +42,7 @@ import Settings from './pages/Settings';
 import CodeBrowser from './pages/CodeBrowser';
 import ServerHealth from './pages/ServerHealth';
 import TokenUsage from './pages/TokenUsage';
+import TasteAudit from './pages/TasteAudit';
 
 function RoutedApp() {
   const { pathname } = useLocation();
@@ -93,6 +94,7 @@ function RoutedApp() {
           <Route path="/server-health" element={<ServerHealth />} />
           <Route path="/token-usage" element={<TokenUsage />} />
           <Route path="/code" element={<CodeBrowser />} />
+          <Route path="/taste-audit" element={<TasteAudit />} />
         </Routes>
       </ErrorBoundary>
     </AppShell>

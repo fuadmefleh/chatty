@@ -903,4 +903,68 @@ export const deleteVideoJob = async (jobId: string): Promise<void> => {
   await chattyApi.delete(`/api/chatty/video-jobs/${jobId}`);
 };
 
+// ── UI Taste Auditor ─────────────────────────────────────────────────────────
+export type AuditSeverity = 'critical' | 'warning' | 'info';
+
+export interface AuditFinding {
+  rule_id: string;
+  title: string;
+  description: string;
+  severity: AuditSeverity;
+  file: string;
+  line: number;
+  line_content: string;
+  fixable: boolean;
+  fix_suggestion: string | null;
+}
+
+export interface AuditSummary {
+  critical: number;
+  warning: number;
+  info: number;
+}
+
+export interface TasteAuditReport {
+  timestamp: string;
+  files_scanned: number;
+  total_findings: number;
+  score: number;
+  summary: AuditSummary;
+  scan_duration_ms: number;
+  findings: AuditFinding[];
+}
+
+export interface TasteFixRequest {
+  findings: Array<{
+    file: string;
+    line: number;
+    rule_id: string;
+    fix?: string;
+  }>;
+}
+
+export interface TasteFixResponse {
+  applied: number;
+  errors: number;
+  changes: Array<{
+    file: string;
+    line: number;
+    rule_id: string;
+    original: string;
+    fixed: string;
+  }>;
+  error_details: Array<{ file: string; error: string }>;
+  summary: string;
+}
+
+export const runTasteAudit = async (): Promise<TasteAuditReport> => {
+  const res = await chattyApi.get<TasteAuditReport>('/api/chatty/taste-audit');
+  return res.data;
+};
+
+export const applyTasteFixes = async (body: TasteFixRequest): Promise<TasteFixResponse> => {
+  const res = await chattyApi.post<TasteFixResponse>('/api/chatty/taste-audit/fix', body);
+  return res.data;
+};
+
 export default chattyApi;
