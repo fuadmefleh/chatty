@@ -81,9 +81,10 @@ async def test_run_feature_request_agent_error_is_terminal():
 
 
 @pytest.mark.asyncio
-async def test_run_feature_request_test_failure_never_touches_main():
-    """Unlike run_self_upgrade, a single failure is terminal - no retry loop,
-    since a human is watching the request log and can just resubmit."""
+async def test_run_feature_request_test_failure_retries_then_gives_up():
+    """Like run_self_upgrade, a failing test suite is fed back to the coding
+    agent as a fix prompt and retried in the same worktree, up to
+    SELF_UPGRADE_MAX_TEST_ATTEMPTS times, before giving up."""
     frm = make_feature_requests_manager()
 
     async def fake_run_pi_agent(prompt, cwd=None):
@@ -93,29 +94,80 @@ async def test_run_feature_request_test_failure_never_touches_main():
     with patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git, \
          patch("src.managers.self_upgrade_manager._run", new_callable=AsyncMock) as mock_run, \
          patch("src.managers.self_upgrade_manager.run_pi_agent", fake_run_pi_agent), \
-         patch("src.managers.self_upgrade_manager._cleanup_worktree", new_callable=AsyncMock) as mock_cleanup:
+         patch("src.managers.self_upgrade_manager._cleanup_worktree", new_callable=AsyncMock) as mock_cleanup, \
+         patch.object(sum_.config, "SELF_UPGRADE_MAX_TEST_ATTEMPTS", 2):
 
         mock_git.side_effect = [
             (0, ""),   # worktree prune
             (0, ""),   # fetch origin
             (0, ""),   # rev-list main..origin/main --count -> empty means no new commits
             (0, ""),   # worktree add
-            (0, ""),   # add -A
+            (0, ""),   # add -A (attempt 1)
             (1, ""),   # diff --cached --quiet -> has a diff
-            (0, ""),   # commit
+            (0, ""),   # commit (attempt 1)
+            (0, ""),   # add -A (attempt 2)
+            (1, ""),   # diff --cached --quiet -> still has a diff
+            (0, ""),   # commit (attempt 2)
         ]
         mock_run.return_value = (1, "FAILED test_something")
 
         result = await sum_.run_feature_request("req1", "fix a bug", frm)
 
-    assert result is not None and "test suite failed" in result.lower()
+    assert result is not None and "test suite failed after 2 attempt" in result.lower()
+    assert mock_run.await_count == 2  # pytest re-run on the fix attempt
     git_calls = [c.args[0] for c in mock_git.await_args_list]
     assert not any(call[:1] == ["merge"] for call in git_calls)
     mock_cleanup.assert_not_awaited()  # branch/worktree preserved for inspection
 
 
 @pytest.mark.asyncio
-async def test_run_feature_request_commit_rejected_by_hook_is_terminal():
+async def test_run_feature_request_recovers_after_test_failure_on_retry():
+    """The retry loop's success path: a first attempt fails the test suite,
+    the fix prompt is fed back to the agent, and the second attempt passes
+    and merges normally."""
+    frm = make_feature_requests_manager()
+    pi_calls = []
+
+    async def fake_run_pi_agent(prompt, cwd=None):
+        pi_calls.append(prompt)
+        yield {"type": "file_change", "content": "Editing: src/foo.py"}
+        yield {"type": "completed", "content": "done"}
+
+    with patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git, \
+         patch("src.managers.self_upgrade_manager._run", new_callable=AsyncMock) as mock_run, \
+         patch("src.managers.self_upgrade_manager.run_pi_agent", fake_run_pi_agent), \
+         patch("src.managers.self_upgrade_manager._cleanup_worktree", new_callable=AsyncMock) as mock_cleanup, \
+         patch("src.managers.self_upgrade_manager._restart_services") as mock_restart:
+
+        mock_git.side_effect = [
+            (0, ""),                             # worktree prune
+            (0, ""),                              # fetch origin
+            (0, ""),                              # rev-list main..origin/main --count
+            (0, ""),                              # worktree add
+            (0, ""),                              # add -A (attempt 1)
+            (1, ""),                              # diff --cached --quiet -> has a diff
+            (0, ""),                              # commit (attempt 1)
+            (0, ""),                              # add -A (attempt 2)
+            (1, ""),                              # diff --cached --quiet -> has a diff
+            (0, ""),                              # commit (attempt 2)
+            (0, "src/foo.py\ntests/test_foo.py"), # diff --name-only main HEAD
+            (0, "main"),                           # rev-parse --abbrev-ref HEAD -> on main
+            (0, ""),                               # status --porcelain -> clean
+            (0, ""),                               # merge --no-ff
+        ]
+        mock_run.side_effect = [(1, "FAILED test_something"), (0, "5 passed")]
+
+        result = await sum_.run_feature_request("req1", "fix a bug", frm)
+
+    assert result is not None and "merged to main" in result.lower()
+    assert len(pi_calls) == 2
+    assert "test suite failed" in pi_calls[1].lower()
+    mock_cleanup.assert_awaited_once()
+    mock_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_run_feature_request_commit_rejected_by_hook_retries_then_gives_up():
     frm = make_feature_requests_manager()
 
     async def fake_run_pi_agent(prompt, cwd=None):
@@ -124,7 +176,8 @@ async def test_run_feature_request_commit_rejected_by_hook_is_terminal():
 
     with patch("src.managers.self_upgrade_manager._git", new_callable=AsyncMock) as mock_git, \
          patch("src.managers.self_upgrade_manager.run_pi_agent", fake_run_pi_agent), \
-         patch("src.managers.self_upgrade_manager._cleanup_worktree", new_callable=AsyncMock) as mock_cleanup:
+         patch("src.managers.self_upgrade_manager._cleanup_worktree", new_callable=AsyncMock) as mock_cleanup, \
+         patch.object(sum_.config, "SELF_UPGRADE_MAX_TEST_ATTEMPTS", 1):
 
         mock_git.side_effect = [
             (0, ""),                    # worktree prune

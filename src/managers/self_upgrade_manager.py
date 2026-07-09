@@ -661,12 +661,19 @@ async def run_feature_request(
     Differences from run_self_upgrade, deliberate for a human-submitted,
     human-watched request rather than an unsupervised weekly job:
     - Takes the prompt as-is, no LLM idea generation.
-    - Single attempt, no automatic fix-and-retry loop - the log is visible
-      in the dashboard immediately, so a person can just resubmit with more
-      direction instead of waiting on repeated automatic retries.
     - Missing test coverage is a warning appended to the summary, not a hard
       gate - reasonable to demand of unsupervised heartbeat changes, too
       strict for e.g. "add a stocks command".
+
+    Like run_self_upgrade, a commit rejected by the pre-commit hook or a
+    failing test suite is fed back to the coding agent as a fix prompt
+    (_build_fix_prompt) and retried in the same worktree, up to
+    config.SELF_UPGRADE_MAX_TEST_ATTEMPTS times, before giving up and leaving
+    the branch/worktree for manual inspection. This used to be a single
+    attempt on the theory that a human watching the dashboard would just
+    resubmit - in practice that just meant every transient lint/test failure
+    required a manual retry, so it now fixes itself the same way the
+    heartbeat pipeline does.
 
     Caller must already hold the pi_agent lock - chatty_web_server.py's
     _process_pi_queue has its own bounded wait-for-lock loop (unlike
@@ -702,55 +709,87 @@ async def run_feature_request(
 
     env = _subprocess_env()
     venv_python = str(config.BASE_DIR / "venv" / "bin" / "python")
-    wrapped_prompt = _wrap_feature_request_prompt(prompt)
+    current_prompt = _wrap_feature_request_prompt(prompt)
+    max_attempts = max(config.SELF_UPGRADE_MAX_TEST_ATTEMPTS, 1)
 
-    saw_completion = False
-    async for event in run_pi_agent(wrapped_prompt, cwd=worktree_dir):
-        etype = event.get("type")
-        content = event.get("content", "")
-        if etype == "file_change":
-            path = content.split(": ", 1)[-1] if ": " in content else content
-            feature_requests_manager.add_file_changed(request_id, path)
-            feature_requests_manager.append_log(request_id, content)
-        elif etype == "completed":
-            saw_completion = True
-            feature_requests_manager.append_log(request_id, content)
-        elif etype == "error":
-            feature_requests_manager.append_log(request_id, f"Error: {content}")
-            return await fail(f"Pi agent error: {content[:300]}")
-        elif content:
-            feature_requests_manager.append_log(request_id, content)
+    for attempt in range(1, max_attempts + 1):
+        saw_completion = False
+        async for event in run_pi_agent(current_prompt, cwd=worktree_dir):
+            etype = event.get("type")
+            content = event.get("content", "")
+            if etype == "file_change":
+                path = content.split(": ", 1)[-1] if ": " in content else content
+                feature_requests_manager.add_file_changed(request_id, path)
+                feature_requests_manager.append_log(request_id, content)
+            elif etype == "completed":
+                saw_completion = True
+                feature_requests_manager.append_log(request_id, content)
+            elif etype == "error":
+                feature_requests_manager.append_log(request_id, f"Error: {content}")
+                return await fail(f"Pi agent error: {content[:300]}")
+            elif content:
+                feature_requests_manager.append_log(request_id, content)
 
-    if not saw_completion:
-        return await fail("Pi agent did not report completion.")
+        if not saw_completion:
+            return await fail("Pi agent did not report completion.")
 
-    await _git(["add", "-A"], cwd=worktree_dir)
-    rc_diff, _ = await _git(["diff", "--cached", "--quiet"], cwd=worktree_dir)
-    if rc_diff == 0:
-        feature_requests_manager.update(request_id, status="completed", summary="No changes were necessary.", branch=branch)
-        await _cleanup_worktree(worktree_dir, branch, delete_branch=True)
-        return None
-
-    commit_msg = f"Feature request: {prompt[:72]}"
-    rc, out = await _git(["commit", "-m", commit_msg], cwd=worktree_dir)
-    feature_requests_manager.append_log(request_id, f"commit:\n{out[-2000:]}")
-    if rc != 0:
-        if _is_infra_failure(out):
+        await _git(["add", "-A"], cwd=worktree_dir)
+        rc_diff, _ = await _git(["diff", "--cached", "--quiet"], cwd=worktree_dir)
+        if rc_diff == 0:
+            if attempt == 1:
+                feature_requests_manager.update(request_id, status="completed", summary="No changes were necessary.", branch=branch)
+                await _cleanup_worktree(worktree_dir, branch, delete_branch=True)
+                return None
+            # A fix attempt that made no further changes can't be retried further.
             return await fail(
-                f"Commit rejected by pre-commit hook due to what looks like a broken "
-                f"toolchain/environment, not a problem with the generated code. "
-                f"Branch `{branch}` preserved. Tail:\n{out[-500:]}"
+                f"Test suite still failing after {attempt - 1} fix attempt(s), and the last "
+                f"attempt made no further changes. Branch `{branch}` preserved for manual fixing."
             )
-        return await fail(f"Commit rejected by pre-commit hook (lint/tests). Branch `{branch}` preserved. Tail:\n{out[-500:]}")
 
-    feature_requests_manager.update(request_id, status="testing")
-    rc, out = await _run(
-        [venv_python, "-m", "pytest", "tests/"], cwd=worktree_dir,
-        timeout=config.SELF_UPGRADE_TEST_TIMEOUT_SECONDS, env=env,
-    )
-    feature_requests_manager.append_log(request_id, f"pytest:\n{out[-2000:]}")
-    if rc != 0:
-        return await fail(f"Test suite failed (exit {rc}). Branch `{branch}` preserved for manual fixing. Tail:\n{out[-500:]}")
+        commit_msg = f"Feature request: {prompt[:72]}"
+        if attempt > 1:
+            commit_msg += f" (fix attempt {attempt})"
+        rc, out = await _git(["commit", "-m", commit_msg], cwd=worktree_dir)
+        feature_requests_manager.append_log(request_id, f"commit (attempt {attempt}):\n{out[-2000:]}")
+        if rc != 0:
+            if _is_infra_failure(out):
+                return await fail(
+                    f"Commit rejected by pre-commit hook due to what looks like a broken "
+                    f"toolchain/environment, not a problem with the generated code. "
+                    f"Branch `{branch}` preserved. Tail:\n{out[-500:]}"
+                )
+            if attempt >= max_attempts:
+                return await fail(
+                    f"Commit rejected by pre-commit hook after {attempt} attempt(s). "
+                    f"Branch `{branch}` preserved. Tail:\n{out[-500:]}"
+                )
+            feature_requests_manager.update(request_id, status="running")
+            current_prompt = _build_fix_prompt(prompt, "The commit was rejected by the pre-commit hook (lint/tests).", out)
+            continue
+
+        feature_requests_manager.update(request_id, status="testing")
+        rc, out = await _run(
+            [venv_python, "-m", "pytest", "tests/"], cwd=worktree_dir,
+            timeout=config.SELF_UPGRADE_TEST_TIMEOUT_SECONDS, env=env,
+        )
+        feature_requests_manager.append_log(request_id, f"pytest (attempt {attempt}):\n{out[-2000:]}")
+        if rc != 0:
+            if _is_infra_failure(out):
+                return await fail(
+                    f"Test suite failed to even run due to what looks like a broken "
+                    f"toolchain/environment, not a problem with the generated code. "
+                    f"Branch `{branch}` preserved. Tail:\n{out[-500:]}"
+                )
+            if attempt >= max_attempts:
+                return await fail(
+                    f"Test suite failed after {attempt} attempt(s) (exit {rc}). "
+                    f"Branch `{branch}` preserved for manual fixing. Tail:\n{out[-500:]}"
+                )
+            feature_requests_manager.update(request_id, status="running")
+            current_prompt = _build_fix_prompt(prompt, "The test suite failed.", out)
+            continue
+
+        break  # commit + test gate passed - fall through to frontend checks / merge below
 
     _, changed_files_out = await _git(["diff", "--name-only", "main", "HEAD"], cwd=worktree_dir)
     changed_files = [f.strip() for f in changed_files_out.splitlines() if f.strip()]
