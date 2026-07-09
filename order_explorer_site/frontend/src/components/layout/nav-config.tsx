@@ -65,6 +65,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/server-health', label: 'Server Health' },
       { to: '/token-usage', label: 'Token Usage' },
       { to: '/code', label: 'Code' },
+      { to: '/taste-audit', label: 'Taste Audit' },
     ],
   },
 ];

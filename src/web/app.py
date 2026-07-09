@@ -21,6 +21,7 @@ from src.web.routers import (
     requests as requests_router,
     sessions,
     system,
+    taste_audit,
     transcriptions,
     trending,
     video_production,
@@ -52,7 +53,7 @@ def create_app() -> FastAPI:
     for router_module in (
         health, notes, transcriptions, audio, media, chat_media, watchlist, insights,
         reminders, requests_router, video_production, trending, webcam, memory_wiki,
-        code_browser, system, gmail, sessions, chat_ws,
+        code_browser, system, gmail, sessions, chat_ws, taste_audit,
     ):
         app.include_router(router_module.router)
 
