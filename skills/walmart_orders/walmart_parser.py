@@ -562,6 +562,8 @@ class WalmartPDFParser:
     @staticmethod
     def extract_text_from_pdf(pdf_path: str) -> str:
         """Extract text content from a PDF file, using OCR if needed."""
+        if not Path(pdf_path).is_file():
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
         try:
             with open(pdf_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
@@ -991,6 +993,10 @@ async def execute(pdf_path: Optional[str] = None, action: str = "parse") -> Dict
                 
                 results = []
                 for file_path in all_files:
+                    # Guard: file may have been moved or deleted since glob() ran
+                    if not file_path.is_file():
+                        print(f"Walmart file missing, skipping: {file_path.name}")
+                        continue
                     try:
                         if file_path.suffix.lower() == '.xlsx':
                             # Check if it's a multi-row format file
