@@ -304,9 +304,15 @@ async def apply_fixes(body: Dict[str, Any]):
     if not state.skills_manager:
         raise HTTPException(503, "Skills manager not initialized")
 
-    # Check that frontend_editor skill is available
-    if "frontend_editor" not in state.skills_manager.skills:
-        raise HTTPException(503, "Frontend Editor skill not available")
+    # Check that the Frontend Editor skill's tools are available. Skills are
+    # keyed by the display name parsed from their .md heading (see
+    # SkillsManager._parse_skill_file), which for this skill is "Frontend
+    # Editor", not the "frontend_editor" folder name - checking the tools we
+    # actually call below instead of guessing at that key avoids the mismatch.
+    required_tools = ("read_frontend_file", "write_frontend_file")
+    missing_tools = [t for t in required_tools if state.skills_manager.get_tool(t) is None]
+    if missing_tools:
+        raise HTTPException(503, f"Frontend Editor skill not available (missing tools: {', '.join(missing_tools)})")
 
     # Group fixes by file
     fixes_by_file: Dict[str, List[Dict[str, Any]]] = {}

@@ -2,7 +2,6 @@
 POST /api/chatty/taste-audit/fix) and the heuristic scanner."""
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -103,21 +102,48 @@ def test_scan_finds_hex_colors(client):
 # ── POST fix ─────────────────────────────────────────────────────────────────
 
 def test_fix_bad_body_findings_not_list(client):
-    # Skills manager must have frontend_editor skill for the body validation
-    # check to run (otherwise it returns 503 before reaching it)
-    mock_sm = AsyncMock()
-    mock_sm.skills = {"frontend_editor": AsyncMock()}
+    # Body validation (400) happens before the skills-manager tool check, so
+    # a bad body should 400 regardless of skill availability.
+    resp = client.post(
+        "/api/chatty/taste-audit/fix",
+        headers=_headers(),
+        json={"findings": "not a list"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_fix_available_with_real_skills_manager(client):
+    """Regression test: the fix endpoint used to check
+    `"frontend_editor" in state.skills_manager.skills`, but skills are keyed
+    by the display name parsed from their .md heading ("Frontend Editor"),
+    not the folder name - so that check was always False and the endpoint
+    always 503'd, even with the skill fully loaded. Loads a real
+    SkillsManager from disk (no mocking of the skill registry itself) so a
+    reintroduced name-based check would be caught here instead of only in a
+    test that happens to mock the same wrong key."""
+    from src.core.skills_manager import SkillsManager
+
+    sm = SkillsManager()
+    await sm.load_skills()
+    assert sm.get_tool("read_frontend_file") is not None
+    assert sm.get_tool("write_frontend_file") is not None
+
     orig_sm = state.skills_manager
-    state.skills_manager = mock_sm
+    state.skills_manager = sm
     try:
         resp = client.post(
             "/api/chatty/taste-audit/fix",
             headers=_headers(),
-            json={"findings": "not a list"},
+            json={"findings": [{"file": "src/nonexistent-taste-audit-test.tsx", "rule_id": "hex-color"}]},
         )
-        assert resp.status_code == 400
     finally:
         state.skills_manager = orig_sm
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["errors"] == 1
+    assert "not found" in data["error_details"][0]["error"].lower()
 
 
 def test_fix_missing_fields(client):
