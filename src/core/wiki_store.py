@@ -505,6 +505,33 @@ class WikiStore:
 
             self._rebuild_index_locked()
 
+    def redirect_links(self, old_type: str, old_slug: str, new_type: str, new_slug: str) -> int:
+        """After a merge/rename, rewrite every other page's markdown links
+        that point at (old_type, old_slug) to point at (new_type, new_slug)
+        instead, so 'what links here' doesn't go stale. Returns the number
+        of pages edited."""
+        old_target = _rel_path(old_type, old_slug)
+        new_target = _rel_path(new_type, new_slug)
+        pages = self.list_pages()
+        fixed = 0
+        with locked(self._lock_path):
+            for page in pages:
+                body = page["body"]
+
+                def _redirect(match: "re.Match") -> str:
+                    if match.group(1) != old_target:
+                        return match.group(0)
+                    return match.group(0)[: -len(match.group(1)) - 1] + new_target + ")"
+
+                new_body = _WIKI_LINK_RE.sub(_redirect, body)
+                if new_body != body:
+                    fields = {k: page[k] for k in _FRONTMATTER_FIELDS}
+                    path = self._page_path(page["type"], page["slug"])
+                    self._backup_prev(path)
+                    self._atomic_write(path, _render_page(fields, new_body))
+                    fixed += 1
+        return fixed
+
     def fix_missing_cross_references(self) -> int:
         """Rewrite a bare literal mention of another page's title into a
         markdown link to that page. Pure syntactic edit - safe to always

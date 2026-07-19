@@ -3,7 +3,9 @@ and optionally apply targeted fixes via the Frontend Editor skill tools.
 
 Endpoints:
   GET  /api/chatty/taste-audit           — run the scan, return structured report
-  POST /api/chatty/taste-audit/fix       — apply fixes for selected findings
+  POST /api/chatty/taste-audit/fix       — kick off applying fixes for selected
+                                            findings in the background
+  GET  /api/chatty/taste-audit/fix/status — poll the current fix job's progress
 """
 import json
 import re
@@ -12,8 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
+from src.managers import taste_fix_manager
 from src.web import config, state
 from src.web.auth import require_api_key
 
@@ -273,9 +276,106 @@ async def run_taste_audit():
     }
 
 
+async def _run_apply_fixes(fixes_by_file: Dict[str, List[Dict[str, Any]]]) -> None:
+    """Background worker: apply fixes file by file, recording progress into
+    taste_fix_manager after each file so /fix/status reflects live progress
+    instead of only the end result."""
+    total_applied = 0
+    total_errors = 0
+
+    for file_path, file_fixes in fixes_by_file.items():
+        taste_fix_manager.set_current_file(file_path)
+        file_applied: List[Dict[str, Any]] = []
+        file_errors: List[Dict[str, Any]] = []
+
+        # Findings report paths relative to FRONTEND_SRC (see _scan_file
+        # above), but the Frontend Editor skill's tools resolve file_path
+        # relative to FRONTEND_DIR one level up - reading/writing without
+        # the "src/" prefix always 404'd, silently no-op'ing every fix.
+        skill_path = f"src/{file_path}"
+
+        # Read current file content
+        read_result = await state.skills_manager.execute_tool(
+            "read_frontend_file",
+            {"file_path": skill_path},
+        )
+        read_data = json.loads(read_result)
+        if "error" in read_data:
+            file_errors.append({"file": file_path, "error": read_data["error"]})
+            taste_fix_manager.record_file_result(file_path, file_applied, file_errors)
+            total_errors += len(file_errors)
+            continue
+
+        current_content = read_data["content"]
+
+        # Apply fixes line by line
+        lines = current_content.split("\n")
+
+        # Sort fixes by line descending so earlier lines aren't affected
+        sorted_fixes = sorted(file_fixes, key=lambda f: f.get("line", 0), reverse=True)
+
+        for fix in sorted_fixes:
+            line_num = fix.get("line", 0)
+            rule_id = fix.get("rule_id", "")
+            fix_instruction = fix.get("fix", "")
+
+            if line_num < 1 or line_num > len(lines):
+                file_errors.append({
+                    "file": file_path,
+                    "line": line_num,
+                    "error": "Line number out of range",
+                })
+                continue
+
+            line_idx = line_num - 1
+            original_line = lines[line_idx]
+
+            # Apply fix based on rule type
+            new_line = _apply_line_fix(original_line, rule_id, fix_instruction)
+            if new_line != original_line:
+                lines[line_idx] = new_line
+                file_applied.append({
+                    "file": file_path,
+                    "line": line_num,
+                    "rule_id": rule_id,
+                    "original": original_line.strip(),
+                    "fixed": new_line.strip(),
+                })
+
+        new_content = "\n".join(lines)
+
+        # Write the updated file
+        write_result = await state.skills_manager.execute_tool(
+            "write_frontend_file",
+            {"file_path": skill_path, "content": new_content},
+        )
+        write_data = json.loads(write_result)
+        if "error" in write_data:
+            file_errors.append({"file": file_path, "error": write_data["error"]})
+
+        taste_fix_manager.record_file_result(file_path, file_applied, file_errors)
+        total_applied += len(file_applied)
+        total_errors += len(file_errors)
+
+    taste_fix_manager.finish(
+        f"Applied {total_applied} fix(es) across {len(fixes_by_file)} file(s). "
+        f"{total_errors} error(s)."
+    )
+
+
+@router.get("/fix/status")
+async def get_fix_status():
+    """Poll the current fix job's progress - see src/managers/taste_fix_manager.py.
+    Lets the frontend disconnect while a fix job runs in the background and
+    pick the result back up later."""
+    return taste_fix_manager.get_state()
+
+
 @router.post("/fix")
-async def apply_fixes(body: Dict[str, Any]):
-    """Apply targeted fixes for selected findings using the Frontend Editor skill.
+async def apply_fixes(body: Dict[str, Any], background_tasks: BackgroundTasks):
+    """Kick off applying targeted fixes for selected findings using the
+    Frontend Editor skill, in the background. Poll /fix/status for live
+    progress (current file, how many done of how many) and the final result.
 
     Expects:
       {
@@ -287,9 +387,7 @@ async def apply_fixes(body: Dict[str, Any]):
             "fix": "replacement text or instruction"
           }
         ]
-      }
-
-    Returns a summary of changes applied."""
+      }"""
     findings_input = body.get("findings", [])
     if not isinstance(findings_input, list):
         raise HTTPException(400, "Body must contain a 'findings' array")
@@ -314,84 +412,19 @@ async def apply_fixes(body: Dict[str, Any]):
     if missing_tools:
         raise HTTPException(503, f"Frontend Editor skill not available (missing tools: {', '.join(missing_tools)})")
 
+    current = taste_fix_manager.get_state()
+    if current["status"] == "running":
+        return current
+
     # Group fixes by file
     fixes_by_file: Dict[str, List[Dict[str, Any]]] = {}
     for finding in findings_input:
         file_path = finding["file"]
         fixes_by_file.setdefault(file_path, []).append(finding)
 
-    applied_changes: List[Dict[str, Any]] = []
-    errors: List[Dict[str, Any]] = []
-
-    for file_path, file_fixes in fixes_by_file.items():
-        # Read current file content
-        read_result = await state.skills_manager.execute_tool(
-            "read_frontend_file",
-            {"file_path": file_path},
-        )
-        read_data = json.loads(read_result)
-        if "error" in read_data:
-            errors.append({"file": file_path, "error": read_data["error"]})
-            continue
-
-        current_content = read_data["content"]
-
-        # Apply fixes line by line
-        lines = current_content.split("\n")
-
-        # Sort fixes by line descending so earlier lines aren't affected
-        sorted_fixes = sorted(file_fixes, key=lambda f: f.get("line", 0), reverse=True)
-
-        for fix in sorted_fixes:
-            line_num = fix.get("line", 0)
-            rule_id = fix.get("rule_id", "")
-            fix_instruction = fix.get("fix", "")
-
-            if line_num < 1 or line_num > len(lines):
-                errors.append({
-                    "file": file_path,
-                    "line": line_num,
-                    "error": "Line number out of range",
-                })
-                continue
-
-            line_idx = line_num - 1
-            original_line = lines[line_idx]
-
-            # Apply fix based on rule type
-            new_line = _apply_line_fix(original_line, rule_id, fix_instruction)
-            if new_line != original_line:
-                lines[line_idx] = new_line
-                applied_changes.append({
-                    "file": file_path,
-                    "line": line_num,
-                    "rule_id": rule_id,
-                    "original": original_line.strip(),
-                    "fixed": new_line.strip(),
-                })
-
-        new_content = "\n".join(lines)
-
-        # Write the updated file
-        write_result = await state.skills_manager.execute_tool(
-            "write_frontend_file",
-            {"file_path": file_path, "content": new_content},
-        )
-        write_data = json.loads(write_result)
-        if "error" in write_data:
-            errors.append({"file": file_path, "error": write_data["error"]})
-
-    return {
-        "applied": len(applied_changes),
-        "errors": len(errors),
-        "changes": applied_changes,
-        "error_details": errors,
-        "summary": (
-            f"Applied {len(applied_changes)} fix(es) across "
-            f"{len(fixes_by_file)} file(s). "
-            f"{len(errors)} error(s)."
-        ),
-    }
+    new_state = taste_fix_manager.start(len(fixes_by_file))
+    background_tasks.add_task(_run_apply_fixes, fixes_by_file)
+    return new_state
 
 
 def _apply_line_fix(line: str, rule_id: str, fix_instruction: str) -> str:

@@ -1,14 +1,18 @@
 # Order Explorer Site
 
 ## Project Structure
-- `backend/`: FastAPI application
-- `frontend/`: React Vite application
+- `backend/`: FastAPI application (reads the data/ SQLite databases directly, and also serves the exercise tracker — see `EXERCISE_TRACKER.md`)
+- `frontend/`: React Vite application (dashboard, orders, budget, categories, wiki, webcams, WhatsApp, and exercise tracker pages)
 
 ## Prerequisites
 - Python 3.9+
-- Node.js 16+
+- Node.js 20.19+ (or 22.12+) — required by Vite 7/React 19
 
 ## Setup & Run
+
+Docker Compose is the primary deployment path for the whole stack (see the
+root [README.md](../README.md#docker-deployment)). To run just this site
+manually instead:
 
 ### 1. Backend
 ```bash

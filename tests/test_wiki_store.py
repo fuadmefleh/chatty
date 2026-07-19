@@ -219,6 +219,24 @@ def test_merge_pages_folds_body_and_deletes_old(long_term_dir):
     assert store.get_page("concept", "budget") is None
 
 
+def test_redirect_links_rewrites_other_pages_after_merge(long_term_dir):
+    store = WikiStore(USER_ID, long_term_dir)
+    keep = store.write_page(type_="concept", slug="budgeting", title="Budgeting", summary="s", body="- Monthly budget $2000")
+    remove = store.write_page(type_="concept", slug="budget", title="Budget", summary="s", body="- Saves 10%")
+    store.write_page(
+        type_="concept", slug="family-trip", title="Family Trip", summary="s",
+        body="- Paid for with the [Budget](pages/concepts/budget.md).",
+    )
+
+    store.merge_pages(keep, remove)
+    fixed = store.redirect_links("concept", "budget", "concept", "budgeting")
+
+    assert fixed == 1
+    trip = store.get_page("concept", "family-trip")
+    assert "[Budget](pages/concepts/budgeting.md)" in trip["body"]
+    assert "pages/concepts/budget.md" not in trip["body"]
+
+
 def test_fix_missing_cross_references_links_bare_mentions(long_term_dir):
     store = WikiStore(USER_ID, long_term_dir)
     store.write_page(type_="entity", slug="sarah", title="Sarah", summary="s", body="- Sister.")

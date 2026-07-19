@@ -2,6 +2,8 @@
 
 Parse Rocket Money CSV transaction exports and store them in a SQLite database for easy querying and analysis.
 
+See also [QUICKSTART.md](QUICKSTART.md) for a condensed getting-started version of this guide.
+
 ## Features
 
 - 📊 Parse Rocket Money CSV exports

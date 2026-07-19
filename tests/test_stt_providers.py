@@ -11,6 +11,7 @@ from src.core import config
 from src.core.stt import factory
 from src.core.stt.local_whisper import LocalWhisperProvider
 from src.core.stt.openai_provider import OpenAITranscriptionProvider
+from src.core.stt.parakeet_http import ParakeetHTTPProvider
 from src.core.stt.whisperx_http import WhisperXHTTPProvider
 
 
@@ -35,6 +36,26 @@ async def test_openai_transcription_provider_returns_text_only():
     provider.client.audio.transcriptions.create.assert_awaited_once()
     _, kwargs = provider.client.audio.transcriptions.create.call_args
     assert kwargs["model"] == "whisper-1"
+
+
+@pytest.mark.asyncio
+async def test_parakeet_provider_transcodes_to_wav_and_returns_text_only(monkeypatch):
+    provider = ParakeetHTTPProvider(base_url="http://example.test:8004/v1", model="parakeet")
+    fake_resp = MagicMock(text="hello world")
+    provider.client.audio.transcriptions.create = AsyncMock(return_value=fake_resp)
+    monkeypatch.setattr(
+        "src.core.stt.parakeet_http._to_wav", lambda audio_bytes, filename_hint: b"fake-wav-bytes"
+    )
+
+    result = await provider.transcribe(b"fake-audio-bytes", filename_hint="chunk.m4a")
+
+    assert result.text == "hello world"
+    assert result.segments is None
+    assert result.speaker_embeddings is None
+    provider.client.audio.transcriptions.create.assert_awaited_once()
+    _, kwargs = provider.client.audio.transcriptions.create.call_args
+    assert kwargs["model"] == "parakeet"
+    assert kwargs["file"][0] == "chunk.wav"
 
 
 def test_local_whisper_provider_raises_clear_error_without_dependency():
@@ -74,6 +95,17 @@ def test_factory_selects_local_whisper_provider(monkeypatch):
     # back to whisperx_http.
     with pytest.raises(RuntimeError, match="requirements-local-stt.txt"):
         factory.get_stt_provider()
+
+
+def test_factory_selects_parakeet_provider(monkeypatch):
+    monkeypatch.setattr(config, "STT_PROVIDER", "parakeet")
+    monkeypatch.setattr(config, "STT_PARAKEET_URL", "http://example.test:8004/v1")
+    monkeypatch.setattr(config, "STT_PARAKEET_MODEL", "parakeet")
+
+    provider = factory.get_stt_provider()
+
+    assert isinstance(provider, ParakeetHTTPProvider)
+    assert provider.model == "parakeet"
 
 
 def test_factory_caches_singleton(monkeypatch):

@@ -6,9 +6,11 @@ import PageHeader from '../components/ui/PageHeader';
 import Spinner from '../components/ui/Spinner';
 import EmptyState from '../components/ui/EmptyState';
 import Badge from '../components/ui/Badge';
+import Card from '../components/ui/Card';
 import Modal from '../components/ui/Modal';
 import MarkdownContent from '../components/ui/MarkdownContent';
 import WikiPageEditor from '../components/wiki/WikiPageEditor';
+import MergeConfirmPanel from '../components/wiki/MergeConfirmPanel';
 import { slugifyHeading } from '../lib/slugifyHeading';
 import { useToast } from '../hooks/useToast';
 import { useWikiSidebar } from '../hooks/useWikiSidebar';
@@ -35,7 +37,7 @@ const WikiArticle: React.FC = () => {
   const { type, slug } = useParams<{ type: string; slug: string }>();
   const navigate = useNavigate();
   const { showToast } = useToast();
-  const { refreshPages } = useWikiSidebar();
+  const { refreshPages, pages } = useWikiSidebar();
   const [page, setPage] = useState<WikiPage | null | undefined>(undefined);
   const [error, setError] = useState('');
   const [backlinks, setBacklinks] = useState<WikiBacklink[] | null>(null);
@@ -43,6 +45,9 @@ const WikiArticle: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [merging, setMerging] = useState(false);
+  const [mergeFilter, setMergeFilter] = useState('');
+  const [mergeTarget, setMergeTarget] = useState<WikiPage | null>(null);
 
   useEffect(() => {
     if (!type || !slug) return;
@@ -90,6 +95,34 @@ const WikiArticle: React.FC = () => {
     }
   };
 
+  const closeMerge = () => {
+    setMerging(false);
+    setMergeTarget(null);
+    setMergeFilter('');
+  };
+
+  const mergeCandidates = useMemo(() => {
+    if (!type || !slug) return [];
+    const term = mergeFilter.trim().toLowerCase();
+    return pages
+      .filter((p) => !(p.type === type && p.slug === slug))
+      .filter((p) => !term || p.title.toLowerCase().includes(term))
+      .slice(0, 20);
+  }, [pages, type, slug, mergeFilter]);
+
+  const handleMerged: React.ComponentProps<typeof MergeConfirmPanel>['onMerged'] = (kept, removed) => {
+    if (!type || !slug) return;
+    closeMerge();
+    if (removed.type === type && removed.slug === slug) {
+      showToast(`Merged into "${kept.title}"`, 'signal');
+      navigate(`/memory/${kept.type}/${kept.slug}`);
+    } else {
+      setPage(kept);
+      refreshPages();
+      showToast(`Merged "${removed.title}" into this page`, 'signal');
+    }
+  };
+
   if (page === undefined) {
     if (error) {
       return <EmptyState title="Something went wrong" description={error} />;
@@ -108,7 +141,6 @@ const WikiArticle: React.FC = () => {
 
   return (
     <>
-
       <div className="mb-6 border-b border-line pb-5">
         <PageHeader
           eyebrow="Assistant / Memory"
@@ -127,6 +159,13 @@ const WikiArticle: React.FC = () => {
                 </button>
                 <button
                   type="button"
+                  onClick={() => setMerging(true)}
+                  className="rounded-md border border-line px-3 py-1 text-xs font-semibold text-ink-dim"
+                >
+                  Merge…
+                </button>
+                <button
+                  type="button"
                   onClick={() => setPendingDelete(true)}
                   className="rounded-md border border-line px-3 py-1 text-xs font-semibold text-alert-red"
                 >
@@ -140,12 +179,16 @@ const WikiArticle: React.FC = () => {
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone="teal">{page.type}</Badge>
           {page.tags.map((tag) => (
-            <Link key={tag} to={`/memory?tag=${encodeURIComponent(tag)}`}>
+            <Link
+              key={tag}
+              to={`/memory?tag=${encodeURIComponent(tag)}`}
+              className="transition-opacity hover:opacity-80"
+            >
               <Badge tone="neutral">{tag}</Badge>
             </Link>
           ))}
           <span className="ml-auto font-mono text-[11px] text-muted">
-            Last updated: {page.updated}
+            Last updated: {new Date(page.updated).toLocaleString()}
           </span>
         </div>
       </div>
@@ -166,7 +209,7 @@ const WikiArticle: React.FC = () => {
 
           <div className="flex w-full shrink-0 flex-col gap-4 md:w-64">
             {toc.length >= 2 && (
-              <aside className="rounded-lg border border-line bg-surface-dim p-4">
+              <Card padding={16}>
                 <p className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted">
                   Contents
                 </p>
@@ -179,10 +222,10 @@ const WikiArticle: React.FC = () => {
                     </li>
                   ))}
                 </ol>
-              </aside>
+              </Card>
             )}
 
-            <aside className="rounded-lg border border-line bg-surface-dim p-4">
+            <Card padding={16}>
               <p className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted">
                 What links here
               </p>
@@ -201,7 +244,7 @@ const WikiArticle: React.FC = () => {
                   ))}
                 </ul>
               )}
-            </aside>
+            </Card>
           </div>
         </div>
       )}
@@ -224,6 +267,67 @@ const WikiArticle: React.FC = () => {
             {deleting ? 'Deleting…' : 'Delete'}
           </button>
         </div>
+      </Modal>
+
+      <Modal open={merging} onClose={closeMerge} title={mergeTarget ? 'Confirm merge' : 'Merge into another page'}>
+        {mergeTarget ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setMergeTarget(null)}
+              className="mb-3 text-xs font-semibold text-signal hover:underline"
+            >
+              ← Choose a different page
+            </button>
+            <MergeConfirmPanel
+              pageA={{ type: page.type, slug: page.slug, title: page.title }}
+              pageB={{ type: mergeTarget.type, slug: mergeTarget.slug, title: mergeTarget.title }}
+              defaultKeep="b"
+              onCancel={closeMerge}
+              onMerged={handleMerged}
+            />
+          </>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <input
+              type="text"
+              value={mergeFilter}
+              onChange={(e) => setMergeFilter(e.target.value)}
+              placeholder="Search pages by title…"
+              autoFocus
+              className="w-full rounded-lg border border-line bg-surface px-3.5 py-2.5 text-sm text-ink outline-none transition-colors focus:border-signal"
+            />
+            <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
+              {mergeCandidates.length === 0 ? (
+                <p className="text-sm text-muted">No matching pages.</p>
+              ) : (
+                mergeCandidates.map((p) => (
+                  <button
+                    key={`${p.type}/${p.slug}`}
+                    type="button"
+                    onClick={() => setMergeTarget(p)}
+                    className="flex flex-col gap-0.5 rounded-lg border border-line px-3 py-2 text-left hover:bg-surface-dim"
+                  >
+                    <span className="flex items-center gap-2 text-sm font-semibold text-ink">
+                      {p.title}
+                      <Badge tone="neutral">{p.type}</Badge>
+                    </span>
+                    {p.summary && <span className="truncate text-xs text-muted">{p.summary}</span>}
+                  </button>
+                ))
+              )}
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={closeMerge}
+                className="h-9 rounded-lg border border-line px-4 text-sm font-medium text-ink-dim"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
     </>
   );

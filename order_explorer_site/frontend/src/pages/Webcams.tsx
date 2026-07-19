@@ -1,16 +1,20 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import axios from 'axios';
+import { Link } from 'react-router-dom';
 import {
   fetchWebcamSources,
   createWebcamSource,
   updateWebcamSource,
+  verifyWebcamSource,
   deleteWebcamSource,
   fetchWebcamSuggestions,
   scanWebcamSuggestions,
   approveWebcamSuggestion,
   dismissWebcamSuggestion,
   deleteWebcamSuggestion,
+  isWebcamVerificationError,
 } from '../chattyApi';
-import type { WebcamSource, WebcamSuggestion, WebcamSuggestionStatus, WebcamKind } from '../chattyApi';
+import type { WebcamSource, WebcamSuggestion, WebcamSuggestionStatus, WebcamKind, WebcamVerifyStatus } from '../chattyApi';
 import { useToast } from '../hooks/useToast';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
@@ -30,6 +34,17 @@ const statusTone: Record<WebcamSuggestionStatus, 'gold' | 'teal' | 'neutral'> = 
   approved: 'teal',
   dismissed: 'neutral',
 };
+const verifyTone: Record<WebcamVerifyStatus, 'teal' | 'danger' | 'neutral'> = {
+  ok: 'teal',
+  broken: 'danger',
+  unchecked: 'neutral',
+};
+
+const extractVerificationDetail = (error: unknown): string | null => {
+  if (!axios.isAxiosError(error)) return null;
+  const detail = error.response?.data?.detail;
+  return isWebcamVerificationError(detail) ? detail.detail : null;
+};
 
 const emptyForm = { name: '', url: '', kind: 'webpage' as WebcamKind, location: '' };
 
@@ -40,15 +55,18 @@ const Webcams: React.FC = () => {
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const [addForm, setAddForm] = useState(emptyForm);
   const [adding, setAdding] = useState(false);
+  const [addVerificationError, setAddVerificationError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState(emptyForm);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
 
   const [suggestions, setSuggestions] = useState<WebcamSuggestion[]>([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [filter, setFilter] = useState<SuggestionFilter>('pending');
   const [actingId, setActingId] = useState<string | null>(null);
+  const [approveVerificationError, setApproveVerificationError] = useState<Record<string, string>>({});
 
   const loadSources = useCallback(async () => {
     try {
@@ -72,18 +90,24 @@ const Webcams: React.FC = () => {
 
   useEffect(() => { loadSources(); loadSuggestions(); }, [loadSources, loadSuggestions]);
 
-  const handleAdd = async () => {
+  const handleAdd = async (force = false) => {
     const name = addForm.name.trim();
     const url = addForm.url.trim();
     if (!name || !url) return;
     setAdding(true);
     try {
-      const source = await createWebcamSource({ ...addForm, name, url });
+      const source = await createWebcamSource({ ...addForm, name, url, force });
       setSources((prev) => [source, ...prev]);
       setAddForm(emptyForm);
-      showToast('Webcam added.', 'signal');
-    } catch {
-      showToast('Failed to add webcam.', 'red');
+      setAddVerificationError(null);
+      showToast(force ? 'Webcam added (unverified).' : 'Webcam added.', 'signal');
+    } catch (error) {
+      const verificationDetail = extractVerificationDetail(error);
+      if (verificationDetail) {
+        setAddVerificationError(verificationDetail);
+      } else {
+        showToast('Failed to add webcam.', 'red');
+      }
     } finally {
       setAdding(false);
     }
@@ -146,17 +170,36 @@ const Webcams: React.FC = () => {
     }
   };
 
-  const handleApprove = async (s: WebcamSuggestion) => {
+  const handleApprove = async (s: WebcamSuggestion, force = false) => {
     setActingId(s.id);
     try {
-      const updated = await approveWebcamSuggestion(s.id);
+      const updated = await approveWebcamSuggestion(s.id, force);
       setSuggestions((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+      setApproveVerificationError((prev) => { const next = { ...prev }; delete next[s.id]; return next; });
       await loadSources();
-      showToast('Added to your webcam sources.', 'green');
-    } catch {
-      showToast('Failed to approve suggestion.', 'red');
+      showToast(force ? 'Added to your webcam sources (unverified).' : 'Added to your webcam sources.', 'green');
+    } catch (error) {
+      const verificationDetail = extractVerificationDetail(error);
+      if (verificationDetail) {
+        setApproveVerificationError((prev) => ({ ...prev, [s.id]: verificationDetail }));
+      } else {
+        showToast('Failed to approve suggestion.', 'red');
+      }
     } finally {
       setActingId(null);
+    }
+  };
+
+  const handleRecheck = async (id: string) => {
+    setVerifyingId(id);
+    try {
+      const updated = await verifyWebcamSource(id);
+      setSources((prev) => prev.map((s) => (s.id === id ? updated : s)));
+      showToast(updated.verify_status === 'ok' ? 'Stream is playable.' : 'Stream check failed.', updated.verify_status === 'ok' ? 'signal' : 'red');
+    } catch {
+      showToast('Failed to recheck webcam.', 'red');
+    } finally {
+      setVerifyingId(null);
     }
   };
 
@@ -207,8 +250,10 @@ const Webcams: React.FC = () => {
       <p className="-mt-4 mb-6 text-sm text-muted">
         Add live webcam sources yourself, or let Chatty search Reddit, forums, and the web (via
         SearXNG) for promising ones every few hours - nothing is added automatically, review and{' '}
-        <strong>Approve</strong> suggestions below. Chatty can list these sources in conversation,
-        but does not yet view or analyze what's showing on them.
+        <strong>Approve</strong> suggestions below. Every link is fetched and checked before it's
+        saved (see the <strong>ok / broken / unchecked</strong> badge), and a background recheck
+        keeps that status current. Click <strong>Watch</strong> on a verified source to view it
+        live, or ask Chatty to pull one up in chat.
       </p>
 
       <h2 className="mb-3 font-display text-lg">My Sources</h2>
@@ -246,10 +291,23 @@ const Webcams: React.FC = () => {
             />
           </FormField>
         </div>
+        {addVerificationError && (
+          <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-alert-red/30 bg-alert-red/10 px-3 py-2">
+            <p className="m-0 text-sm text-alert-red">Couldn't confirm this is playable: {addVerificationError}</p>
+            <button
+              type="button"
+              onClick={() => handleAdd(true)}
+              disabled={adding}
+              className="flex-shrink-0 rounded-md border border-alert-red px-3 py-1 text-xs font-semibold text-alert-red disabled:opacity-60"
+            >
+              Save anyway
+            </button>
+          </div>
+        )}
         <div className="mt-3 flex justify-end">
           <button
             type="button"
-            onClick={handleAdd}
+            onClick={() => handleAdd()}
             disabled={adding || !addForm.name.trim() || !addForm.url.trim()}
             className="h-10 rounded-lg bg-signal px-5 text-sm font-bold text-white disabled:bg-surface-dim disabled:text-muted"
           >
@@ -312,6 +370,7 @@ const Webcams: React.FC = () => {
                       </a>
                       <div className="mt-1 flex flex-wrap items-center gap-1.5">
                         <Badge tone="teal">{s.kind}</Badge>
+                        <Badge tone={verifyTone[s.verify_status]}>{s.verify_status}</Badge>
                         {s.location && <span className="text-xs text-muted">{s.location}</span>}
                         {s.source === 'suggestion' && <Badge tone="gold">discovered</Badge>}
                         {!s.enabled && <Badge tone="neutral">disabled</Badge>}
@@ -319,6 +378,22 @@ const Webcams: React.FC = () => {
                     </div>
                   </div>
                   <div className="flex flex-shrink-0 items-center gap-2">
+                    {s.enabled && s.verify_status === 'ok' && s.kind !== 'webpage' ? (
+                      <Link
+                        to={`/webcams/watch/${s.id}`}
+                        className="rounded-md bg-signal px-3 py-1 text-xs font-bold text-white"
+                      >
+                        Watch
+                      </Link>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => handleRecheck(s.id)}
+                      disabled={verifyingId === s.id}
+                      className="rounded-md border border-line px-3 py-1 text-xs font-semibold text-ink-dim disabled:opacity-60"
+                    >
+                      {verifyingId === s.id ? 'Checking…' : 'Recheck'}
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleToggleEnabled(s)}
@@ -386,6 +461,7 @@ const Webcams: React.FC = () => {
                   <span className="font-semibold text-ink">{s.name}</span>
                   <div className="mt-1 flex flex-wrap gap-1.5">
                     <Badge tone="teal">{s.kind}</Badge>
+                    <Badge tone={verifyTone[s.verify_status]}>{s.verify_status}</Badge>
                     {s.location && <span className="text-xs text-muted">{s.location}</span>}
                   </div>
                 </div>
@@ -403,6 +479,22 @@ const Webcams: React.FC = () => {
               >
                 found via {s.discovered_url} ↗
               </a>
+
+              {approveVerificationError[s.id] && (
+                <div className="mb-2 flex items-center justify-between gap-3 rounded-md border border-alert-red/30 bg-alert-red/10 px-3 py-2">
+                  <p className="m-0 text-sm text-alert-red">
+                    Couldn't confirm this is playable: {approveVerificationError[s.id]}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleApprove(s, true)}
+                    disabled={actingId === s.id}
+                    className="flex-shrink-0 rounded-md border border-alert-red px-3 py-1 text-xs font-semibold text-alert-red disabled:opacity-60"
+                  >
+                    Approve anyway
+                  </button>
+                </div>
+              )}
 
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-mono text-xs text-muted">

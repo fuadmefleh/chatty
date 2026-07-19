@@ -34,12 +34,17 @@ else:
 # handling. "whisperx_http" (default) talks to an external WhisperX server
 # (diarization + speaker embeddings); "openai" uses OpenAI's transcription
 # API (no diarization); "local_whisper" runs faster-whisper in-process (no
-# external server/API key, no diarization) - see requirements-local-stt.txt.
+# external server/API key, no diarization) - see requirements-local-stt.txt;
+# "parakeet" talks to a parakeet.cpp parakeet-server (github.com/mudler/
+# parakeet.cpp), an OpenAI-compatible transcription server run separately
+# (no diarization).
 STT_PROVIDER = os.getenv("STT_PROVIDER", "whisperx_http")
 STT_ENGINE_URL = os.getenv("STT_ENGINE_URL", "http://127.0.0.1:8003")
 STT_OPENAI_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 STT_LOCAL_MODEL_SIZE = os.getenv("STT_LOCAL_MODEL_SIZE", "base")
 STT_LOCAL_DEVICE = os.getenv("STT_LOCAL_DEVICE", "cpu")
+STT_PARAKEET_URL = os.getenv("STT_PARAKEET_URL", "http://127.0.0.1:8011/v1")
+STT_PARAKEET_MODEL = os.getenv("STT_PARAKEET_MODEL", "parakeet")
 
 # TTS (text-to-speech) provider - used by the Telegram bot's speak_text skill
 # (skills/tts/) to reply with a real voice message instead of/alongside text.
@@ -127,6 +132,12 @@ SELF_UPGRADE_TEST_TIMEOUT_SECONDS = int(os.getenv("SELF_UPGRADE_TEST_TIMEOUT_SEC
 # test suite pass before the branch is left for manual review.
 SELF_UPGRADE_MAX_TEST_ATTEMPTS = int(os.getenv("SELF_UPGRADE_MAX_TEST_ATTEMPTS", "3"))
 
+# Hard cap on how many autonomous WhatsApp auto-replies a single managed chat
+# (see skills/whatsapp_messages/whatsapp_managed_chats.py) can receive per
+# calendar day - a safety valve against a runaway reply loop spamming a real
+# contact, independent of whatever judgement the model itself exercises.
+WHATSAPP_AUTO_REPLY_DAILY_LIMIT = int(os.getenv("WHATSAPP_AUTO_REPLY_DAILY_LIMIT", "20"))
+
 # Directory _restart_services() (self_upgrade_manager.py) writes restart
 # signal files into. Under Docker (see docker-compose.yml), a sidecar
 # container (docker/restarter/) polls this directory and translates requests
@@ -161,6 +172,15 @@ WEBCAM_DISCOVERY_QUERIES = os.getenv(
 WEBCAM_DISCOVERY_INTERVAL_HOURS = int(os.getenv("WEBCAM_DISCOVERY_INTERVAL_HOURS", "12"))
 WEBCAM_DISCOVERY_RESULTS_PER_QUERY = int(os.getenv("WEBCAM_DISCOVERY_RESULTS_PER_QUERY", "8"))
 WEBCAM_DISCOVERY_MAX_SUGGESTIONS_PER_SCAN = int(os.getenv("WEBCAM_DISCOVERY_MAX_SUGGESTIONS_PER_SCAN", "5"))
+
+# Webcam Verification & Health Checks: see src/managers/webcam_verifier.py.
+# Every webcam link (manual add, suggestion approval, or a periodic recheck)
+# is fetched and inspected before it's trusted as an actually-playable live
+# feed, rather than just taking the LLM's/user's word for it.
+WEBCAM_VERIFY_TIMEOUT_SECONDS = float(os.getenv("WEBCAM_VERIFY_TIMEOUT_SECONDS", "8"))
+WEBCAM_VERIFY_MJPEG_MAX_BYTES = int(os.getenv("WEBCAM_VERIFY_MJPEG_MAX_BYTES", "65536"))
+WEBCAM_HEALTH_CHECK_INTERVAL_HOURS = int(os.getenv("WEBCAM_HEALTH_CHECK_INTERVAL_HOURS", "24"))
+WEBCAM_HEALTH_CHECK_CONCURRENCY = int(os.getenv("WEBCAM_HEALTH_CHECK_CONCURRENCY", "5"))
 
 # System Prompt
 SYSTEM_PROMPT = """You are a helpful and friendly AI companion. You have access to your memory 

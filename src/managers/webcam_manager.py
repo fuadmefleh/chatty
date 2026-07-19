@@ -8,8 +8,9 @@ Two related stores live here because approving a suggestion writes to both:
   SearXNG-driven scan, reviewed via the dashboard's /webcams page
   (data/webcam_sources/suggestions.json).
 
-Nothing here fetches or analyzes any image/video content - that's a later
-feature. This module only tracks where to look.
+This module only tracks where to look; the actual fetch/verify-playability
+checks live in src/managers/webcam_verifier.py, whose results are stored here
+in each row's verify_status/verify_detail/last_verified_at.
 """
 import json
 import uuid
@@ -21,6 +22,12 @@ from typing import Dict, List, Optional
 # the URL should eventually be consumed (a later feature's concern; for now
 # this just informs the dashboard's display and the discovery LLM's guesses).
 WEBCAM_KINDS = ("snapshot", "mjpeg", "hls", "youtube", "webpage")
+
+# Result of src/managers/webcam_verifier.py's verify_webcam(): "ok" means the
+# feed was actually fetched and looks playable, "broken" means it failed
+# (dead link, wrong content-type, etc.), "unchecked" is the pre-verification
+# default for rows written before this field existed.
+VERIFY_STATUSES = ("ok", "broken", "unchecked")
 
 
 class WebcamSource:
@@ -38,6 +45,9 @@ class WebcamSource:
         enabled: bool = True,
         source: str = "manual",
         suggestion_id: Optional[str] = None,
+        verify_status: str = "unchecked",
+        verify_detail: str = "",
+        last_verified_at: Optional[str] = None,
     ):
         self.id = source_id
         self.name = name
@@ -47,6 +57,9 @@ class WebcamSource:
         self.enabled = enabled
         self.source = source if source in ("manual", "suggestion") else "manual"
         self.suggestion_id = suggestion_id
+        self.verify_status = verify_status if verify_status in VERIFY_STATUSES else "unchecked"
+        self.verify_detail = verify_detail
+        self.last_verified_at = last_verified_at
         self.created_at = created_at
         self.updated_at = updated_at
 
@@ -60,6 +73,9 @@ class WebcamSource:
             "enabled": self.enabled,
             "source": self.source,
             "suggestion_id": self.suggestion_id,
+            "verify_status": self.verify_status,
+            "verify_detail": self.verify_detail,
+            "last_verified_at": self.last_verified_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -77,6 +93,9 @@ class WebcamSource:
             enabled=data.get("enabled", True),
             source=data.get("source", "manual"),
             suggestion_id=data.get("suggestion_id"),
+            verify_status=data.get("verify_status", "unchecked"),
+            verify_detail=data.get("verify_detail", ""),
+            last_verified_at=data.get("last_verified_at"),
         )
 
 
@@ -119,6 +138,9 @@ class WebcamSourcesManager:
         enabled: bool = True,
         source: str = "manual",
         suggestion_id: Optional[str] = None,
+        verify_status: str = "unchecked",
+        verify_detail: str = "",
+        last_verified_at: Optional[str] = None,
     ) -> WebcamSource:
         sources = self._load()
         now = datetime.now().isoformat()
@@ -133,6 +155,9 @@ class WebcamSourcesManager:
             enabled=enabled,
             source=source,
             suggestion_id=suggestion_id,
+            verify_status=verify_status,
+            verify_detail=verify_detail,
+            last_verified_at=last_verified_at,
         )
         sources.append(new_source)
         self._save(sources)
@@ -188,6 +213,9 @@ class WebcamSuggestion:
         rationale: str = "",
         status: str = "pending",
         source_id: Optional[str] = None,
+        verify_status: str = "unchecked",
+        verify_detail: str = "",
+        last_verified_at: Optional[str] = None,
     ):
         self.id = suggestion_id
         self.name = name
@@ -198,6 +226,9 @@ class WebcamSuggestion:
         self.rationale = rationale
         self.status = status  # pending | approved | dismissed
         self.source_id = source_id  # set once "Approve" creates a WebcamSource
+        self.verify_status = verify_status if verify_status in VERIFY_STATUSES else "unchecked"
+        self.verify_detail = verify_detail
+        self.last_verified_at = last_verified_at
         self.created_at = created_at
         self.updated_at = updated_at
 
@@ -212,6 +243,9 @@ class WebcamSuggestion:
             "rationale": self.rationale,
             "status": self.status,
             "source_id": self.source_id,
+            "verify_status": self.verify_status,
+            "verify_detail": self.verify_detail,
+            "last_verified_at": self.last_verified_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -230,6 +264,9 @@ class WebcamSuggestion:
             rationale=data.get("rationale", ""),
             status=data.get("status", "pending"),
             source_id=data.get("source_id"),
+            verify_status=data.get("verify_status", "unchecked"),
+            verify_detail=data.get("verify_detail", ""),
+            last_verified_at=data.get("last_verified_at"),
         )
 
 
@@ -271,6 +308,9 @@ class WebcamSuggestionsManager:
         kind: str = "webpage",
         location: str = "",
         rationale: str = "",
+        verify_status: str = "unchecked",
+        verify_detail: str = "",
+        last_verified_at: Optional[str] = None,
     ) -> WebcamSuggestion:
         suggestions = self._load()
         now = datetime.now().isoformat()
@@ -285,6 +325,9 @@ class WebcamSuggestionsManager:
             location=location,
             rationale=rationale,
             status="pending",
+            verify_status=verify_status,
+            verify_detail=verify_detail,
+            last_verified_at=last_verified_at,
         )
         suggestions.append(new_suggestion)
         self._save(suggestions)

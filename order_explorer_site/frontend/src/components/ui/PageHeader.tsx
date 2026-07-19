@@ -13,6 +13,7 @@ const PageHeader: React.FC<PageHeaderProps> = ({ eyebrow, eyebrowColor, title, t
     <div>
       <div
         className="mb-1.5 font-mono text-[11px] uppercase tracking-wider"
+// TODO: replace inline style with Tailwind class
         style={eyebrowColor ? { color: eyebrowColor } : undefined}
       >
         <span className={eyebrowColor ? '' : 'text-alert-amber'}>{eyebrow}</span>

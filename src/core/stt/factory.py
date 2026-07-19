@@ -22,6 +22,11 @@ def get_stt_provider() -> STTProvider:
             _stt_singleton = LocalWhisperProvider(
                 model_size=config.STT_LOCAL_MODEL_SIZE, device=config.STT_LOCAL_DEVICE
             )
+        elif config.STT_PROVIDER == "parakeet":
+            from .parakeet_http import ParakeetHTTPProvider
+            _stt_singleton = ParakeetHTTPProvider(
+                base_url=config.STT_PARAKEET_URL, model=config.STT_PARAKEET_MODEL
+            )
         else:
             _stt_singleton = WhisperXHTTPProvider(base_url=config.STT_ENGINE_URL)
     return _stt_singleton

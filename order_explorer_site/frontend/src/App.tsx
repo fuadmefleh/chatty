@@ -37,8 +37,12 @@ import Requests from './pages/Requests';
 import Suggestions from './pages/Suggestions';
 import VideoProduction from './pages/VideoProduction';
 import Webcams from './pages/Webcams';
+import WebcamWatch from './pages/WebcamWatch';
 import SystemStatus from './pages/SystemStatus';
 import Settings from './pages/Settings';
+import WhatsAppLayout, { WhatsAppEmpty } from './pages/WhatsAppLayout';
+import WhatsAppThread from './pages/WhatsAppThread';
+import LinkedInLayout from './pages/LinkedInLayout';
 import CodeBrowser from './pages/CodeBrowser';
 import ServerHealth from './pages/ServerHealth';
 import TokenUsage from './pages/TokenUsage';
@@ -85,10 +89,16 @@ function RoutedApp() {
             <Route path="reorganize" element={<WikiReorganize />} />
             <Route path=":type/:slug" element={<WikiArticle />} />
           </Route>
+          <Route path="/whatsapp" element={<WhatsAppLayout />}>
+            <Route index element={<WhatsAppEmpty />} />
+            <Route path=":jid" element={<WhatsAppThread />} />
+          </Route>
+          <Route path="/linkedin" element={<LinkedInLayout />} />
           <Route path="/requests" element={<Requests />} />
           <Route path="/suggestions" element={<Suggestions />} />
           <Route path="/video-production" element={<VideoProduction />} />
           <Route path="/webcams" element={<Webcams />} />
+          <Route path="/webcams/watch/:id" element={<WebcamWatch />} />
           <Route path="/system" element={<SystemStatus />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/server-health" element={<ServerHealth />} />

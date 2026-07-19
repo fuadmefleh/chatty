@@ -12,6 +12,7 @@
   "dependencies": {
     "axios": "^1.13.4",
     "chart.js": "^4.5.1",
+    "hls.js": "^1.6.16",
     "prismjs": "^1.30.0",
     "react": "^19.2.0",
     "react-chartjs-2": "^5.3.1",

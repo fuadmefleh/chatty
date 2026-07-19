@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.managers import webcam_discovery as wd
 from src.managers import webcam_manager as wm
+from src.managers import webcam_verifier as wv
 
 
 def make_sources_manager(tmp_path):
@@ -118,7 +119,10 @@ async def test_run_webcam_discovery_scan_dedups_against_seen_urls(tmp_path):
          patch("src.managers.webcam_discovery._curate_suggestions", new=AsyncMock(return_value=[
              {"name": "New Cam", "url": "https://new.example/stream", "kind": "webpage",
               "location": "", "rationale": "worth it", "discovered_url": "https://reddit.com/new"},
-         ])) as mock_curate:
+         ])) as mock_curate, \
+         patch("src.managers.webcam_discovery.verify_webcam", new=AsyncMock(
+             return_value=wv.VerifyResult(ok=True, status="ok", detail="looks fine"),
+         )):
 
         result = await wd.run_webcam_discovery_scan(sources_mgr, suggestions_mgr)
 
@@ -128,6 +132,28 @@ async def test_run_webcam_discovery_scan_dedups_against_seen_urls(tmp_path):
     assert result is not None and "New Cam" in result
     stored = suggestions_mgr.list_by_status("pending")
     assert [s.name for s in stored] == ["New Cam", "Already"]
+    assert [s for s in stored if s.name == "New Cam"][0].verify_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_run_webcam_discovery_scan_drops_ideas_that_fail_verification(tmp_path):
+    sources_mgr = make_sources_manager(tmp_path)
+    suggestions_mgr = make_suggestions_manager(tmp_path)
+    searched = [{"title": "t", "link": "https://reddit.com/x", "snippet": "s", "query": "q"}]
+
+    with patch("src.managers.webcam_discovery._run_discovery_searches", new=AsyncMock(return_value=searched)), \
+         patch("src.managers.webcam_discovery._curate_suggestions", new=AsyncMock(return_value=[
+             {"name": "Dead Cam", "url": "https://dead.example/stream", "kind": "snapshot",
+              "location": "", "rationale": "worth it", "discovered_url": "https://reddit.com/x"},
+         ])), \
+         patch("src.managers.webcam_discovery.verify_webcam", new=AsyncMock(
+             return_value=wv.VerifyResult(ok=False, status="unreachable", detail="404"),
+         )):
+
+        result = await wd.run_webcam_discovery_scan(sources_mgr, suggestions_mgr)
+
+    assert result is None
+    assert suggestions_mgr.list() == []
 
 
 @pytest.mark.asyncio

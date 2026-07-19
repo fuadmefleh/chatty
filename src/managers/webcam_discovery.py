@@ -18,16 +18,22 @@ Flow, driven by HeartbeatManager._process_webcam_discovery():
 3. _curate_suggestions() - LLM picks which surviving results plausibly link
    to (or describe) a genuine live webcam, with a best-effort guess at the
    actual name/url/kind/location plus a one-line rationale.
-4. run_webcam_discovery_scan() stores the curated ideas as pending
-   suggestions.
+4. Each curated idea is actually fetched and checked via
+   src/managers/webcam_verifier.py before it's trusted - the LLM's guess at
+   url/kind is often wrong or stale, so ideas that don't verify as a real
+   playable feed are dropped here rather than shown to the user at all.
+5. run_webcam_discovery_scan() stores the surviving, verified ideas as
+   pending suggestions.
 """
 import json
 import re
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from src.core import config
 from src.core.logging_config import get_heartbeat_logger
 from src.managers.webcam_manager import WEBCAM_KINDS, WebcamSourcesManager, WebcamSuggestionsManager
+from src.managers.webcam_verifier import verify_webcam
 from skills.web_search.searxng_client import get_search_client
 
 logger = get_heartbeat_logger()
@@ -179,7 +185,21 @@ async def run_webcam_discovery_scan(
     if not ideas:
         return None
 
+    verified_ideas = []
     for idea in ideas:
+        result = await verify_webcam(idea["url"], idea["kind"])
+        if not result.ok:
+            logger.info(f"Dropping webcam suggestion '{idea['name']}' - failed verification: {result.detail}")
+            continue
+        idea["verify_status"] = "ok"
+        idea["verify_detail"] = result.detail
+        verified_ideas.append(idea)
+
+    if not verified_ideas:
+        return None
+
+    now = datetime.now().isoformat()
+    for idea in verified_ideas:
         suggestions_manager.create(
             name=idea["name"],
             url=idea["url"],
@@ -187,7 +207,10 @@ async def run_webcam_discovery_scan(
             kind=idea["kind"],
             location=idea["location"],
             rationale=idea["rationale"],
+            verify_status=idea["verify_status"],
+            verify_detail=idea["verify_detail"],
+            last_verified_at=now,
         )
 
-    names = ", ".join(idea["name"] for idea in ideas)
-    return f"Found {len(ideas)} new webcam suggestion(s): {names}."
+    names = ", ".join(idea["name"] for idea in verified_ideas)
+    return f"Found {len(verified_ideas)} new webcam suggestion(s): {names}."

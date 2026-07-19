@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { fetchWikiHealth, triggerWikiLint, resolveWikiContradiction } from '../chattyApi';
-import type { WikiHealth as WikiHealthData, WikiHealthCoverageGap, WikiHealthContradiction } from '../chattyApi';
+import type { WikiHealth as WikiHealthData, WikiHealthCoverageGap, WikiHealthContradiction, WikiHealthDuplicate, WikiPage } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Spinner from '../components/ui/Spinner';
 import EmptyState from '../components/ui/EmptyState';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
+import Modal from '../components/ui/Modal';
+import MergeConfirmPanel from '../components/wiki/MergeConfirmPanel';
+import { useToast } from '../hooks/useToast';
 
 const ContradictionCard: React.FC<{
   contradiction: WikiHealthContradiction;
@@ -70,7 +73,7 @@ const ContradictionCard: React.FC<{
           {resolving ? 'Sending…' : 'Send to Chatty'}
         </button>
       </div>
-      {resolving && <p className="mt-2 text-xs text-muted">This runs Chatty's full tool loop and can take a couple of minutes.</p>}
+      {resolving && <p className="mt-2 text-xs text-muted">This can take a couple of minutes to process.</p>}
       {error && <p className="mt-2 text-sm text-alert-red">{error}</p>}
     </Card>
   );
@@ -78,9 +81,11 @@ const ContradictionCard: React.FC<{
 
 const WikiHealth: React.FC = () => {
   const navigate = useNavigate();
+  const { showToast } = useToast();
   const [health, setHealth] = useState<WikiHealthData | undefined>(undefined);
   const [error, setError] = useState('');
   const [linting, setLinting] = useState(false);
+  const [mergingPair, setMergingPair] = useState<WikiHealthDuplicate | null>(null);
 
   const load = async () => {
     setError('');
@@ -109,6 +114,18 @@ const WikiHealth: React.FC = () => {
     navigate('/memory', { state: { createPage: { type: gap.suggested_type, title: gap.suggested_title } } });
   };
 
+  const handleDuplicateMerged = (kept: WikiPage) => {
+    const pair = mergingPair;
+    setMergingPair(null);
+    if (!pair) return;
+    setHealth((h) => h && {
+      ...h,
+      duplicates: h.duplicates.filter((d) => d !== pair),
+      total_pages: h.total_pages - 1,
+    });
+    showToast(`Merged into "${kept.title}"`, 'signal');
+  };
+
   const lintButton = (
     <button
       type="button"
@@ -128,88 +145,139 @@ const WikiHealth: React.FC = () => {
 
       {health === undefined ? (
         <Spinner label="Loading wiki health…" />
-      ) : health.generated_at === null ? (
-        <EmptyState
-          title="Lint hasn't run yet"
-          description="Trigger it below or wait for the next heartbeat (runs automatically every 15 minutes)."
-          action={lintButton}
-        />
       ) : (
         <div className="flex flex-col gap-6">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone="ember">{health.contradictions.length} contradiction{health.contradictions.length === 1 ? '' : 's'}</Badge>
-            <Badge tone="gold">{health.coverage_gaps.length} coverage gap{health.coverage_gaps.length === 1 ? '' : 's'}</Badge>
-            <Badge tone="neutral">{health.orphans.length} orphan{health.orphans.length === 1 ? '' : 's'}</Badge>
-            <span className="ml-auto font-mono text-[11px] text-muted">
-              Last checked: {new Date(health.generated_at).toLocaleString()} · {health.total_pages} page{health.total_pages === 1 ? '' : 's'}
-            </span>
-          </div>
-
           <section className="flex flex-col gap-2.5">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Contradictions</h2>
-            {health.contradictions.length === 0 ? (
-              <p className="text-sm text-muted">No contradictions flagged.</p>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Possible duplicates</h2>
+            {health.duplicates.length === 0 ? (
+              <p className="text-sm text-muted">No likely duplicates found.</p>
             ) : (
-              health.contradictions.map((c, i) => (
-                <ContradictionCard
-                  key={i}
-                  contradiction={c}
-                  onDismiss={() => setHealth((h) => h && {
-                    ...h,
-                    contradictions: h.contradictions.filter((_, j) => j !== i),
-                  })}
-                />
-              ))
-            )}
-          </section>
-
-          <section className="flex flex-col gap-2.5">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Coverage gaps</h2>
-            {health.coverage_gaps.length === 0 ? (
-              <p className="text-sm text-muted">No coverage gaps flagged.</p>
-            ) : (
-              health.coverage_gaps.map((g, i) => (
-                <Card key={i}>
+              health.duplicates.map((d) => (
+                <Card key={`${d.page_a.type}/${d.page_a.slug}-${d.page_b.type}/${d.page_b.slug}`}>
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                    <p className="flex items-center gap-2 text-sm font-semibold text-ink">
-                      {g.suggested_title}
-                      <Badge tone="teal">{g.suggested_type}</Badge>
+                    <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-ink">
+                      <Link to={`/memory/${d.page_a.type}/${d.page_a.slug}`} className="text-signal hover:underline">
+                        {d.page_a.title}
+                      </Link>
+                      <span className="font-normal text-muted">vs.</span>
+                      <Link to={`/memory/${d.page_b.type}/${d.page_b.slug}`} className="text-signal hover:underline">
+                        {d.page_b.title}
+                      </Link>
                     </p>
                     <button
                       type="button"
-                      onClick={() => createPageForGap(g)}
+                      onClick={() => setMergingPair(d)}
                       className="rounded-md border border-line px-3 py-1 text-xs font-semibold text-ink-dim"
                     >
-                      Create page
+                      Merge
                     </button>
                   </div>
-                  <p className="text-sm text-muted">{g.description}</p>
+                  <p className="text-sm text-muted">{d.page_a.summary || d.page_b.summary}</p>
                 </Card>
               ))
             )}
           </section>
 
-          <section className="flex flex-col gap-2.5">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Orphan pages</h2>
-            {health.orphans.length === 0 ? (
-              <p className="text-sm text-muted">No orphan pages - every page has at least one inbound link.</p>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {health.orphans.map((o) => (
-                  <Link
-                    key={`${o.type}/${o.slug}`}
-                    to={`/memory/${o.type}/${o.slug}`}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-2.5 hover:bg-surface-dim"
-                  >
-                    <span className="font-semibold text-ink">{o.title}</span>
-                    <Badge tone="neutral">{o.type}</Badge>
-                  </Link>
-                ))}
+          {health.generated_at === null ? (
+            <EmptyState
+              title="Lint hasn't run yet"
+              description="Trigger it below or wait for the next heartbeat (runs automatically every 15 minutes)."
+              action={lintButton}
+            />
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone="ember">{health.contradictions.length} contradiction{health.contradictions.length === 1 ? '' : 's'}</Badge>
+                <Badge tone="gold">{health.coverage_gaps.length} coverage gap{health.coverage_gaps.length === 1 ? '' : 's'}</Badge>
+                <Badge tone="neutral">{health.orphans.length} orphan{health.orphans.length === 1 ? '' : 's'}</Badge>
+                <span className="ml-auto font-mono text-[11px] text-muted">
+                  Last checked: {new Date(health.generated_at).toLocaleString()} · {health.total_pages} page{health.total_pages === 1 ? '' : 's'}
+                </span>
               </div>
-            )}
-          </section>
+
+              <section className="flex flex-col gap-2.5">
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Contradictions</h2>
+                {health.contradictions.length === 0 ? (
+                  <p className="text-sm text-muted">No contradictions flagged.</p>
+                ) : (
+                  health.contradictions.map((c, i) => (
+                    <ContradictionCard
+                      key={i}
+                      contradiction={c}
+                      onDismiss={() => setHealth((h) => h && {
+                        ...h,
+                        contradictions: h.contradictions.filter((_, j) => j !== i),
+                      })}
+                    />
+                  ))
+                )}
+              </section>
+
+              <section className="flex flex-col gap-2.5">
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Coverage gaps</h2>
+                {health.coverage_gaps.length === 0 ? (
+                  <p className="text-sm text-muted">No coverage gaps flagged.</p>
+                ) : (
+                  health.coverage_gaps.map((g, i) => (
+                    <Card key={i}>
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <p className="flex items-center gap-2 text-sm font-semibold text-ink">
+                          {g.suggested_title}
+                          <Badge tone="teal">{g.suggested_type}</Badge>
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => createPageForGap(g)}
+                          className="rounded-md border border-line px-3 py-1 text-xs font-semibold text-ink-dim"
+                        >
+                          Create page
+                        </button>
+                      </div>
+                      <p className="text-sm text-muted">{g.description}</p>
+                    </Card>
+                  ))
+                )}
+              </section>
+
+              <section className="flex flex-col gap-2.5">
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Orphan pages</h2>
+                {health.orphans.length === 0 ? (
+                  <p className="text-sm text-muted">No orphan pages - every page has at least one inbound link.</p>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    {health.orphans.map((o) => (
+                      <Link
+                        key={`${o.type}/${o.slug}`}
+                        to={`/memory/${o.type}/${o.slug}`}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-2.5 hover:bg-surface-dim"
+                      >
+                        <span className="font-semibold text-ink">{o.title}</span>
+                        <Badge tone="neutral">{o.type}</Badge>
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </>
+          )}
         </div>
       )}
+
+      <Modal open={mergingPair !== null} onClose={() => setMergingPair(null)} title="Confirm merge">
+        {mergingPair && (
+          <MergeConfirmPanel
+            pageA={mergingPair.page_a}
+            pageB={mergingPair.page_b}
+            defaultKeep={
+              new Date(mergingPair.page_a.updated).getTime() >= new Date(mergingPair.page_b.updated).getTime()
+                ? 'a'
+                : 'b'
+            }
+            onCancel={() => setMergingPair(null)}
+            onMerged={handleDuplicateMerged}
+          />
+        )}
+      </Modal>
     </>
   );
 };

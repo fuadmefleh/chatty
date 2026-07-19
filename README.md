@@ -55,7 +55,7 @@ Full breakdown: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - **Staged ReACT agent** — decompose → memory → plan → execute → synthesize → reflect → memorize (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md))
 - **Dual memory** — short-term daily logs consolidated into long-term categorized knowledge (see [docs/MEMORY_SYSTEM.md](docs/MEMORY_SYSTEM.md))
-- **Dynamically loaded skills** — Gmail, Amazon/Walmart orders, Plaid/RocketMoney budgeting, notes, reminders, weather, web search, speaker identification, and more — each a self-contained folder under `skills/`
+- **Dynamically loaded skills** — Gmail, Amazon/Walmart orders, Plaid/RocketMoney budgeting, LinkedIn/WhatsApp messaging, notes, reminders, weather, web search, speaker identification, and more — each a self-contained folder under `skills/`
 - **Autonomous heartbeat** — periodic background tasks: memory consolidation, budget alerts, world/stock/GitHub watch, daily briefings, and a safety-gated **self-upgrade** pipeline where the bot proposes and implements small improvements to its own codebase (see [docs/heartbeat.md](docs/heartbeat.md))
 - **Web dashboard** — order history, budgeting, categories/vendors, notes, transcriptions, memory browser, and more (`order_explorer_site/`)
 - **iOS-companion API** — REST + WebSocket contract for a native client, including background audio ingestion (see [docs/IOS_APP_API.md](docs/IOS_APP_API.md))

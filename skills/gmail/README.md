@@ -52,6 +52,11 @@ google-api-python-client>=2.0.0
    - Save the downloaded file as `credentials.json`
    - Move it to the `skills/gmail/` directory in your project
 
+> **Web OAuth flow**: the steps above cover the desktop-app flow. The integration
+> also supports a web-based OAuth callback (`web_credentials.json` +
+> `GMAIL_OAUTH_REDIRECT_URI` env var) for authenticating without a local browser —
+> see `gmail_integration.py` if you need that flow instead.
+
 ## Step 3: First-Time Authentication
 
 The first time you use the Gmail integration, it will:
@@ -112,14 +117,14 @@ If successful, you should see:
 
 This integration uses:
 - `https://www.googleapis.com/auth/gmail.readonly` - Read-only access to Gmail
+- `https://www.googleapis.com/auth/gmail.modify` - Modify/organize messages (mark read, archive, trash, label)
 
 This means the bot can:
 - ✅ Read your emails
 - ✅ Search your emails
 - ✅ Get email metadata
-- ❌ Send emails
-- ❌ Delete emails
-- ❌ Modify emails
+- ✅ Mark emails as read, archive them, trash them, or add labels
+- ❌ Send new emails
 
 ## Usage in the Bot
 

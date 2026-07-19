@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import chatty_web_server as server
 from skills.transcriptions.transcriptions_manager import TranscriptionsManager
+from src.core import config as core_config
+from src.core.stt import factory as stt_factory
 from src.web import config, state
 from src.web.routers import audio
 
@@ -28,6 +30,18 @@ def isolated_transcriptions_manager(monkeypatch):
     monkeypatch.setattr(state, "transcriptions_manager", TranscriptionsManager(data_dir=tmpdir))
     monkeypatch.setattr(config, "WEB_USER_ID", "web_user")
     yield
+
+
+@pytest.fixture(autouse=True)
+def pin_whisperx_stt_provider(monkeypatch):
+    # These tests mock httpx.AsyncClient.post and assert on it, so they need
+    # whisperx_http specifically - pin it regardless of the real STT_PROVIDER
+    # env var (get_stt_provider() is a process-wide singleton otherwise).
+    monkeypatch.setattr(core_config, "STT_PROVIDER", "whisperx_http")
+    monkeypatch.setattr(core_config, "STT_ENGINE_URL", "http://stt-test.invalid:8003")
+    stt_factory._stt_singleton = None
+    yield
+    stt_factory._stt_singleton = None
 
 
 def _headers(**overrides):

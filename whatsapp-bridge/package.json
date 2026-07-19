@@ -1,0 +1,19 @@
+{
+  "name": "whatsapp-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local HTTP bridge exposing a Baileys WhatsApp Web session to the Chatty Python backend.",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.0",
+    "pino": "^9.4.0",
+    "qrcode": "^1.5.4"
+  }
+}

@@ -9,7 +9,7 @@
    Tailwind utility instantly via var() indirection — see the @theme block. */
 :root {
   --bg: #f5f6f4;
-  --surface: #ffffff;
+  --surface: var(--surface);
   --surface-dim: #eceeea;
   --ink: #12181b;
   --ink-dim: #4a5459;

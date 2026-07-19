@@ -318,6 +318,16 @@ export interface WikiHealthCoverageGap {
   description: string;
 }
 
+export interface WikiHealthDuplicateRef extends WikiHealthRef {
+  summary: string;
+  updated: string;
+}
+
+export interface WikiHealthDuplicate {
+  page_a: WikiHealthDuplicateRef;
+  page_b: WikiHealthDuplicateRef;
+}
+
 export interface WikiHealth {
   generated_at: string | null;
   total_pages: number;
@@ -325,6 +335,7 @@ export interface WikiHealth {
   orphans: WikiHealthRef[];
   contradictions: WikiHealthContradiction[];
   coverage_gaps: WikiHealthCoverageGap[];
+  duplicates: WikiHealthDuplicate[];
 }
 
 export const createWikiPage = async (input: WikiPageCreateInput): Promise<WikiPage> => {
@@ -342,6 +353,16 @@ export const updateWikiPage = async (type: string, slug: string, input: WikiPage
 
 export const deleteWikiPage = async (type: string, slug: string): Promise<void> => {
   await chattyApi.delete(`/api/chatty/memory/page/${encodeURIComponent(type)}/${encodeURIComponent(slug)}`);
+};
+
+export interface WikiPageRef {
+  type: 'entity' | 'concept';
+  slug: string;
+}
+
+export const mergeWikiPages = async (keep: WikiPageRef, remove: WikiPageRef): Promise<WikiPage> => {
+  const res = await chattyApi.post<WikiPage>('/api/chatty/memory/page/merge', { keep, remove });
+  return res.data;
 };
 
 export const fetchWikiBacklinks = async (type: string, slug: string): Promise<WikiBacklink[]> => {
@@ -513,6 +534,153 @@ export const disconnectGmail = async (): Promise<GmailStatus> => {
   return res.data;
 };
 
+// ── Integrations (WhatsApp) ──────────────────────────────────────────────────
+// No OAuth round trip here: the live session lives in the whatsapp-bridge
+// Node sidecar, linked by scanning a QR code from the phone's WhatsApp app.
+// The dashboard polls /status, which returns a QR data URL while a scan is
+// pending, so the caller just renders it as an <img> and keeps polling.
+export interface WhatsAppStatus {
+  status: 'connected' | 'qr_pending' | 'disconnected' | 'unavailable';
+  phone: string | null;
+  qr: string | null;
+}
+
+export const fetchWhatsAppStatus = async (): Promise<WhatsAppStatus> => {
+  const res = await chattyApi.get<WhatsAppStatus>('/api/chatty/whatsapp/status');
+  return res.data;
+};
+
+export const disconnectWhatsApp = async (): Promise<{ status: string }> => {
+  const res = await chattyApi.post<{ status: string }>('/api/chatty/whatsapp/disconnect');
+  return res.data;
+};
+
+export interface WhatsAppChat {
+  jid: string;
+  name: string | null;
+  unread_count: number;
+  last_message: string | null;
+  last_message_ts: string | null;
+  managed: boolean;
+}
+
+// direction 'auto' = sent unsupervised by the heartbeat's managed-chat
+// auto-reply step (src/managers/heartbeat_manager.py), vs 'out' = sent by
+// the user themselves from the compose box below.
+export interface WhatsAppMessage {
+  jid: string;
+  contact_name: string | null;
+  direction: 'in' | 'out' | 'auto';
+  message: string;
+  timestamp: string;
+}
+
+export const fetchWhatsAppChats = async (): Promise<WhatsAppChat[]> => {
+  const res = await chattyApi.get<{ chats: WhatsAppChat[] }>('/api/chatty/whatsapp/chats');
+  return res.data.chats;
+};
+
+export const fetchWhatsAppThread = async (jid: string): Promise<WhatsAppMessage[]> => {
+  const res = await chattyApi.get<{ messages: WhatsAppMessage[] }>(
+    `/api/chatty/whatsapp/chats/${encodeURIComponent(jid)}/messages`,
+  );
+  return res.data.messages;
+};
+
+export const sendWhatsAppChatMessage = async (jid: string, message: string): Promise<void> => {
+  await chattyApi.post(`/api/chatty/whatsapp/chats/${encodeURIComponent(jid)}/send`, { message });
+};
+
+export const markWhatsAppChatRead = async (jid: string): Promise<void> => {
+  await chattyApi.post(`/api/chatty/whatsapp/chats/${encodeURIComponent(jid)}/read`);
+};
+
+export const setWhatsAppChatManaged = async (
+  jid: string, name: string | null, instructions: string,
+): Promise<void> => {
+  await chattyApi.post(`/api/chatty/whatsapp/chats/${encodeURIComponent(jid)}/managed`, { name, instructions });
+};
+
+export const unsetWhatsAppChatManaged = async (jid: string): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/whatsapp/chats/${encodeURIComponent(jid)}/managed`);
+};
+
+// ── Integrations (LinkedIn) ──────────────────────────────────────────────────
+// No OAuth here either (LinkedIn doesn't grant messaging/feed/connections
+// scopes to third-party apps): the user pastes a `li_at` + JSESSIONID cookie
+// pair captured from their own logged-in browser session on the Settings
+// page. Read-only - there's no send/post endpoint by design.
+export interface LinkedInStatus {
+  status: 'connected' | 'disconnected';
+  name: string | null;
+}
+
+export const fetchLinkedInStatus = async (): Promise<LinkedInStatus> => {
+  const res = await chattyApi.get<LinkedInStatus>('/api/chatty/linkedin/status');
+  return res.data;
+};
+
+export const connectLinkedIn = async (liAt: string, jsessionid: string): Promise<LinkedInStatus> => {
+  const res = await chattyApi.post<LinkedInStatus>('/api/chatty/linkedin/connect', {
+    li_at: liAt,
+    jsessionid,
+  });
+  return res.data;
+};
+
+export const disconnectLinkedIn = async (): Promise<{ status: string }> => {
+  const res = await chattyApi.post<{ status: string }>('/api/chatty/linkedin/disconnect');
+  return res.data;
+};
+
+export interface LinkedInConversation {
+  conversation_id: string;
+  participants: string[];
+  last_message: string | null;
+  unread_count: number;
+}
+
+export interface LinkedInMessage {
+  sender: string | null;
+  message: string | null;
+  timestamp: number | null;
+}
+
+export interface LinkedInPost {
+  author: string | null;
+  text: string | null;
+  posted_at: string | null;
+  url: string | null;
+}
+
+export interface LinkedInConnection {
+  name: string | null;
+  title: string | null;
+  location: string | null;
+}
+
+export const fetchLinkedInConversations = async (): Promise<LinkedInConversation[]> => {
+  const res = await chattyApi.get<{ conversations: LinkedInConversation[] }>('/api/chatty/linkedin/conversations');
+  return res.data.conversations;
+};
+
+export const fetchLinkedInConversationMessages = async (conversationId: string): Promise<LinkedInMessage[]> => {
+  const res = await chattyApi.get<{ messages: LinkedInMessage[] }>(
+    `/api/chatty/linkedin/conversations/${encodeURIComponent(conversationId)}/messages`,
+  );
+  return res.data.messages;
+};
+
+export const fetchLinkedInFeed = async (): Promise<LinkedInPost[]> => {
+  const res = await chattyApi.get<{ posts: LinkedInPost[] }>('/api/chatty/linkedin/feed');
+  return res.data.posts;
+};
+
+export const fetchLinkedInConnections = async (): Promise<LinkedInConnection[]> => {
+  const res = await chattyApi.get<{ connections: LinkedInConnection[] }>('/api/chatty/linkedin/connections');
+  return res.data.connections;
+};
+
 // ── Chat Sessions ──────────────────────────────────────────────────────────────
 export interface ChatSession {
   id: number;
@@ -657,6 +825,7 @@ export const deleteTrendingSuggestion = async (id: string): Promise<void> => {
 
 // ── Webcam Sources & Suggestions (SearXNG-curated discovery, reviewed here) ───
 export type WebcamKind = 'snapshot' | 'mjpeg' | 'hls' | 'youtube' | 'webpage';
+export type WebcamVerifyStatus = 'ok' | 'broken' | 'unchecked';
 
 export interface WebcamSource {
   id: string;
@@ -667,6 +836,9 @@ export interface WebcamSource {
   enabled: boolean;
   source: 'manual' | 'suggestion';
   suggestion_id: string | null;
+  verify_status: WebcamVerifyStatus;
+  verify_detail: string;
+  last_verified_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -683,12 +855,33 @@ export interface WebcamSuggestion {
   rationale: string;
   status: WebcamSuggestionStatus;
   source_id: string | null;
+  verify_status: WebcamVerifyStatus;
+  verify_detail: string;
+  last_verified_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
+// Thrown by createWebcamSource/approveWebcamSuggestion when the backend's
+// verification gate (422) rejects a link as not actually playable, so
+// callers can offer a "save/approve anyway" retry with force=true instead of
+// treating it like a generic failure.
+export interface WebcamVerificationError {
+  verification_failed: true;
+  status: string;
+  detail: string;
+}
+
+export const isWebcamVerificationError = (detail: unknown): detail is WebcamVerificationError =>
+  typeof detail === 'object' && detail !== null && (detail as WebcamVerificationError).verification_failed === true;
+
 export const fetchWebcamSources = async (): Promise<WebcamSource[]> => {
   const res = await chattyApi.get<WebcamSource[]>('/api/chatty/webcam-sources');
+  return res.data;
+};
+
+export const fetchWebcamSource = async (id: string): Promise<WebcamSource> => {
+  const res = await chattyApi.get<WebcamSource>(`/api/chatty/webcam-sources/${id}`);
   return res.data;
 };
 
@@ -698,6 +891,7 @@ export const createWebcamSource = async (body: {
   kind: WebcamKind;
   location: string;
   enabled?: boolean;
+  force?: boolean;
 }): Promise<WebcamSource> => {
   const res = await chattyApi.post<WebcamSource>('/api/chatty/webcam-sources', body);
   return res.data;
@@ -708,6 +902,11 @@ export const updateWebcamSource = async (
   body: Partial<{ name: string; url: string; kind: WebcamKind; location: string; enabled: boolean }>
 ): Promise<WebcamSource> => {
   const res = await chattyApi.put<WebcamSource>(`/api/chatty/webcam-sources/${id}`, body);
+  return res.data;
+};
+
+export const verifyWebcamSource = async (id: string): Promise<WebcamSource> => {
+  const res = await chattyApi.post<WebcamSource>(`/api/chatty/webcam-sources/${id}/verify`);
   return res.data;
 };
 
@@ -725,8 +924,8 @@ export const scanWebcamSuggestions = async (): Promise<WebcamSuggestion[]> => {
   return res.data;
 };
 
-export const approveWebcamSuggestion = async (id: string): Promise<WebcamSuggestion> => {
-  const res = await chattyApi.post<WebcamSuggestion>(`/api/chatty/webcam-suggestions/${id}/approve`);
+export const approveWebcamSuggestion = async (id: string, force = false): Promise<WebcamSuggestion> => {
+  const res = await chattyApi.post<WebcamSuggestion>(`/api/chatty/webcam-suggestions/${id}/approve`, { force });
   return res.data;
 };
 
@@ -963,18 +1162,25 @@ export interface TasteFixRequest {
   }>;
 }
 
-export interface TasteFixResponse {
-  applied: number;
-  errors: number;
-  changes: Array<{
-    file: string;
-    line: number;
-    rule_id: string;
-    original: string;
-    fixed: string;
-  }>;
-  error_details: Array<{ file: string; error: string }>;
-  summary: string;
+export type TasteFixStatus = 'idle' | 'running' | 'done' | 'error';
+
+export interface TasteFixChange {
+  file: string;
+  line: number;
+  rule_id: string;
+  original: string;
+  fixed: string;
+}
+
+export interface TasteFixState {
+  status: TasteFixStatus;
+  total: number;
+  completed: number;
+  current_file: string | null;
+  applied: TasteFixChange[];
+  errors: Array<{ file: string; line?: number; error: string }>;
+  summary: string | null;
+  updated_at: string | null;
 }
 
 export const runTasteAudit = async (): Promise<TasteAuditReport> => {
@@ -982,8 +1188,17 @@ export const runTasteAudit = async (): Promise<TasteAuditReport> => {
   return res.data;
 };
 
-export const applyTasteFixes = async (body: TasteFixRequest): Promise<TasteFixResponse> => {
-  const res = await chattyApi.post<TasteFixResponse>('/api/chatty/taste-audit/fix', body);
+// Kicks off the fix job in the background (one fast regex substitution pass
+// per file, but still worth surfacing progress for) - returns the job's
+// starting snapshot. Poll getTasteFixStatus for live progress and the
+// final result; the caller is free to navigate away and poll back later.
+export const applyTasteFixes = async (body: TasteFixRequest): Promise<TasteFixState> => {
+  const res = await chattyApi.post<TasteFixState>('/api/chatty/taste-audit/fix', body);
+  return res.data;
+};
+
+export const getTasteFixStatus = async (): Promise<TasteFixState> => {
+  const res = await chattyApi.get<TasteFixState>('/api/chatty/taste-audit/fix/status');
   return res.data;
 };
 

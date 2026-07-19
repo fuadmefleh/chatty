@@ -191,3 +191,31 @@ class ListWhatsAppContactsTool(SkillTool):
             return json.dumps(result, indent=2)
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)})
+
+
+class SendWhatsAppMessageTool(SkillTool):
+    """Send a WhatsApp message to a contact."""
+
+    name = "send_whatsapp_message"
+    description = "Send a WhatsApp message to a phone number or contact. Only use this when the user explicitly asks to send a WhatsApp message - never send messages on your own initiative."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "to": {
+                "type": "string",
+                "description": "Recipient's phone number, including country code (e.g. '+15551234567')"
+            },
+            "message": {
+                "type": "string",
+                "description": "The message text to send"
+            }
+        },
+        "required": ["to", "message"]
+    }
+
+    async def execute(self, to: str, message: str) -> str:
+        try:
+            result = await _parser.send_message(to=to, message=message)
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)})

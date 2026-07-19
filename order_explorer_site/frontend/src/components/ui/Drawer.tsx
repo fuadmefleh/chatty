@@ -44,6 +44,7 @@ const Drawer: React.FC<PropsWithChildren<DrawerProps>> = ({ open, onClose, title
         aria-modal="true"
         aria-label={typeof title === 'string' ? title : undefined}
         tabIndex={-1}
+// TODO: replace inline style with Tailwind class
         style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' }}
         className={`relative z-10 max-h-[75vh] w-full max-w-md overflow-y-auto rounded-t-2xl border-t border-line bg-surface p-4 shadow-xl outline-none transition-transform duration-200 ${
           open ? 'translate-y-0' : 'translate-y-full'

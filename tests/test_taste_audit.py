@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import chatty_web_server as server
+from src.managers import taste_fix_manager
 from src.web import config, state
 from src.web.routers import taste_audit
 
@@ -16,6 +17,12 @@ from src.web.routers import taste_audit
 @pytest.fixture
 def client():
     return TestClient(server.app)
+
+
+@pytest.fixture(autouse=True)
+def isolated_fix_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(taste_fix_manager, "_STATE_PATH", tmp_path / "state.json")
+    yield
 
 
 def _headers(**overrides):
@@ -121,7 +128,12 @@ async def test_fix_available_with_real_skills_manager(client):
     always 503'd, even with the skill fully loaded. Loads a real
     SkillsManager from disk (no mocking of the skill registry itself) so a
     reintroduced name-based check would be caught here instead of only in a
-    test that happens to mock the same wrong key."""
+    test that happens to mock the same wrong key.
+
+    The fix itself now runs as a background job (see taste_fix_manager) -
+    TestClient's ASGI transport drives BackgroundTasks to completion before
+    the request returns, so the status endpoint already has the final result
+    by the time we poll it here."""
     from src.core.skills_manager import SkillsManager
 
     sm = SkillsManager()
@@ -141,9 +153,56 @@ async def test_fix_available_with_real_skills_manager(client):
         state.skills_manager = orig_sm
 
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["errors"] == 1
-    assert "not found" in data["error_details"][0]["error"].lower()
+
+    status_resp = client.get("/api/chatty/taste-audit/fix/status", headers=_headers())
+    assert status_resp.status_code == 200
+    data = status_resp.json()
+    assert data["status"] == "done"
+    assert len(data["errors"]) == 1
+    assert "not found" in data["errors"][0]["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_fix_writes_to_real_file(client):
+    """Regression test: findings report `file` relative to FRONTEND_SRC (e.g.
+    "pages/Foo.tsx"), but the Frontend Editor skill's read/write tools
+    resolve `file_path` relative to FRONTEND_DIR one level up (expects
+    "src/pages/Foo.tsx") - passing the bare finding path through unchanged
+    always hit "File not found" and silently no-op'd every fix. Uses a real
+    SkillsManager and a real scratch file under frontend/src so a
+    reintroduced path mismatch is caught here instead of only manifesting
+    as a mysterious 100% failure rate in the running app."""
+    from src.core.skills_manager import SkillsManager
+
+    fixture_path = taste_audit.FRONTEND_SRC / "__taste_audit_fix_fixture.tsx"
+    fixture_path.write_text('const c = "#000000";\n')
+    try:
+        sm = SkillsManager()
+        await sm.load_skills()
+
+        orig_sm = state.skills_manager
+        state.skills_manager = sm
+        try:
+            resp = client.post(
+                "/api/chatty/taste-audit/fix",
+                headers=_headers(),
+                json={"findings": [
+                    {"file": "__taste_audit_fix_fixture.tsx", "line": 1, "rule_id": "hex-color"},
+                ]},
+            )
+        finally:
+            state.skills_manager = orig_sm
+
+        assert resp.status_code == 200
+
+        status_resp = client.get("/api/chatty/taste-audit/fix/status", headers=_headers())
+        data = status_resp.json()
+        assert data["status"] == "done"
+        assert data["errors"] == []
+        assert len(data["applied"]) == 1
+        assert fixture_path.read_text() == 'const c = "var(--ink)";\n'
+    finally:
+        fixture_path.unlink(missing_ok=True)
 
 
 def test_fix_missing_fields(client):

@@ -143,6 +143,7 @@ This will:
 - **budget_analyzer.py**: Core analysis logic and alert generation
 - **tools.py**: LLM function calling tools for chat integration
 - **budget_analysis.md**: Skill description for the agent
+- **__init__.py**: Package marker
 - **README.md**: This file
 
 ## Integration with Other Skills

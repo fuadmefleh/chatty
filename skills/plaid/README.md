@@ -22,8 +22,8 @@ Plaid is a secure API that connects to over 12,000 banks and financial instituti
 ### 2. Run Setup Script
 
 ```bash
-chmod +x setup_plaid.sh
-./setup_plaid.sh
+chmod +x scripts/setup_plaid.sh
+./scripts/setup_plaid.sh
 ```
 
 This will:
@@ -139,15 +139,20 @@ PLAID_ENV=sandbox  # or 'development' or 'production'
 skills/plaid/
 ├── plaid.md                 # Skill documentation
 ├── plaid_integration.py     # Core Plaid integration
-├── link_account.py          # Helper script to link banks
+├── link_account.py          # Helper script to link banks (desktop/CLI flow)
+├── web_link.py               # Browser-based bank linking flow
+├── tools.py                  # LLM function calling tools (active)
 └── README.md               # This file
 
-src/tools/
-└── plaid_tools.py          # LLM function calling tools
+scripts/
+└── setup_plaid.sh           # Interactive setup script
 
 data/
 └── plaid_tokens.json       # Access tokens (NEVER COMMIT)
 ```
+
+Note: `src/tools/deprecated/plaid_tools.py` is an older, no-longer-loaded
+copy of the tools file — `skills/plaid/tools.py` above is the active one.
 
 ## Troubleshooting
 

@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { Link } from 'react-router-dom';
 import { highlight, escapeHtml } from '../../lib/prismHighlight';
 import { slugifyHeading } from '../../lib/slugifyHeading';
+import WebcamWatchEmbed from '../webcams/WebcamWatchEmbed';
 
 // react-markdown gives fenced code blocks a `language-xxx` className (from the
 // fence's info string); inline code gets none. Map common shorthand aliases to
@@ -59,12 +60,25 @@ const CodeBlock: React.FC<{ className?: string; children?: React.ReactNode; stre
 const WIKI_LINK_RE = /^pages\/(entities|concepts)\/([^/]+)\.md$/;
 const TYPE_FROM_DIR: Record<string, string> = { entities: 'entity', concepts: 'concept' };
 
+// Chatty's webcam skill emits links of this exact shape (see
+// skills/webcams/tools.py's open_webcam_stream) when it wants to show a live
+// stream inline rather than just link out to it - intercept them the same
+// way wiki links are intercepted above, and render an actual embedded player
+// instead of a plain anchor.
+const WEBCAM_WATCH_LINK_RE = /^\/webcams\/watch\/([^/?]+)$/;
+
 const WikiAwareLink: React.FC<{ href?: string; children?: React.ReactNode }> = ({ href, children }) => {
-  const match = href ? WIKI_LINK_RE.exec(href) : null;
-  if (match) {
-    const [, typeDir, slug] = match;
+  const wikiMatch = href ? WIKI_LINK_RE.exec(href) : null;
+  if (wikiMatch) {
+    const [, typeDir, slug] = wikiMatch;
     return <Link to={`/memory/${TYPE_FROM_DIR[typeDir]}/${slug}`}>{children}</Link>;
   }
+
+  const webcamMatch = href ? WEBCAM_WATCH_LINK_RE.exec(href) : null;
+  if (webcamMatch) {
+    return <WebcamWatchEmbed id={webcamMatch[1]} href={href!}>{children}</WebcamWatchEmbed>;
+  }
+
   return (
     <a href={href} target="_blank" rel="noreferrer">
       {children}

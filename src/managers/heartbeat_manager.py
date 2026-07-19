@@ -153,7 +153,16 @@ class HeartbeatManager:
                     result = await self._process_gmail_cleanup()
                     if result:
                         summary.append(result)
-                    
+
+                    # Auto-reply in WhatsApp chats the user has explicitly
+                    # opted into (see whatsapp_managed_chats.py) - the only
+                    # heartbeat step that sends messages to other people
+                    # unsupervised, so it carries its own guardrails (1:1
+                    # chats only, no backlog, per-chat daily cap).
+                    result = await self._process_whatsapp_managed_chats()
+                    if result:
+                        summary.append(result)
+
                     # Process Walmart orders if any exist
                     result = await self._process_walmart_orders()
                     if result:
@@ -188,6 +197,13 @@ class HeartbeatManager:
                     # Search for promising live-webcam pages and curate suggestions
                     # (never auto-added - just added to the dashboard's /webcams menu).
                     result = await self._process_webcam_discovery()
+                    if result:
+                        summary.append(result)
+
+                    # Re-verify saved webcam sources are still actually playable
+                    # (streams go down over time) - only ever flags status, never
+                    # disables/deletes anything.
+                    result = await self._process_webcam_health_check()
                     if result:
                         summary.append(result)
 
@@ -510,7 +526,124 @@ Otherwise, just think through the checks and conclude with your assessment.
         except Exception as e:
             heartbeat_logger.error(f"Error in Gmail cleanup: {e}", exc_info=True)
             return None
-    
+
+    @staticmethod
+    def _parse_bridge_timestamp(ts: Optional[str]):
+        """Parses an ISO-8601 timestamp from whatsapp-bridge (always UTC,
+        `new Date().toISOString()`) or whatsapp_managed_chats.py (also UTC,
+        `datetime.now(timezone.utc)`) into a comparable aware datetime.
+        Returns None on missing/malformed input so callers can treat that as
+        "no cursor yet" rather than crashing the whole heartbeat step."""
+        if not ts:
+            return None
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    async def _process_whatsapp_managed_chats(self) -> Optional[str]:
+        """Auto-reply in WhatsApp chats the user has explicitly opted into
+        (skills/whatsapp_messages/whatsapp_managed_chats.py, toggled from the
+        dashboard's /whatsapp page). This is the only heartbeat step that
+        sends messages to other people with no human in the loop, so it
+        leans hard on guardrails:
+          - only chats the user explicitly marked managed (never all chats)
+          - only messages received after the chat was marked managed - never
+            replies into backlog
+          - a hard per-chat daily cap (config.WHATSAPP_AUTO_REPLY_DAILY_LIMIT)
+          - the model is explicitly allowed to decline to reply (NONE) - most
+            inbound pings (reactions, "ok", spam) shouldn't get a reply at all
+
+        Group chats (JID ends in @g.us) are allowed here at the user's
+        explicit request, despite a reply there being visible to everyone in
+        the group rather than just one person - the prompt below asks the
+        model to be more conservative about replying at all in that case.
+        """
+        try:
+            from skills.whatsapp_messages import whatsapp_bridge_client as bridge
+            from skills.whatsapp_messages import whatsapp_managed_chats
+            import httpx
+
+            managed = whatsapp_managed_chats.list_managed()
+            if not managed:
+                return None
+
+            try:
+                status = bridge.get_status()
+            except httpx.ConnectError:
+                return None
+            if status.get("status") != "connected":
+                return None
+
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=config.CHAT_API_KEY, base_url=config.CHAT_BASE_URL)
+
+            replied_chats = 0
+            for entry in managed:
+                jid = entry["jid"]
+                try:
+                    if whatsapp_managed_chats.reply_count_today(jid) >= config.WHATSAPP_AUTO_REPLY_DAILY_LIMIT:
+                        continue
+
+                    since = self._parse_bridge_timestamp(entry.get("last_processed_ts"))
+                    thread = bridge.get_thread(jid, limit=20)
+                    new_inbound = [
+                        m for m in thread
+                        if m.get("direction") == "in"
+                        and (since is None or (self._parse_bridge_timestamp(m.get("timestamp")) or since) > since)
+                    ]
+                    if not new_inbound:
+                        continue
+
+                    context_lines = "\n".join(
+                        f"{'them' if m['direction'] == 'in' else 'you'}: {m['message']}" for m in thread[-15:]
+                    )
+                    instructions = entry.get("instructions") or "Reply naturally and briefly, as the user would."
+                    is_group = jid.endswith("@g.us")
+                    chat_kind = "group chat" if is_group else "1:1 chat"
+                    group_caution = (
+                        "\n\nThis is a GROUP chat - everyone in it will see whatever you send, not just one "
+                        "person, and messages may not all be directed at the user or even part of the same "
+                        "thread. Be more conservative than in a 1:1: only reply if a message is clearly "
+                        "addressed to the user (by name/mention or direct question) and a reply is genuinely "
+                        "warranted. When in doubt, reply NONE."
+                        if is_group else ""
+                    )
+                    prompt = f"""You are ghostwriting a WhatsApp reply on behalf of the user, in a {chat_kind}
+with {entry.get('name') or jid}. The user has given you this standing instruction for this chat:
+"{instructions}"{group_caution}
+
+Recent conversation (oldest first):
+{context_lines}
+
+Write ONLY the reply text to send next, with no quotes or preamble - or, if nothing in the new
+messages actually warrants a reply (e.g. it was just an emoji reaction, "ok", spam, or the
+conversation doesn't need a response right now), reply with exactly: NONE"""
+
+                    response = await client.chat.completions.create(
+                        model=config.CHAT_MODEL,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.5,
+                    )
+                    reply = (response.choices[0].message.content or "").strip()
+                    latest = new_inbound[-1]
+                    if reply and reply.upper() != "NONE":
+                        bridge.send_message(jid, reply, origin="auto")
+                        whatsapp_managed_chats.increment_reply_count(jid)
+                        replied_chats += 1
+                        heartbeat_logger.info(f"WhatsApp auto-reply sent in {jid}")
+                    whatsapp_managed_chats.record_processed(jid, latest.get("timestamp"), latest.get("msg_id"))
+                except Exception as e:
+                    heartbeat_logger.error(f"Error auto-replying in WhatsApp chat {jid}: {e}", exc_info=True)
+                    continue
+
+            if replied_chats:
+                return f"💬 WhatsApp: auto-replied in {replied_chats} chat(s)"
+            return None
+        except Exception as e:
+            heartbeat_logger.error(f"Error in WhatsApp managed-chat processing: {e}", exc_info=True)
+            return None
+
     async def _process_walmart_orders(self) -> str:
         """Process any unprocessed Walmart order PDFs and archive them.
         
@@ -1239,6 +1372,88 @@ If nothing is worth suggesting, reply with exactly: NONE"""
     def _save_webcam_discovery_state(self, state: Dict[str, str]) -> None:
         import json
         path = config.BASE_DIR / "data" / "webcam_discovery_state.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2))
+
+    async def _process_webcam_health_check(self) -> Optional[str]:
+        """Re-verify every enabled webcam source is still actually playable
+        (see src/managers/webcam_verifier.py) - links that worked when added
+        can go dead later. Only ever updates verify_status/verify_detail on
+        each source; never disables or deletes - the dashboard's /webcams
+        page surfaces a "broken" badge for the user to act on.
+
+        Runs at most once per WEBCAM_HEALTH_CHECK_INTERVAL_HOURS, tracked globally.
+        """
+        try:
+            import asyncio
+            import httpx
+            from src.managers import webcam_manager
+            from src.managers.webcam_verifier import verify_webcam
+
+            state = self._load_webcam_health_state()
+            last_run = state.get("last_run_at")
+            if last_run:
+                try:
+                    elapsed = datetime.now() - datetime.fromisoformat(last_run)
+                    if elapsed < timedelta(hours=config.WEBCAM_HEALTH_CHECK_INTERVAL_HOURS):
+                        return None
+                except ValueError:
+                    pass
+
+            state["last_run_at"] = datetime.now().isoformat()
+            self._save_webcam_health_state(state)
+
+            sources_manager = webcam_manager.WebcamSourcesManager()
+            enabled = [s for s in sources_manager.list() if s.enabled]
+            if not enabled:
+                return None
+
+            sem = asyncio.Semaphore(config.WEBCAM_HEALTH_CHECK_CONCURRENCY)
+
+            async def check(source, client):
+                async with sem:
+                    return await verify_webcam(source.url, source.kind, client=client)
+
+            async with httpx.AsyncClient(
+                timeout=config.WEBCAM_VERIFY_TIMEOUT_SECONDS, follow_redirects=True
+            ) as client:
+                results = await asyncio.gather(*(check(s, client) for s in enabled))
+
+            now = datetime.now().isoformat()
+            newly_broken = []
+            for source, result in zip(enabled, results):
+                new_status = "ok" if result.ok else "broken"
+                if new_status == "broken" and source.verify_status != "broken":
+                    newly_broken.append(source.name)
+                sources_manager.update(
+                    source.id, verify_status=new_status, verify_detail=result.detail, last_verified_at=now,
+                )
+
+            broken_count = sum(1 for r in results if not r.ok)
+            if broken_count == 0:
+                return None
+            msg = f"Webcam health check: {broken_count}/{len(enabled)} source(s) broken."
+            if newly_broken:
+                msg += f" Newly broken: {', '.join(newly_broken)}."
+            return msg
+
+        except Exception as e:
+            heartbeat_logger.error(f"Error in webcam-health-check processing: {e}", exc_info=True)
+            return None
+
+    def _load_webcam_health_state(self) -> Dict[str, str]:
+        import json
+        path = config.BASE_DIR / "data" / "webcam_health_state.json"
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return {}
+
+    def _save_webcam_health_state(self, state: Dict[str, str]) -> None:
+        import json
+        path = config.BASE_DIR / "data" / "webcam_health_state.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, indent=2))
 

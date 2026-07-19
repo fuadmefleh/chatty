@@ -70,6 +70,23 @@ module.exports = {
       out_file: '/home/edgeworks-server/chatty/logs/order-frontend-out.log',
       time: true,
       merge_logs: true,
+    },
+    {
+      // WhatsApp bridge - holds the live Baileys/WhatsApp Web session and
+      // exposes it to the Python backend over a localhost HTTP API secured
+      // by WHATSAPP_BRIDGE_SECRET (read from ../.env via dotenv in index.js)
+      name: 'whatsapp-bridge',
+      script: 'index.js',
+      cwd: '/home/edgeworks-server/chatty/whatsapp-bridge',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '256M',
+      error_file: '/home/edgeworks-server/chatty/logs/whatsapp-bridge-error.log',
+      out_file: '/home/edgeworks-server/chatty/logs/whatsapp-bridge-out.log',
+      time: true,
+      merge_logs: true,
     }
   ]
 };

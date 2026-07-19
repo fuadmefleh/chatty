@@ -1,15 +1,19 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   runTasteAudit,
   applyTasteFixes,
+  getTasteFixStatus,
   type TasteAuditReport,
   type AuditFinding,
   type AuditSeverity,
+  type TasteFixState,
 } from '../chattyApi';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
 import Spinner from '../components/ui/Spinner';
+
+const FIX_POLL_MS = 1500;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -144,16 +148,16 @@ const TasteAuditPage: React.FC = () => {
   const [report, setReport] = useState<TasteAuditReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [fixing, setFixing] = useState(false);
-  const [fixResult, setFixResult] = useState<string | null>(null);
+  const [fixState, setFixState] = useState<TasteFixState | null>(null);
   const [selectedFindings, setSelectedFindings] = useState<Set<number>>(new Set());
   const [filterSeverity, setFilterSeverity] = useState<AuditSeverity | 'all'>('all');
   const [filterFile, setFilterFile] = useState<string>('');
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prevFixStatusRef = useRef<TasteFixState['status'] | undefined>(undefined);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
-    setFixResult(null);
     setSelectedFindings(new Set());
     try {
       const data = await runTasteAudit();
@@ -166,6 +170,41 @@ const TasteAuditPage: React.FC = () => {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Pick up an in-progress fix job on mount (e.g. the user navigated away
+  // mid-fix and came back), so it isn't invisible on reload.
+  useEffect(() => {
+    getTasteFixStatus().then(setFixState).catch(() => {});
+  }, []);
+
+  // Poll while a fix job is running - this survives navigating away and
+  // back, since the job itself runs server-side regardless of who's watching.
+  const isFixing = fixState?.status === 'running';
+  useEffect(() => {
+    if (isFixing && !pollRef.current) {
+      pollRef.current = setInterval(() => {
+        getTasteFixStatus().then(setFixState).catch(() => {});
+      }, FIX_POLL_MS);
+    } else if (!isFixing && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [isFixing]);
+
+  // Once a fix job finishes, refresh the audit report so applied fixes drop
+  // off the findings list.
+  useEffect(() => {
+    if (prevFixStatusRef.current === 'running' && fixState?.status === 'done') {
+      load();
+    }
+    prevFixStatusRef.current = fixState?.status;
+  }, [fixState?.status, load]);
 
   const toggleFinding = (index: number) => {
     setSelectedFindings(prev => {
@@ -188,10 +227,8 @@ const TasteAuditPage: React.FC = () => {
     const selected = report.findings.filter((_, i) => selectedFindings.has(i));
     if (selected.length === 0) return;
 
-    setFixing(true);
-    setFixResult(null);
     try {
-      const result = await applyTasteFixes({
+      const started = await applyTasteFixes({
         findings: selected.map(f => ({
           file: f.file,
           line: f.line,
@@ -199,13 +236,18 @@ const TasteAuditPage: React.FC = () => {
           fix: f.fix_suggestion ?? '',
         })),
       });
-      setFixResult(result.summary);
-      // Re-run audit to show updated report
-      await load();
+      setFixState(started);
     } catch (err) {
-      setFixResult(`Fix failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
-    } finally {
-      setFixing(false);
+      setFixState({
+        status: 'error',
+        total: 0,
+        completed: 0,
+        current_file: null,
+        applied: [],
+        errors: [],
+        summary: `Fix failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        updated_at: null,
+      });
     }
   };
 
@@ -345,19 +387,62 @@ const TasteAuditPage: React.FC = () => {
                 </button>
                 <button
                   onClick={applyFixes}
-                  disabled={selectedFixableCount === 0 || fixing}
+                  disabled={selectedFixableCount === 0 || isFixing}
                   className="rounded-md bg-signal px-3 py-1 font-mono text-[11px] font-semibold text-bg disabled:opacity-40"
                 >
-                  {fixing ? 'Applying…' : `Fix selected (${selectedFixableCount})`}
+                  {isFixing ? 'Fixing…' : `Fix selected (${selectedFixableCount})`}
                 </button>
               </div>
             )}
           </div>
 
-          {/* Fix result */}
-          {fixResult && (
+          {/* Fix progress / result */}
+          {isFixing && (
+            <Card padding="12px 18px" className="mb-4">
+              <div className="mb-1.5 flex items-baseline justify-between">
+                <span className="font-mono text-[11px] text-muted">
+                  Fixing {fixState.completed} of {fixState.total} file{fixState.total === 1 ? '' : 's'}
+                  {fixState.current_file ? ` — ${fixState.current_file}` : ''}
+                </span>
+                <span className="font-mono text-[11px] text-muted">
+                  {fixState.total > 0 ? Math.round((fixState.completed / fixState.total) * 100) : 0}%
+                </span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-surface-dim">
+                <div
+                  className="h-full rounded-full bg-signal transition-[width] duration-300 ease-out"
+                  style={{ width: `${fixState.total > 0 ? (fixState.completed / fixState.total) * 100 : 0}%` }}
+                />
+              </div>
+              <p className="mt-2 text-xs text-muted">
+                Running in the background — feel free to navigate away and check back later.
+              </p>
+            </Card>
+          )}
+
+          {!isFixing && fixState && (fixState.status === 'done' || fixState.status === 'error') && (
             <Card padding="12px 18px" className="mb-4" style={{ background: 'var(--surface-dim)' }}>
-              <div className="font-mono text-[12px] text-ink">{fixResult}</div>
+              <div className="font-mono text-[12px] text-ink">{fixState.summary}</div>
+              {fixState.applied.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {fixState.applied.map((c, i) => (
+                    <li key={i} className="flex items-start gap-1.5 font-mono text-[11px] text-muted">
+                      <span className="text-alert-green">✓</span>
+                      <span>{c.file}:{c.line} ({c.rule_id})</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {fixState.errors.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {fixState.errors.map((e, i) => (
+                    <li key={i} className="flex items-start gap-1.5 font-mono text-[11px] text-alert-red">
+                      <span>✗</span>
+                      <span>{e.file}{e.line ? `:${e.line}` : ''} — {e.error}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </Card>
           )}
 

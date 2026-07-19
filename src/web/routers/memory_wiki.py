@@ -33,6 +33,11 @@ class WikiPageRef(BaseModel):
     title: str = ""
 
 
+class WikiPageMergeRequest(BaseModel):
+    keep: WikiPageRef
+    remove: WikiPageRef
+
+
 class ContradictionResolveRequest(BaseModel):
     page_a: WikiPageRef
     page_b: WikiPageRef
@@ -61,6 +66,16 @@ def _wiki_page_response(page: dict) -> dict:
         "summary": page["summary"],
         "tags": page["tags"],
         "body": page["body"],
+        "updated": page["updated"],
+    }
+
+
+def _wiki_dup_ref(page: dict) -> dict:
+    return {
+        "title": page["title"],
+        "type": page["type"],
+        "slug": page["slug"],
+        "summary": page["summary"],
         "updated": page["updated"],
     }
 
@@ -154,6 +169,27 @@ async def delete_memory_page(type: str, slug: str):
     return {"deleted": True}
 
 
+@router.post("/page/merge")
+async def merge_memory_pages(body: WikiPageMergeRequest):
+    helpers.require_wiki_type(body.keep.type)
+    helpers.require_wiki_type(body.remove.type)
+    if (body.keep.type, body.keep.slug) == (body.remove.type, body.remove.slug):
+        raise HTTPException(status_code=400, detail="Cannot merge a page into itself")
+
+    wiki_store = helpers.wiki_store_for(config.MEMORY_DIR, config.WEB_USER_ID)
+    keep = wiki_store.get_page(body.keep.type, body.keep.slug)
+    remove = wiki_store.get_page(body.remove.type, body.remove.slug)
+    if keep is None or remove is None:
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    wiki_store.merge_pages(keep, remove)
+    wiki_store.redirect_links(body.remove.type, body.remove.slug, body.keep.type, body.keep.slug)
+    wiki_store.append_log("manual-edit", f"{remove['title']} — merged into {keep['title']} via dashboard")
+
+    merged = wiki_store.get_page(body.keep.type, body.keep.slug)
+    return _wiki_page_response(merged)
+
+
 @router.get("/page/{type}/{slug}/backlinks")
 async def get_memory_page_backlinks(type: str, slug: str):
     helpers.require_wiki_type(type)
@@ -172,6 +208,11 @@ async def get_memory_page_backlinks(type: str, slug: str):
 @router.get("/health")
 async def get_memory_health():
     wiki_store = helpers.wiki_store_for(config.MEMORY_DIR, config.WEB_USER_ID)
+    duplicates = [
+        {"page_a": _wiki_dup_ref(a), "page_b": _wiki_dup_ref(b)}
+        for a, b in wiki_store.find_duplicate_pages()
+    ]
+
     health = wiki_store.read_health()
     if health is None:
         return {
@@ -181,8 +222,9 @@ async def get_memory_health():
             "orphans": [],
             "contradictions": [],
             "coverage_gaps": [],
+            "duplicates": duplicates,
         }
-    return health
+    return {**health, "duplicates": duplicates}
 
 
 @router.post("/lint")

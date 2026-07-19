@@ -1,7 +1,7 @@
 # WhatsApp Messages
 
 ## Description
-Reads and searches through WhatsApp messages to help users find specific conversations, messages, or information from their chat history.
+Reads, searches, and sends WhatsApp messages through the user's connected WhatsApp account (linked via QR code on the dashboard's Settings page).
 
 ## Usage
 Use this skill when the user wants to:
@@ -9,6 +9,7 @@ Use this skill when the user wants to:
 - Search for specific messages or conversations
 - Find messages from a particular contact
 - Get summaries of chat activity
+- Send a WhatsApp message to a contact (only when explicitly asked - never send unprompted)
 
 ## Examples
 - "Show me my recent WhatsApp messages"
@@ -16,3 +17,4 @@ Use this skill when the user wants to:
 - "Search my WhatsApp chats for 'meeting'"
 - "What did Sarah say in WhatsApp yesterday?"
 - "Show me all WhatsApp messages from the last week"
+- "Send a WhatsApp message to +15551234567 saying I'm running late"

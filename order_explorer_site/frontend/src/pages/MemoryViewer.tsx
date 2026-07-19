@@ -7,9 +7,36 @@ import Spinner from '../components/ui/Spinner';
 import EmptyState from '../components/ui/EmptyState';
 import MarkdownContent from '../components/ui/MarkdownContent';
 import Card from '../components/ui/Card';
+import Badge from '../components/ui/Badge';
 import WikiPageEditor from '../components/wiki/WikiPageEditor';
 import type { WikiPageEditorValue } from '../components/wiki/WikiPageEditor';
 import { useToast } from '../hooks/useToast';
+
+interface LogEntry {
+  timestamp: string;
+  op: string;
+  message: string;
+}
+
+const LOG_LINE_RE = /^##\s*\[(.+?)\]\s*(\S+)\s*\|\s*(.*)$/;
+
+const LOG_OP_TONE: Record<string, 'gold' | 'ember' | 'teal' | 'neutral' | 'danger'> = {
+  'manual-edit': 'neutral',
+  lint: 'gold',
+  reorganize: 'teal',
+  ingest: 'teal',
+  migrate: 'teal',
+};
+
+const parseWikiLog = (raw: string): LogEntry[] => {
+  const entries: LogEntry[] = [];
+  for (const line of raw.split('\n')) {
+    const match = line.match(LOG_LINE_RE);
+    if (!match) continue;
+    entries.push({ timestamp: match[1], op: match[2], message: match[3] });
+  }
+  return entries.reverse();
+};
 
 const ChevronIcon: React.FC<{ open: boolean }> = ({ open }) => (
   <svg
@@ -30,11 +57,13 @@ const MemoryViewer: React.FC = () => {
   const location = useLocation();
   const { showToast } = useToast();
 
+  const createPageState = (location.state as { createPage?: { type?: WikiPage['type']; title?: string } } | null)?.createPage;
+
   const [data, setData] = useState<MemoryData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [days, setDays] = useState(7);
-  const [activeTab, setActiveTab] = useState<'short_term' | 'long_term'>('short_term');
+  const [activeTab, setActiveTab] = useState<'short_term' | 'long_term'>(createPageState ? 'long_term' : 'short_term');
   const [openDates, setOpenDates] = useState<Set<string>>(new Set());
   const [activityOpen, setActivityOpen] = useState(false);
 
@@ -45,7 +74,6 @@ const MemoryViewer: React.FC = () => {
   const [consolidating, setConsolidating] = useState(false);
   const [consolidateStatus, setConsolidateStatus] = useState('');
 
-  const createPageState = (location.state as { createPage?: { type?: WikiPage['type']; title?: string } } | null)?.createPage;
   const [creating, setCreating] = useState(Boolean(createPageState));
   const [creatingSaving, setCreatingSaving] = useState(false);
 
@@ -168,7 +196,7 @@ const MemoryViewer: React.FC = () => {
       )}
 
       {searchResults !== null && (
-        <div className="mb-5 overflow-hidden rounded-lg border border-line">
+        <div className="mb-5 overflow-hidden rounded-xl border border-line">
           <div className="flex items-center justify-between gap-2 bg-surface-dim px-4 py-2.5">
             <span className="text-sm font-semibold text-ink">Search results</span>
             <button
@@ -198,7 +226,7 @@ const MemoryViewer: React.FC = () => {
                 : 'border border-line bg-surface-dim text-muted'
             }`}
           >
-            {tab === 'short_term' ? 'Short-term' : 'Long-term (Wiki)'}
+            {tab === 'short_term' ? 'Short-term' : 'Long-term memory'}
             {data && (
               <span className="ml-1.5 font-mono text-[11px] opacity-80">
                 {tab === 'short_term' ? shortTermEntries.length : wikiPages.length}
@@ -241,7 +269,7 @@ const MemoryViewer: React.FC = () => {
           {shortTermEntries.map((entry) => {
             const isOpen = openDates.has(entry.filename);
             return (
-              <div key={entry.filename} className="overflow-hidden rounded-lg border border-line">
+              <div key={entry.filename} className="overflow-hidden rounded-xl border border-line">
                 <button
                   type="button"
                   onClick={() => toggleDate(entry.filename)}
@@ -268,7 +296,7 @@ const MemoryViewer: React.FC = () => {
       ) : (
         <div className="flex flex-col gap-5">
           {/* Recent Activity (log.md) */}
-          <div className="overflow-hidden rounded-lg border border-line">
+          <div className="overflow-hidden rounded-xl border border-line">
             <button
               type="button"
               onClick={() => setActivityOpen((v) => !v)}
@@ -284,10 +312,31 @@ const MemoryViewer: React.FC = () => {
               </span>
             </button>
             {activityOpen && (
-              <div className="overflow-x-auto border-t border-line bg-bg px-5 py-4">
-                <pre className="whitespace-pre-wrap font-mono text-xs text-muted">
-                  {data?.wiki_log || 'No activity yet.'}
-                </pre>
+              <div className="border-t border-line bg-bg px-5 py-4">
+                {(() => {
+                  const entries = parseWikiLog(data?.wiki_log ?? '');
+                  if (entries.length === 0) {
+                    return <p className="text-sm text-muted">No activity yet.</p>;
+                  }
+                  return (
+                    <div className="flex flex-col gap-2">
+                      {entries.map((entry, i) => (
+                        <div
+                          key={i}
+                          className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border border-line bg-surface px-3.5 py-2"
+                        >
+                          <div className="flex min-w-0 items-center gap-2.5">
+                            <Badge tone={LOG_OP_TONE[entry.op] ?? 'neutral'}>{entry.op}</Badge>
+                            <span className="truncate text-sm text-ink-dim">{entry.message}</span>
+                          </div>
+                          <span className="shrink-0 font-mono text-[11px] text-muted">
+                            {new Date(entry.timestamp).toLocaleString()}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </div>

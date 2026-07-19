@@ -5,14 +5,32 @@ import ThemeToggle from '../ui/ThemeToggle';
 import LogoutButton from '../ui/LogoutButton';
 
 const COLLAPSE_KEY = 'chatty-rail-collapsed';
+const SECTIONS_KEY = 'chatty-sidebar-sections-collapsed';
+
+const readCollapsedSections = (): Record<string, boolean> => {
+  try {
+    return JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? '{}');
+  } catch {
+    return {};
+  }
+};
 
 const Sidebar: React.FC = () => {
   const { pathname } = useLocation();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSE_KEY) === '1');
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(readCollapsedSections);
 
   useEffect(() => {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0');
   }, [collapsed]);
+
+  useEffect(() => {
+    localStorage.setItem(SECTIONS_KEY, JSON.stringify(collapsedSections));
+  }, [collapsedSections]);
+
+  const toggleSection = (key: string) => {
+    setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
   return (
     <aside
@@ -37,31 +55,57 @@ const Sidebar: React.FC = () => {
       <nav className="flex-1 overflow-y-auto py-2" aria-label="Primary">
         {NAV_GROUPS.map((group) => (
           <div key={group.id} className="mb-1">
-            {!collapsed && (
-              <div className="px-4 pb-1 pt-4 font-mono text-[11px] uppercase tracking-wider text-muted">
-                {group.caption}
-              </div>
-            )}
-            {group.entries.map((entry) => {
-              const active = isNavActive(pathname, entry.to);
+            {group.sections.map((section) => {
+              const sectionKey = `${group.id}:${section.id}`;
+              const hasActiveEntry = section.entries.some((entry) => isNavActive(pathname, entry.to));
+              const sectionCollapsed = !collapsed && collapsedSections[sectionKey] && !hasActiveEntry;
               return (
-                <Link
-                  key={entry.to}
-                  to={entry.to}
-                  aria-current={active ? 'page' : undefined}
-                  title={collapsed ? entry.label : undefined}
-                  className={`mx-2 my-0.5 flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                    active ? 'bg-bg text-ink' : 'text-muted hover:bg-bg hover:text-ink'
-                  } ${collapsed ? 'justify-center px-0' : ''}`}
-                >
-                  <span
-                    className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${
-                      active ? navColorTextClass[group.color] : 'text-line'
-                    }`}
-                    aria-hidden="true"
-                  />
-                  {!collapsed && entry.label}
-                </Link>
+                <div key={sectionKey}>
+                  {!collapsed && (
+                    <button
+                      type="button"
+                      onClick={() => toggleSection(sectionKey)}
+                      aria-expanded={!sectionCollapsed}
+                      className="flex w-full items-center justify-between px-4 pb-1 pt-4 font-mono text-[11px] uppercase tracking-wider text-muted hover:text-ink-dim"
+                    >
+                      {section.caption}
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className={`h-3 w-3 shrink-0 transition-transform ${sectionCollapsed ? '-rotate-90' : ''}`}
+                      >
+                        <path d="M6 9l6 6 6-6" />
+                      </svg>
+                    </button>
+                  )}
+                  {!sectionCollapsed &&
+                    section.entries.map((entry) => {
+                      const active = isNavActive(pathname, entry.to);
+                      return (
+                        <Link
+                          key={entry.to}
+                          to={entry.to}
+                          aria-current={active ? 'page' : undefined}
+                          title={collapsed ? entry.label : undefined}
+                          className={`mx-2 my-0.5 flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                            active ? 'bg-bg text-ink' : 'text-muted hover:bg-bg hover:text-ink'
+                          } ${collapsed ? 'justify-center px-0' : ''}`}
+                        >
+                          <span
+                            className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${
+                              active ? navColorTextClass[group.color] : 'text-line'
+                            }`}
+                            aria-hidden="true"
+                          />
+                          {!collapsed && entry.label}
+                        </Link>
+                      );
+                    })}
+                </div>
               );
             })}
           </div>

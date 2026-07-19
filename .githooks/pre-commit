@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Pre-commit gate: Python lint (real bugs only, not style), the full test
-# suite, and frontend lint/typecheck if frontend files are staged.
+# Pre-commit gate: secret scanning, Python lint (real bugs only, not style),
+# the full test suite, and frontend lint/typecheck if frontend files are staged.
 #
 # Applies to every commit in this repo - human or the self-upgrade pipeline
 # (src/managers/self_upgrade_manager.py commits inside its own git worktree,
@@ -34,6 +34,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 MAIN_REPO_ROOT="$(cd "$(git rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"
 VENV_PYTHON="$MAIN_REPO_ROOT/venv/bin/python"
 RUFF="$MAIN_REPO_ROOT/venv/bin/ruff"
+DETECT_SECRETS_HOOK="$MAIN_REPO_ROOT/venv/bin/detect-secrets-hook"
 NODE_BIN="$HOME/.nvm/versions/node/v22.12.0/bin"
 
 cd "$REPO_ROOT" || exit 1
@@ -43,6 +44,20 @@ STAGED_PY=$(echo "$STAGED_FILES" | grep -E '\.py$' || true)
 STAGED_FRONTEND=$(echo "$STAGED_FILES" | grep -E '^order_explorer_site/frontend/.*\.(ts|tsx)$' || true)
 
 FAILED=0
+
+if [ -n "$STAGED_FILES" ] && [ -x "$DETECT_SECRETS_HOOK" ] && [ -f ".secrets.baseline" ]; then
+    echo "-- detect-secrets (staged files) --"
+    # The baseline path must be spelled the same way git spells the staged
+    # paths (relative to REPO_ROOT, which we cd'd to above): detect-secrets
+    # skips scanning the baseline itself by string-matching that path, so an
+    # absolute path here makes it scan the baseline and flag its own hashes.
+    # shellcheck disable=SC2086
+    if ! "$DETECT_SECRETS_HOOK" --baseline .secrets.baseline $STAGED_FILES; then
+        echo "FAILED: detect-secrets found a potential new secret above. If it's a false"
+        echo "positive, audit it into the baseline: venv/bin/detect-secrets audit .secrets.baseline"
+        FAILED=1
+    fi
+fi
 
 if [ -n "$STAGED_PY" ]; then
     echo "-- ruff (staged Python files) --"

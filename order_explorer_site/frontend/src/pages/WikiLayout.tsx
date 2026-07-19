@@ -64,7 +64,7 @@ const WikiLayout: React.FC = () => {
   };
 
   return (
-    <WikiSidebarContext.Provider value={{ refreshPages: load }}>
+    <WikiSidebarContext.Provider value={{ refreshPages: load, pages: pages ?? [] }}>
       <div className="mx-auto flex max-w-[1400px] items-start gap-6 px-4 py-6 md:px-6">
         <aside data-testid="wiki-sidebar" className="sticky top-6 hidden w-56 shrink-0 flex-col gap-4 self-start md:flex">
           <nav className="flex flex-col gap-0.5">
@@ -107,7 +107,7 @@ const WikiLayout: React.FC = () => {
               <p className="mb-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted">Tags</p>
               <div className="flex flex-wrap gap-1">
                 {allTags.map((tag) => (
-                  <Link key={tag} to={tagHref(tag)}>
+                  <Link key={tag} to={tagHref(tag)} className="transition-opacity hover:opacity-80">
                     <Badge tone={selectedTag === tag ? 'teal' : 'neutral'}>{tag}</Badge>
                   </Link>
                 ))}
