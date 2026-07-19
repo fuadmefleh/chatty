@@ -676,6 +676,14 @@ conversation doesn't need a response right now), reply with exactly: NONE"""
             failed_count = 0
             
             for pdf_file in pdf_files:
+                # Guard: file may have been moved or deleted since glob() ran
+                # (e.g. another heartbeat tick already archived it, or manual cleanup)
+                # Log a warning and skip — don't let a stale glob result halt the cycle
+                if not pdf_file.is_file():
+                    heartbeat_logger.warning(
+                        f"Walmart PDF missing, skipping: {pdf_file.name}"
+                    )
+                    continue
                 try:
                     heartbeat_logger.info(f"Processing Walmart order: {pdf_file.name}")
                     
