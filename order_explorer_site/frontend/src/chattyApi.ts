@@ -223,17 +223,73 @@ export interface ChattyInsight {
   entities?: string[];
   connection?: ChattyInsightConnection | null;
   schema_version?: number;
+  // True for one-off search results, which are kept out of the curated feed
+  // unless explicitly asked for.
+  ad_hoc?: boolean;
 }
 
-export const fetchInsights = async (limit = 50, minSignificance = 1): Promise<ChattyInsight[]> => {
+export const fetchInsights = async (
+  limit = 50,
+  minSignificance = 1,
+  includeAdHoc = false,
+): Promise<ChattyInsight[]> => {
   const res = await chattyApi.get<ChattyInsight[]>('/api/chatty/insights', {
-    params: { limit, min_significance: minSignificance },
+    params: { limit, min_significance: minSignificance, include_ad_hoc: includeAdHoc },
   });
   return res.data;
 };
 
 export const deleteInsight = async (id: string): Promise<void> => {
   await chattyApi.delete(`/api/chatty/insights/${id}`);
+};
+
+// ── On-demand scans ──────────────────────────────────────────────────────────
+// Insights otherwise only appear on the heartbeat's schedule. These kick off a
+// background job; poll fetchScanJob until its status is terminal.
+
+export type ScanMode = 'topic' | 'all' | 'adhoc';
+export type ScanJobStatus = 'pending' | 'running' | 'done' | 'failed';
+
+export interface ScanTarget {
+  topic: string;
+  kind: WatchTopicKind;
+  state: string;
+  insight_id: string | null;
+  error: string | null;
+}
+
+export interface ScanJob {
+  id: string;
+  user_id: string;
+  mode: ScanMode;
+  status: ScanJobStatus;
+  created_at: string;
+  finished_at: string | null;
+  error: string | null;
+  targets: ScanTarget[];
+}
+
+export interface StartScanResponse {
+  job_id: string;
+  status: ScanJobStatus;
+  targets: number;
+}
+
+export interface StartScanRequest {
+  mode: ScanMode;
+  topic_id?: string;
+  topic?: string;
+  kind?: WatchTopicKind;
+}
+
+export const startScan = async (req: StartScanRequest): Promise<StartScanResponse> => {
+  const res = await chattyApi.post<StartScanResponse>('/api/chatty/insights/scan', req);
+  return res.data;
+};
+
+export const fetchScanJob = async (jobId: string): Promise<ScanJob> => {
+  const res = await chattyApi.get<ScanJob>(`/api/chatty/insights/scan/${jobId}`);
+  return res.data;
 };
 
 // ── Reminders ─────────────────────────────────────────────────────────────────

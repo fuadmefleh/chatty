@@ -121,7 +121,8 @@ Deliberate limits:
   often; a scan in flight during a restart is lost. The frontend treats a `404`
   on poll as "job vanished — refetch the feed and stop polling" rather than an
   error, since the insight may well have been written before the restart.
-  Persisting jobs is not worth it for a ~3-second scan.
+  Losing a job costs a re-click, not data — the insight is on disk before the
+  job goes terminal — so persisting the registry isn't worth the machinery.
 - **Retention:** last 20 jobs per user, no TTL sweeper.
 
 ### 4. API
@@ -198,8 +199,22 @@ Extends `tests/test_world_watch.py`, `tests/test_insights_manager.py`.
 - **Schema back-compat** — an insight dict without `ad_hoc` loads as `False`.
 - **Locking** — concurrent `add_insight` calls do not lose writes.
 
-## Cost
+## Cost and latency
 
 Unchanged per scan: one fetch + one `gpt-5-nano` call per topic with findings
 (stock adds one enrichment search). On-demand simply moves who decides when.
 The one-job-per-user rule bounds the blast radius of an impatient user.
+
+**Measured:** a single-topic news scan took **~90 seconds** end to end, far
+above the few-seconds estimate this design started from. SearXNG aggregation
+dominates; the `gpt-5-nano` call is a small share. Two consequences:
+
+- Background jobs were the right call. A blocking request at this latency
+  would sit at real risk of a proxy/gateway timeout, and "scan all" over
+  several topics runs serially on top of that.
+- The frontend's 2s poll is comfortably fine-grained; the per-target progress
+  panel is doing real work here rather than flashing by.
+
+If scan-all over many topics becomes routine, running targets concurrently
+rather than serially is the obvious next lever — but that is speculative until
+the watchlist is bigger than one topic.

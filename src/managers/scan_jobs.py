@@ -7,7 +7,12 @@ Deliberately in-memory: jobs live in the chatty-web-server process and die
 with it. A scan interrupted by a restart is lost, and the frontend treats a
 404 on poll as "job vanished - refetch the feed and stop polling" rather than
 an error, since the insight may well have been written before the restart.
-Persisting a ~3-second job isn't worth the machinery.
+Losing one costs the user a re-click, not data - the insight itself is
+already on disk by the time the job goes terminal.
+
+A measured single-topic news scan takes ~90s end to end (SearXNG aggregation
+dominates, not the LLM call), which is why this is a background job rather
+than a blocking request.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
