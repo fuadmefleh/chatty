@@ -5,8 +5,11 @@ Insights are system-generated only, by HeartbeatManager._process_world_watch()
 create one directly - this is a read-mostly store consumed by the web
 dashboard's Insights page.
 """
+import fcntl
 import json
+import os
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -43,6 +46,7 @@ class Insight:
         entities: Optional[List[str]] = None,
         connection: Optional[Dict[str, str]] = None,
         schema_version: int = LEGACY_SCHEMA_VERSION,
+        ad_hoc: bool = False,
     ):
         self.id = insight_id
         self.topic = topic
@@ -59,6 +63,7 @@ class Insight:
         self.entities = entities or []
         self.connection = connection
         self.schema_version = schema_version
+        self.ad_hoc = ad_hoc
 
     def to_dict(self) -> Dict:
         return {
@@ -77,6 +82,7 @@ class Insight:
             "entities": self.entities,
             "connection": self.connection,
             "schema_version": self.schema_version,
+            "ad_hoc": self.ad_hoc,
         }
 
     @classmethod
@@ -97,6 +103,7 @@ class Insight:
             entities=data.get("entities", []),
             connection=data.get("connection"),
             schema_version=data.get("schema_version", LEGACY_SCHEMA_VERSION),
+            ad_hoc=data.get("ad_hoc", False),
         )
 
 
@@ -113,6 +120,27 @@ class InsightsManager:
     def _get_user_file(self, user_id: str) -> Path:
         return self.data_dir / f"{user_id}.json"
 
+    @contextmanager
+    def _user_lock(self, user_id: str):
+        """Serialize a read-modify-write across processes.
+
+        Insights are written by chatty-bot (the heartbeat) and
+        chatty-web-server (on-demand scans) - two separate processes over one
+        file. add_insight/delete_insight rewrite the whole file, so without
+        this an interleaved pair silently drops one of the two writes.
+
+        The lock is a sidecar file rather than the data file itself, so the
+        atomic replace in _save_insights can't swap the inode out from under
+        a held lock.
+        """
+        lock_path = self.data_dir / f"{user_id}.lock"
+        with open(lock_path, "w", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
     def _load_insights(self, user_id: str) -> List[Insight]:
         file_path = self._get_user_file(user_id)
 
@@ -128,13 +156,25 @@ class InsightsManager:
             return []
 
     def _save_insights(self, user_id: str, insights: List[Insight]) -> None:
+        """Write the file atomically.
+
+        A plain truncate-and-write leaves the file torn for the duration of
+        the dump, and a concurrent reader in the other process sees invalid
+        JSON. Writing a temp file and renaming makes the swap atomic, so
+        readers see either the old contents or the new ones.
+        """
         file_path = self._get_user_file(user_id)
+        tmp_path = file_path.with_suffix(".json.tmp")
 
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump([i.to_dict() for i in insights], f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, file_path)
         except Exception as e:
             print(f"Error saving insights for user {user_id}: {e}")
+            tmp_path.unlink(missing_ok=True)
             raise
 
     def add_insight(
@@ -151,14 +191,16 @@ class InsightsManager:
         what_to_watch: Optional[List[str]] = None,
         entities: Optional[List[str]] = None,
         connection: Optional[Dict[str, str]] = None,
+        ad_hoc: bool = False,
     ) -> Insight:
         """Persist a newly surfaced insight for a user.
 
         Only `summary` is required beyond the identifiers - callers that
         don't produce structured analysis still write a valid record.
-        """
-        insights = self._load_insights(user_id)
 
+        `ad_hoc` marks a user-initiated one-off search rather than a
+        scheduled watchlist finding; those are kept out of the default feed.
+        """
         new_insight = Insight(
             insight_id=str(uuid.uuid4()),
             topic=topic,
@@ -175,16 +217,32 @@ class InsightsManager:
             entities=entities,
             connection=connection,
             schema_version=STRUCTURED_SCHEMA_VERSION if headline else LEGACY_SCHEMA_VERSION,
+            ad_hoc=ad_hoc,
         )
 
-        insights.append(new_insight)
-        self._save_insights(user_id, insights)
+        with self._user_lock(user_id):
+            insights = self._load_insights(user_id)
+            insights.append(new_insight)
+            self._save_insights(user_id, insights)
 
         return new_insight
 
-    def get_insights(self, user_id: str, limit: int = 50, min_significance: int = 1) -> List[Insight]:
-        """Get insights for a user, sorted by creation date (newest first)."""
-        insights = [i for i in self._load_insights(user_id) if i.significance >= min_significance]
+    def get_insights(
+        self,
+        user_id: str,
+        limit: int = 50,
+        min_significance: int = 1,
+        include_ad_hoc: bool = False,
+    ) -> List[Insight]:
+        """Get insights for a user, sorted by creation date (newest first).
+
+        Ad-hoc search results are excluded unless asked for, so a throwaway
+        one-off search doesn't permanently clutter the curated feed.
+        """
+        insights = [
+            i for i in self._load_insights(user_id)
+            if i.significance >= min_significance and (include_ad_hoc or not i.ad_hoc)
+        ]
         insights.sort(key=lambda i: i.created_at, reverse=True)
         return insights[:limit]
 
@@ -200,11 +258,12 @@ class InsightsManager:
 
     def delete_insight(self, user_id: str, insight_id: str) -> bool:
         """Delete a specific insight."""
-        insights = self._load_insights(user_id)
-        original_count = len(insights)
-        insights = [i for i in insights if i.id != insight_id]
+        with self._user_lock(user_id):
+            insights = self._load_insights(user_id)
+            original_count = len(insights)
+            insights = [i for i in insights if i.id != insight_id]
 
-        if len(insights) < original_count:
-            self._save_insights(user_id, insights)
-            return True
-        return False
+            if len(insights) < original_count:
+                self._save_insights(user_id, insights)
+                return True
+            return False

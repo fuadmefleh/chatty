@@ -116,3 +116,50 @@ def test_get_insights_by_topic_empty_for_unknown_topic(mgr):
     mgr.add_insight("u1", "ai", "s", [], headline="h")
 
     assert mgr.get_insights_by_topic("u1", "nothing-here") == []
+
+
+# ── Ad-hoc insights ──────────────────────────────────────────────────────────
+
+def test_records_without_ad_hoc_default_to_false():
+    """Every insight written before on-demand search predates the flag."""
+    assert Insight.from_dict(LEGACY_RECORD).ad_hoc is False
+
+
+def test_ad_hoc_flag_persists(mgr):
+    mgr.add_insight("u1", "TSLA", "s", [], headline="h", ad_hoc=True)
+
+    (loaded,) = mgr.get_insights("u1", include_ad_hoc=True)
+    assert loaded.ad_hoc is True
+
+
+def test_ad_hoc_insights_are_excluded_by_default(mgr):
+    """The curated feed must not fill up with one-off searches."""
+    mgr.add_insight("u1", "ai", "scheduled", [], headline="scheduled")
+    mgr.add_insight("u1", "TSLA", "one-off", [], headline="one-off", ad_hoc=True)
+
+    assert [i.headline for i in mgr.get_insights("u1")] == ["scheduled"]
+    assert len(mgr.get_insights("u1", include_ad_hoc=True)) == 2
+
+
+def test_ad_hoc_insights_still_count_for_topic_continuity(mgr):
+    """An ad-hoc search on a watched topic should inform the next analysis."""
+    mgr.add_insight("u1", "ai", "one-off", [], headline="one-off", ad_hoc=True)
+
+    assert len(mgr.get_insights_by_topic("u1", "ai")) == 1
+
+
+# ── Concurrent writes ────────────────────────────────────────────────────────
+
+def test_concurrent_adds_do_not_lose_writes(mgr):
+    """chatty-bot and chatty-web-server both write this file now.
+
+    add_insight is a read-modify-write over the whole file, so without
+    locking an interleaved pair silently drops one of the two insights.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    count = 25
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        list(pool.map(lambda n: mgr.add_insight("u1", "ai", f"s{n}", [], headline=f"h{n}"), range(count)))
+
+    assert len(mgr.get_insights("u1", limit=200)) == count

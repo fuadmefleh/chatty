@@ -15,6 +15,7 @@ from typing import Dict, List, Optional
 from src.core.logging_config import get_api_logger
 from src.core.skills_manager import SkillsManager
 from src.managers.insights_manager import InsightsManager
+from src.managers.scan_jobs import ScanJobRegistry
 from src.managers.trending_manager import TrendingSuggestionsManager
 from src.managers.webcam_manager import WebcamSourcesManager, WebcamSuggestionsManager
 from src.core.token_usage_manager import get_token_usage_manager
@@ -31,6 +32,8 @@ transcriptions_manager = TranscriptionsManager()
 speaker_manager = SpeakerManager()
 watchlist_manager = WatchlistManager()
 insights_manager = InsightsManager()
+# On-demand insight scans in flight. In-memory by design - see scan_jobs.py.
+scan_jobs = ScanJobRegistry()
 feature_requests_manager = FeatureRequestsManager()
 trending_suggestions_manager = TrendingSuggestionsManager()
 webcam_sources_manager = WebcamSourcesManager()
