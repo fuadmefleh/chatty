@@ -156,16 +156,6 @@ const Insights: React.FC = () => {
   // Covers the initial mount as well as every flip of the ad-hoc toggle.
   useEffect(() => { load(showAdHoc); }, [showAdHoc]);
 
-  const handleScanComplete = (job: ScanJob) => {
-    // A finished ad-hoc search must reveal its own result, or the spinner
-    // resolves into an unchanged feed and reads as a failure.
-    if (job.mode === 'adhoc' && !showAdHoc) {
-      setShowAdHoc(true);  // the effect above refetches
-    } else {
-      load(showAdHoc);
-    }
-  };
-
   useEffect(() => {
     if (scanJob === null || isTerminal(scanJob.status)) return;
 
@@ -175,7 +165,16 @@ const Insights: React.FC = () => {
         const updated = await fetchScanJob(scanJob.id);
         if (cancelled) return;
         setScanJob(updated);
-        if (isTerminal(updated.status)) handleScanComplete(updated);
+
+        if (isTerminal(updated.status)) {
+          // A finished ad-hoc search must reveal its own result, or the
+          // spinner resolves into an unchanged feed and reads as a failure.
+          if (updated.mode === 'adhoc' && !showAdHoc) {
+            setShowAdHoc(true);  // the effect above refetches
+          } else {
+            load(showAdHoc);
+          }
+        }
       } catch {
         // A 404 means chatty-web-server restarted and lost the in-memory job.
         // The insight may well have been written first, so refetch rather
