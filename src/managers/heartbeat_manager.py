@@ -815,6 +815,7 @@ conversation doesn't need a response right now), reply with exactly: NONE"""
             from skills.watchlist.watchlist_manager import WatchlistManager
             from src.managers.insights_manager import InsightsManager
             from src.managers import watch_sources
+            from src.managers import insight_analyzer
             import src.main as main_module
 
             if not getattr(main_module, "authorized_users", None):
@@ -844,7 +845,7 @@ conversation doesn't need a response right now), reply with exactly: NONE"""
                             pass  # Malformed timestamp - treat as due
 
                     try:
-                        insight_summary = None
+                        items: List[Dict] = []
                         sources: List[Dict] = []
 
                         if topic.kind == "stock":
@@ -854,8 +855,11 @@ conversation doesn't need a response right now), reply with exactly: NONE"""
                             watchlist_mgr.mark_run(user_id, topic.id, [], datetime.now().isoformat())
                             if not check.get("notable"):
                                 continue
-                            insight_summary = check["summary"]
+                            items = [{"title": check["summary"]}]
                             sources = check["sources"]
+                            # The move itself is only half the story - pull recent
+                            # news on the ticker so the analysis can say WHY.
+                            items, sources = await self._enrich_stock_context(topic.topic, items, sources)
 
                         elif topic.kind == "github":
                             check = await watch_sources.check_github(topic.topic, topic.seen_urls)
@@ -864,7 +868,7 @@ conversation doesn't need a response right now), reply with exactly: NONE"""
                             watchlist_mgr.mark_run(user_id, topic.id, check["new_markers"], datetime.now().isoformat())
                             if not check["new_items"]:
                                 continue
-                            insight_summary = "\n".join(f"• {item['title']}" for item in check["new_items"])
+                            items = check["new_items"]
                             sources = [{"title": item["title"], "url": item["url"]} for item in check["new_items"]]
 
                         else:  # "news" (default)
@@ -874,16 +878,52 @@ conversation doesn't need a response right now), reply with exactly: NONE"""
                             watchlist_mgr.mark_run(user_id, topic.id, check["all_markers"], datetime.now().isoformat())
                             if not check["new_items"]:
                                 continue
-                            insight_summary = await self._summarize_world_watch_results(topic.topic, check["new_items"])
-                            if not insight_summary:
-                                continue
+                            items = check["new_items"]
                             sources = [{"title": r["title"], "url": r["link"]} for r in check["new_items"][:5]]
 
-                        insights_mgr.add_insight(user_id, topic.topic, insight_summary, sources)
+                        prior = insights_mgr.get_insights_by_topic(
+                            user_id, topic.topic, config.INSIGHT_PRIOR_CONTEXT_COUNT
+                        )
+                        analysis = await insight_analyzer.analyze(
+                            topic.kind,
+                            topic.topic,
+                            items,
+                            [
+                                {
+                                    "id": p.id,
+                                    "created_at": p.created_at,
+                                    "headline": p.headline or p.summary[:120],
+                                    "entities": p.entities,
+                                }
+                                for p in prior
+                            ],
+                        )
 
-                        if self._send_message_callback:
+                        if analysis is None:
+                            continue
+                        if analysis.significance < config.INSIGHT_MIN_SIGNIFICANCE_STORE:
+                            continue
+
+                        insights_mgr.add_insight(
+                            user_id,
+                            topic.topic,
+                            analysis.to_summary(),
+                            sources,
+                            kind=topic.kind,
+                            significance=analysis.significance,
+                            headline=analysis.headline,
+                            what_happened=analysis.what_happened,
+                            why_it_matters=analysis.why_it_matters,
+                            what_to_watch=analysis.what_to_watch,
+                            entities=analysis.entities,
+                            connection=analysis.connection,
+                        )
+
+                        # Low-significance findings still land in the dashboard
+                        # feed, but only notable ones are worth interrupting over.
+                        if self._send_message_callback and analysis.significance >= config.INSIGHT_PUSH_MIN_SIGNIFICANCE:
                             icon = {"stock": "📈", "github": "🐙"}.get(topic.kind, "🔭")
-                            message = f"{icon} **World Watch: {topic.topic}**\n\n{insight_summary}\n\n"
+                            message = f"{icon} **World Watch: {topic.topic}**\n\n{analysis.to_summary()}\n\n"
                             message += "\n".join(f"• {s['title']}: {s['url']}" for s in sources)
                             await self._send_message_callback(user_id, message)
 
@@ -903,43 +943,31 @@ conversation doesn't need a response right now), reply with exactly: NONE"""
             heartbeat_logger.error(f"Error in world watch processing: {e}", exc_info=True)
             return None
 
-    async def _summarize_world_watch_results(self, topic: str, results: List[Dict]) -> Optional[str]:
-        """Summarize new search results into a short, notable-or-nothing digest.
+    async def _enrich_stock_context(
+        self, symbol: str, items: List[Dict], sources: List[Dict]
+    ) -> tuple[List[Dict], List[Dict]]:
+        """Attach recent news about a ticker to its price-move finding.
 
-        Returns None (rather than a summary) when the LLM judges the results
-        aren't genuinely worth surfacing - this is what keeps world watch from
-        notifying on recycled/low-value content every time it runs.
+        "AAPL is down 6% today" is a fact, not an insight. Feeding the
+        analyzer contemporaneous headlines is what lets it explain the move.
+        Best-effort: a failed search degrades the analysis, so it must not
+        cost the insight.
         """
         try:
-            from openai import AsyncOpenAI
+            from src.managers import watch_sources
 
-            client = AsyncOpenAI(api_key=config.CHAT_API_KEY, base_url=config.CHAT_BASE_URL)
+            news = await watch_sources.check_news(f"{symbol} stock", [])
+            if not news or not news.get("new_items"):
+                return items, sources
 
-            results_text = "\n".join(
-                f"- {r['title']}: {r['snippet']} ({r['link']})" for r in results
-            )
-            prompt = f"""Here are new search results about the watched topic "{topic}":
-
-{results_text}
-
-In 2-4 sentences, summarize what's new or notable here for someone following this topic.
-If none of this is genuinely noteworthy (e.g. it's just recycled/old content, spam, or irrelevant),
-reply with exactly: NOTHING_NOTABLE"""
-
-            response = await client.chat.completions.create(
-                model=config.CHAT_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-            )
-
-            summary = (response.choices[0].message.content or "").strip()
-            if not summary or summary == "NOTHING_NOTABLE":
-                return None
-            return summary
+            fresh = news["new_items"][:5]
+            items = items + fresh
+            sources = sources + [{"title": r["title"], "url": r["link"]} for r in fresh[:3]]
 
         except Exception as e:
-            heartbeat_logger.error(f"Error summarizing world watch results for '{topic}': {e}", exc_info=True)
-            return None
+            heartbeat_logger.warning(f"Stock news enrichment failed for '{symbol}': {e}")
+
+        return items, sources
 
     async def _process_memory_watch_suggestions(self) -> Optional[str]:
         """Mine long-term memory for topics worth proactively watching and suggest them.

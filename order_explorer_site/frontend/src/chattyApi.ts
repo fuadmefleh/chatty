@@ -197,6 +197,14 @@ export interface ChattyInsightSource {
   url: string;
 }
 
+export type InsightRelation = 'follows_up' | 'contradicts' | 'escalates';
+
+export interface ChattyInsightConnection {
+  prior_insight_id: string;
+  relation: InsightRelation;
+  note: string;
+}
+
 export interface ChattyInsight {
   id: string;
   topic: string;
@@ -204,10 +212,23 @@ export interface ChattyInsight {
   sources: ChattyInsightSource[];
   created_at: string;
   user_id: string;
+  // Structured fields (schema_version 2). Records written before structured
+  // insights only have `summary`, so these are all optional.
+  kind?: WatchTopicKind;
+  significance?: number;
+  headline?: string;
+  what_happened?: string;
+  why_it_matters?: string;
+  what_to_watch?: string[];
+  entities?: string[];
+  connection?: ChattyInsightConnection | null;
+  schema_version?: number;
 }
 
-export const fetchInsights = async (limit = 50): Promise<ChattyInsight[]> => {
-  const res = await chattyApi.get<ChattyInsight[]>('/api/chatty/insights', { params: { limit } });
+export const fetchInsights = async (limit = 50, minSignificance = 1): Promise<ChattyInsight[]> => {
+  const res = await chattyApi.get<ChattyInsight[]>('/api/chatty/insights', {
+    params: { limit, min_significance: minSignificance },
+  });
   return res.data;
 };
 

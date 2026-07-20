@@ -11,9 +11,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
 
+# Records with no `schema_version` predate structured insights and have only
+# a flat `summary`; the frontend falls back to the old layout for these.
+LEGACY_SCHEMA_VERSION = 1
+STRUCTURED_SCHEMA_VERSION = 2
+
 
 class Insight:
-    """Represents a single surfaced insight about a watched topic."""
+    """Represents a single surfaced insight about a watched topic.
+
+    Records written before the structured-insight change only have `summary`
+    (a flat paragraph). Every structured field defaults, so those legacy
+    records still load; `schema_version` is what tells the frontend which
+    layout to render.
+    """
 
     def __init__(
         self,
@@ -23,6 +34,15 @@ class Insight:
         sources: List[Dict[str, str]],
         created_at: str,
         user_id: str,
+        kind: str = "news",
+        significance: int = 3,
+        headline: str = "",
+        what_happened: str = "",
+        why_it_matters: str = "",
+        what_to_watch: Optional[List[str]] = None,
+        entities: Optional[List[str]] = None,
+        connection: Optional[Dict[str, str]] = None,
+        schema_version: int = LEGACY_SCHEMA_VERSION,
     ):
         self.id = insight_id
         self.topic = topic
@@ -30,6 +50,15 @@ class Insight:
         self.sources = sources
         self.created_at = created_at
         self.user_id = user_id
+        self.kind = kind
+        self.significance = significance
+        self.headline = headline
+        self.what_happened = what_happened
+        self.why_it_matters = why_it_matters
+        self.what_to_watch = what_to_watch or []
+        self.entities = entities or []
+        self.connection = connection
+        self.schema_version = schema_version
 
     def to_dict(self) -> Dict:
         return {
@@ -39,6 +68,15 @@ class Insight:
             "sources": self.sources,
             "created_at": self.created_at,
             "user_id": self.user_id,
+            "kind": self.kind,
+            "significance": self.significance,
+            "headline": self.headline,
+            "what_happened": self.what_happened,
+            "why_it_matters": self.why_it_matters,
+            "what_to_watch": self.what_to_watch,
+            "entities": self.entities,
+            "connection": self.connection,
+            "schema_version": self.schema_version,
         }
 
     @classmethod
@@ -50,6 +88,15 @@ class Insight:
             sources=data.get("sources", []),
             created_at=data["created_at"],
             user_id=data["user_id"],
+            kind=data.get("kind", "news"),
+            significance=data.get("significance", 3),
+            headline=data.get("headline", ""),
+            what_happened=data.get("what_happened", ""),
+            why_it_matters=data.get("why_it_matters", ""),
+            what_to_watch=data.get("what_to_watch", []),
+            entities=data.get("entities", []),
+            connection=data.get("connection"),
+            schema_version=data.get("schema_version", LEGACY_SCHEMA_VERSION),
         )
 
 
@@ -90,8 +137,26 @@ class InsightsManager:
             print(f"Error saving insights for user {user_id}: {e}")
             raise
 
-    def add_insight(self, user_id: str, topic: str, summary: str, sources: List[Dict[str, str]]) -> Insight:
-        """Persist a newly surfaced insight for a user."""
+    def add_insight(
+        self,
+        user_id: str,
+        topic: str,
+        summary: str,
+        sources: List[Dict[str, str]],
+        kind: str = "news",
+        significance: int = 3,
+        headline: str = "",
+        what_happened: str = "",
+        why_it_matters: str = "",
+        what_to_watch: Optional[List[str]] = None,
+        entities: Optional[List[str]] = None,
+        connection: Optional[Dict[str, str]] = None,
+    ) -> Insight:
+        """Persist a newly surfaced insight for a user.
+
+        Only `summary` is required beyond the identifiers - callers that
+        don't produce structured analysis still write a valid record.
+        """
         insights = self._load_insights(user_id)
 
         new_insight = Insight(
@@ -101,6 +166,15 @@ class InsightsManager:
             sources=sources,
             created_at=datetime.now().isoformat(),
             user_id=user_id,
+            kind=kind,
+            significance=significance,
+            headline=headline,
+            what_happened=what_happened,
+            why_it_matters=why_it_matters,
+            what_to_watch=what_to_watch,
+            entities=entities,
+            connection=connection,
+            schema_version=STRUCTURED_SCHEMA_VERSION if headline else LEGACY_SCHEMA_VERSION,
         )
 
         insights.append(new_insight)
@@ -108,9 +182,19 @@ class InsightsManager:
 
         return new_insight
 
-    def get_insights(self, user_id: str, limit: int = 50) -> List[Insight]:
+    def get_insights(self, user_id: str, limit: int = 50, min_significance: int = 1) -> List[Insight]:
         """Get insights for a user, sorted by creation date (newest first)."""
-        insights = self._load_insights(user_id)
+        insights = [i for i in self._load_insights(user_id) if i.significance >= min_significance]
+        insights.sort(key=lambda i: i.created_at, reverse=True)
+        return insights[:limit]
+
+    def get_insights_by_topic(self, user_id: str, topic: str, limit: int = 5) -> List[Insight]:
+        """Recent insights for one topic, newest first.
+
+        Feeds the analyzer the history it needs to link a new finding back to
+        what was already surfaced.
+        """
+        insights = [i for i in self._load_insights(user_id) if i.topic == topic]
         insights.sort(key=lambda i: i.created_at, reverse=True)
         return insights[:limit]
 

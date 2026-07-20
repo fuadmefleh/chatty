@@ -98,7 +98,10 @@ async def check_github(repo: str, seen_markers: List[str]) -> Optional[Dict[str,
                     notable_items.append({
                         "title": f"New release {tag} for {repo}",
                         "url": release.get("html_url", f"https://github.com/{repo}/releases"),
-                        "snippet": (release.get("body") or "")[:300],
+                        # Generous cap: the analyzer summarizes these notes into
+                        # "what actually changed", so truncating at a few hundred
+                        # chars would cut off most real changelogs mid-list.
+                        "snippet": (release.get("body") or "")[:2000],
                     })
 
             commits_resp = await client.get(f"{GITHUB_API_BASE}/repos/{repo}/commits", params={"per_page": 1})

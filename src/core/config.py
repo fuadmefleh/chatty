@@ -101,6 +101,16 @@ STOCK_WATCH_INTERVAL_HOURS = int(os.getenv("STOCK_WATCH_INTERVAL_HOURS", "4"))
 GITHUB_WATCH_INTERVAL_HOURS = int(os.getenv("GITHUB_WATCH_INTERVAL_HOURS", "12"))
 STOCK_WATCH_MOVE_THRESHOLD_PERCENT = float(os.getenv("STOCK_WATCH_MOVE_THRESHOLD_PERCENT", "5.0"))
 
+# Insight significance gating (1-5, assigned by src/managers/insight_analyzer.py).
+# Storing from 2 keeps minor-but-real findings in the dashboard feed while
+# pushing only from 4 keeps chat notifications for things worth interrupting
+# over. Raise STORE to 3 for a tighter feed; raise PUSH to 5 for near-silence.
+INSIGHT_MIN_SIGNIFICANCE_STORE = int(os.getenv("INSIGHT_MIN_SIGNIFICANCE_STORE", "2"))
+INSIGHT_PUSH_MIN_SIGNIFICANCE = int(os.getenv("INSIGHT_PUSH_MIN_SIGNIFICANCE", "4"))
+# How many earlier insights on the same topic the analyzer sees, so it can
+# link a new finding to what it already surfaced.
+INSIGHT_PRIOR_CONTEXT_COUNT = int(os.getenv("INSIGHT_PRIOR_CONTEXT_COUNT", "5"))
+
 # Memory-driven watch suggestions: how often to mine long-term memory for
 # candidate topics worth proactively watching (default: weekly).
 MEMORY_SUGGESTION_INTERVAL_HOURS = int(os.getenv("MEMORY_SUGGESTION_INTERVAL_HOURS", "168"))

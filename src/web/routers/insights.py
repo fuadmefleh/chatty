@@ -7,8 +7,12 @@ router = APIRouter(prefix="/api/chatty/insights", tags=["insights"], dependencie
 
 
 @router.get("")
-async def get_insights(limit: int = Query(default=50, ge=1, le=200)):
-    return [i.to_dict() for i in state.insights_manager.get_insights(config.WEB_USER_ID, limit)]
+async def get_insights(
+    limit: int = Query(default=50, ge=1, le=200),
+    min_significance: int = Query(default=1, ge=1, le=5),
+):
+    insights = state.insights_manager.get_insights(config.WEB_USER_ID, limit, min_significance)
+    return [i.to_dict() for i in insights]
 
 
 @router.delete("/{insight_id}")
