@@ -254,7 +254,7 @@ export interface ScanTarget {
   topic: string;
   kind: WatchTopicKind;
   state: string;
-  insight_id: string | null;
+  insight_count: number;
   error: string | null;
 }
 
@@ -1144,6 +1144,9 @@ export interface TokenUsageEntry {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  /** Role of the final message sent to the model — null for requests logged before prompt capture. */
+  prompt_role: string | null;
+  prompt_preview: string | null;
 }
 
 export const fetchTokenUsageSummary = async (days = 30): Promise<TokenUsageSummary> => {

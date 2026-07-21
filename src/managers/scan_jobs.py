@@ -33,7 +33,9 @@ class ScanTarget:
     topic: str
     kind: str
     state: str = "pending"
-    insight_id: Optional[str] = None
+    # A scan clusters its findings into storylines, so one target can produce
+    # several insights - the progress panel reports how many.
+    insight_count: int = 0
     error: Optional[str] = None
 
     def to_dict(self) -> Dict:
@@ -41,7 +43,7 @@ class ScanTarget:
             "topic": self.topic,
             "kind": self.kind,
             "state": self.state,
-            "insight_id": self.insight_id,
+            "insight_count": self.insight_count,
             "error": self.error,
         }
 

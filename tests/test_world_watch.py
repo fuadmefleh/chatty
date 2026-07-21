@@ -1,5 +1,6 @@
 """Tests for HeartbeatManager._process_world_watch (dedup + interval gating logic)."""
 import sys
+import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -35,14 +36,33 @@ def patch_analyzer(significance=4):
     return patch(
         "src.managers.insight_analyzer.analyze",
         new_callable=AsyncMock,
-        return_value=make_analysis(significance),
+        return_value=[make_analysis(significance)],
     )
 
 
 def make_insights_mgr():
-    """InsightsManager double whose topic history is empty (not a MagicMock)."""
+    """InsightsManager double that returns real Insights from add_insight.
+
+    The heartbeat reads significance and sources off the *stored* insight to
+    decide about pushing, so a bare MagicMock return would make those
+    comparisons meaningless.
+    """
+    from src.managers.insights_manager import Insight
+
+    def add_insight(user_id, topic, summary, sources, **kwargs):
+        return Insight(
+            insight_id=f"insight-{uuid.uuid4()}",
+            topic=topic,
+            summary=summary,
+            sources=sources,
+            created_at=datetime.now().isoformat(),
+            user_id=user_id,
+            **kwargs,
+        )
+
     insights_mgr = MagicMock()
     insights_mgr.get_insights_by_topic.return_value = []
+    insights_mgr.add_insight.side_effect = add_insight
     return insights_mgr
 
 
@@ -352,7 +372,7 @@ async def test_structured_fields_are_persisted():
          patch("src.managers.insights_manager.InsightsManager") as insights_cls, \
          patch("skills.web_search.searxng_client.get_search_client", return_value=search_client), \
          patch("src.main.authorized_users", {"u1": "phone"}), \
-         patch("src.managers.insight_analyzer.analyze", new_callable=AsyncMock, return_value=analysis):
+         patch("src.managers.insight_analyzer.analyze", new_callable=AsyncMock, return_value=[analysis]):
 
         insights_mgr = make_insights_mgr()
         insights_cls.return_value = insights_mgr

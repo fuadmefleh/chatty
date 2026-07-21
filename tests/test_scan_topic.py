@@ -32,7 +32,7 @@ def patch_analyzer(significance=4):
     return patch(
         "src.managers.insight_analyzer.analyze",
         new_callable=AsyncMock,
-        return_value=make_analysis(significance),
+        return_value=[make_analysis(significance)],
     )
 
 
@@ -156,7 +156,7 @@ async def test_analysis_failure_is_reported():
         "src.managers.watch_sources.check_news",
         new_callable=AsyncMock,
         return_value={"new_items": [{"title": "x", "link": "https://a.example"}], "all_markers": []},
-    ), patch("src.managers.insight_analyzer.analyze", new_callable=AsyncMock, return_value=None):
+    ), patch("src.managers.insight_analyzer.analyze", new_callable=AsyncMock, return_value=[]):
         result = await world_watch.scan_topic(
             "u1", "news", "widgets",
             topic_id="t1", seen_markers=[],
@@ -241,3 +241,103 @@ async def test_prior_insights_are_passed_to_analyzer():
     assert analyze.await_args.args[3] == [
         {"id": "p1", "created_at": "2026-07-01T00:00:00", "headline": "Earlier", "entities": ["Acme"]}
     ]
+
+
+# ── Multiple storylines per scan ─────────────────────────────────────────────
+
+ITEMS = [
+    {"title": "Merger", "link": "https://a.example", "snippet": "s"},
+    {"title": "Factory", "link": "https://b.example", "snippet": "s"},
+]
+
+
+async def scan_with_analyses(analyses, *, ad_hoc=False):
+    watchlist_mgr, insights_mgr = make_managers()
+
+    with patch(
+        "src.managers.watch_sources.check_news",
+        new_callable=AsyncMock,
+        return_value={"new_items": ITEMS, "all_markers": [r["link"] for r in ITEMS]},
+    ), patch("src.managers.insight_analyzer.analyze", new_callable=AsyncMock, return_value=analyses):
+        result = await world_watch.scan_topic(
+            "u1", "news", "widgets",
+            topic_id="t1", seen_markers=[],
+            watchlist_mgr=watchlist_mgr, insights_mgr=insights_mgr,
+            ad_hoc=ad_hoc,
+        )
+    return result, insights_mgr
+
+
+@pytest.mark.asyncio
+async def test_each_storyline_is_stored_as_its_own_insight():
+    """A busy topic must yield several cards, not one merged blob."""
+    analyses = [
+        make_analysis(4, headline="Merger"),
+        make_analysis(3, headline="Factory"),
+        make_analysis(5, headline="Recall"),
+    ]
+    result, insights_mgr = await scan_with_analyses(analyses)
+
+    assert insights_mgr.add_insight.call_count == 3
+    assert len(result.insights) == 3
+    assert [c.kwargs["headline"] for c in insights_mgr.add_insight.call_args_list] == [
+        "Merger", "Factory", "Recall",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_each_insight_gets_only_its_own_sources():
+    analyses = [
+        make_analysis(4, headline="Merger", source_urls=["https://a.example"]),
+        make_analysis(3, headline="Factory", source_urls=["https://b.example"]),
+    ]
+    _, insights_mgr = await scan_with_analyses(analyses)
+
+    merger, factory = insights_mgr.add_insight.call_args_list
+    assert [s["url"] for s in merger.args[3]] == ["https://a.example"]
+    assert [s["url"] for s in factory.args[3]] == ["https://b.example"]
+
+
+@pytest.mark.asyncio
+async def test_unattributed_storyline_falls_back_to_all_sources():
+    """Better to show every source than none when the model didn't attribute."""
+    _, insights_mgr = await scan_with_analyses([make_analysis(4, source_urls=[])])
+
+    (call,) = insights_mgr.add_insight.call_args_list
+    assert [s["url"] for s in call.args[3]] == ["https://a.example", "https://b.example"]
+
+
+@pytest.mark.asyncio
+async def test_only_below_threshold_storylines_are_dropped():
+    """A minor story alongside a major one must not suppress the major one."""
+    analyses = [make_analysis(4, headline="Major"), make_analysis(1, headline="Spam")]
+    result, insights_mgr = await scan_with_analyses(analyses)
+
+    assert result.state == "stored"
+    assert [c.kwargs["headline"] for c in insights_mgr.add_insight.call_args_list] == ["Major"]
+
+
+@pytest.mark.asyncio
+async def test_all_storylines_below_threshold_reports_below_threshold():
+    result, insights_mgr = await scan_with_analyses([make_analysis(1), make_analysis(1)])
+
+    assert result.state == "below_threshold"
+    insights_mgr.add_insight.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_keeps_even_low_significance_storylines():
+    result, insights_mgr = await scan_with_analyses(
+        [make_analysis(1, headline="Minor")], ad_hoc=True
+    )
+
+    assert result.state == "stored"
+    assert insights_mgr.add_insight.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_no_analyses_reports_analysis_failed():
+    result, insights_mgr = await scan_with_analyses([])
+
+    assert result.state == "analysis_failed"
+    insights_mgr.add_insight.assert_not_called()

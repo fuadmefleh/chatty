@@ -110,6 +110,13 @@ INSIGHT_PUSH_MIN_SIGNIFICANCE = int(os.getenv("INSIGHT_PUSH_MIN_SIGNIFICANCE", "
 # How many earlier insights on the same topic the analyzer sees, so it can
 # link a new finding to what it already surfaced.
 INSIGHT_PRIOR_CONTEXT_COUNT = int(os.getenv("INSIGHT_PRIOR_CONTEXT_COUNT", "5"))
+# A scan's findings usually span several unrelated stories, so the analyzer
+# clusters them into storylines and writes one insight per storyline. Without
+# this a broad topic ("ai") produced a single vague card per scan.
+INSIGHT_MAX_PER_SCAN = int(os.getenv("INSIGHT_MAX_PER_SCAN", "5"))
+# How many news results feed one scan. Raising this is what gives the
+# clustering step enough distinct stories to actually find.
+WORLD_WATCH_NEWS_RESULTS = int(os.getenv("WORLD_WATCH_NEWS_RESULTS", "25"))
 
 # Memory-driven watch suggestions: how often to mine long-term memory for
 # candidate topics worth proactively watching (default: weekly).

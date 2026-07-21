@@ -859,14 +859,19 @@ conversation doesn't need a response right now), reply with exactly: NONE"""
 
                         # Low-significance findings still land in the dashboard
                         # feed, but only notable ones are worth interrupting over.
-                        analysis = result.analysis
-                        if self._send_message_callback and analysis.significance >= config.INSIGHT_PUSH_MIN_SIGNIFICANCE:
+                        # One message per storyline, so a busy topic doesn't
+                        # collapse into a single undifferentiated blob.
+                        for insight in result.insights:
+                            if not self._send_message_callback:
+                                break
+                            if insight.significance < config.INSIGHT_PUSH_MIN_SIGNIFICANCE:
+                                continue
                             icon = {"stock": "📈", "github": "🐙"}.get(topic.kind, "🔭")
-                            message = f"{icon} **World Watch: {topic.topic}**\n\n{analysis.to_summary()}\n\n"
-                            message += "\n".join(f"• {s['title']}: {s['url']}" for s in result.sources)
+                            message = f"{icon} **World Watch: {topic.topic}**\n\n{insight.summary}\n\n"
+                            message += "\n".join(f"• {s['title']}: {s['url']}" for s in insight.sources)
                             await self._send_message_callback(user_id, message)
 
-                        surfaced += 1
+                        surfaced += len(result.insights)
 
                     except Exception as e:
                         heartbeat_logger.error(

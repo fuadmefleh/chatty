@@ -41,14 +41,16 @@ SCAN_STATES = (
 class ScanResult:
     """What one topic scan produced.
 
-    `analysis` is exposed so the caller can decide about notification -
-    scan_topic deliberately doesn't push.
+    A scan yields a LIST of insights: the analyzer clusters the findings into
+    distinct storylines and each becomes its own card. `analyses` is exposed
+    alongside so the caller can decide about notification - scan_topic
+    deliberately doesn't push.
     """
     state: str
     topic: str
     kind: str
-    insight: Optional[object] = None
-    analysis: Optional[object] = None
+    insights: List[object] = field(default_factory=list)
+    analyses: List[object] = field(default_factory=list)
     sources: List[Dict] = field(default_factory=list)
 
     @property
@@ -95,7 +97,9 @@ async def _fetch(kind: str, topic: str, seen_markers: List[str]) -> Optional[Dic
         return None
     return {
         "items": check["new_items"],
-        "sources": [{"title": r["title"], "url": r["link"]} for r in check["new_items"][:5]],
+        # No cap: each storyline picks its own subset out of this via
+        # _sources_for, so truncating here would strip later cards' links.
+        "sources": [{"title": r["title"], "url": r["link"]} for r in check["new_items"]],
         "markers": check["all_markers"],
         "notable": bool(check["new_items"]),
     }
@@ -123,6 +127,21 @@ async def _enrich_stock_context(
     except Exception as e:
         heartbeat_logger.warning(f"Stock news enrichment failed for '{symbol}': {e}")
         return items, sources
+
+
+def _sources_for(analysis, all_sources: List[Dict]) -> List[Dict]:
+    """Narrow a scan's sources to the ones a given storyline drew on.
+
+    Falls back to the full set when the analyzer didn't attribute any URLs -
+    showing every source beats showing none, and stock/github findings carry
+    a single source anyway.
+    """
+    if not analysis.source_urls:
+        return all_sources
+
+    wanted = set(analysis.source_urls)
+    matched = [s for s in all_sources if s.get("url") in wanted]
+    return matched or all_sources
 
 
 async def scan_topic(
@@ -173,7 +192,7 @@ async def scan_topic(
         return ScanResult(state="nothing_new", topic=topic, kind=kind)
 
     prior = insights_mgr.get_insights_by_topic(user_id, topic, config.INSIGHT_PRIOR_CONTEXT_COUNT)
-    analysis = await insight_analyzer.analyze(
+    analyses = await insight_analyzer.analyze(
         kind,
         topic,
         fetched["items"],
@@ -188,35 +207,41 @@ async def scan_topic(
         ],
     )
 
-    if analysis is None:
+    if not analyses:
         return ScanResult(state="analysis_failed", topic=topic, kind=kind)
 
     # An explicit user action always yields a result; only the scheduled
     # firehose needs a floor to stay signal-dense.
-    if not ad_hoc and analysis.significance < config.INSIGHT_MIN_SIGNIFICANCE_STORE:
-        return ScanResult(state="below_threshold", topic=topic, kind=kind, analysis=analysis)
+    if not ad_hoc:
+        keep = [a for a in analyses if a.significance >= config.INSIGHT_MIN_SIGNIFICANCE_STORE]
+        if not keep:
+            return ScanResult(state="below_threshold", topic=topic, kind=kind, analyses=analyses)
+        analyses = keep
 
-    insight = insights_mgr.add_insight(
-        user_id,
-        topic,
-        analysis.to_summary(),
-        fetched["sources"],
-        kind=kind,
-        significance=analysis.significance,
-        headline=analysis.headline,
-        what_happened=analysis.what_happened,
-        why_it_matters=analysis.why_it_matters,
-        what_to_watch=analysis.what_to_watch,
-        entities=analysis.entities,
-        connection=analysis.connection,
-        ad_hoc=ad_hoc,
-    )
+    stored = [
+        insights_mgr.add_insight(
+            user_id,
+            topic,
+            analysis.to_summary(),
+            _sources_for(analysis, fetched["sources"]),
+            kind=kind,
+            significance=analysis.significance,
+            headline=analysis.headline,
+            what_happened=analysis.what_happened,
+            why_it_matters=analysis.why_it_matters,
+            what_to_watch=analysis.what_to_watch,
+            entities=analysis.entities,
+            connection=analysis.connection,
+            ad_hoc=ad_hoc,
+        )
+        for analysis in analyses
+    ]
 
     return ScanResult(
         state="stored",
         topic=topic,
         kind=kind,
-        insight=insight,
-        analysis=analysis,
+        insights=stored,
+        analyses=analyses,
         sources=fetched["sources"],
     )

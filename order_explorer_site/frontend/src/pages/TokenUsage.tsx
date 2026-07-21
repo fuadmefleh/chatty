@@ -23,6 +23,7 @@ const RANGE_OPTIONS = [7, 30, 90] as const;
 
 const fmtTokens = (n: number): string => n.toLocaleString();
 const fmtCost = (n: number | null): string => (n === null ? '—' : `$${n < 0.01 && n > 0 ? n.toFixed(4) : n.toFixed(2)}`);
+const firstLine = (text: string): string => text.split('\n', 1)[0];
 const fmtDay = (day: string): string => new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
 const TokenUsagePage: React.FC = () => {
@@ -58,6 +59,19 @@ const TokenUsagePage: React.FC = () => {
     },
     { key: 'provider', header: 'Provider', render: (e) => <Badge tone="gold">{e.provider}</Badge> },
     { key: 'model', header: 'Model', render: (e) => <span className="font-mono text-xs text-ink-dim">{e.model}</span> },
+    {
+      key: 'prompt_preview', header: 'Prompt', className: 'max-w-[280px]',
+      render: (e) => (
+        e.prompt_preview
+          ? (
+            <span className="flex items-baseline gap-1.5">
+              <span className="font-mono text-[11px] uppercase tracking-wide text-muted">{e.prompt_role}</span>
+              <span className="block truncate text-xs text-ink-dim">{firstLine(e.prompt_preview)}</span>
+            </span>
+          )
+          : <span className="text-xs text-muted">—</span>
+      ),
+    },
     { key: 'prompt', header: 'Prompt', className: 'text-right', render: (e) => <span className="font-mono text-xs text-muted">{fmtTokens(e.prompt_tokens)}</span> },
     { key: 'completion', header: 'Completion', className: 'text-right', render: (e) => <span className="font-mono text-xs text-muted">{fmtTokens(e.completion_tokens)}</span> },
     { key: 'total', header: 'Total', className: 'text-right', render: (e) => <span className="font-mono font-bold">{fmtTokens(e.total_tokens)}</span> },
@@ -190,6 +204,20 @@ const TokenUsagePage: React.FC = () => {
               columns={recentColumns}
               rows={recent}
               rowKey={(e) => `${e.timestamp}-${e.model}`}
+              expandedContent={(e) => (
+                e.prompt_preview
+                  ? (
+                    <div>
+                      <p className="mb-2 font-mono text-[11px] uppercase tracking-wider text-muted">
+                        {e.prompt_role} · final message sent to the model
+                      </p>
+                      <pre className="m-0 max-h-[320px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-bg px-3 py-2.5 font-mono text-xs text-ink-dim">
+                        {e.prompt_preview}
+                      </pre>
+                    </div>
+                  )
+                  : <p className="m-0 text-xs text-muted">No prompt recorded for this request.</p>
+              )}
               emptyTitle="No requests logged yet"
             />
           </Card>

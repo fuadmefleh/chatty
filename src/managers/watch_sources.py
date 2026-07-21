@@ -28,9 +28,10 @@ async def check_news(topic: str, seen_markers: List[str]) -> Optional[Dict[str, 
     caller can decide whether to skip advancing last_run_at).
     """
     from skills.web_search.searxng_client import get_search_client
+    from src.core import config
 
     client = get_search_client()
-    result = await client.search_news(topic, num_results=8)
+    result = await client.search_news(topic, num_results=config.WORLD_WATCH_NEWS_RESULTS)
 
     if not result.get("success"):
         logger.warning(f"World watch news search failed for '{topic}': {result.get('error')}")

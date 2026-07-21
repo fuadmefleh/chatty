@@ -103,8 +103,7 @@ async def _run_scan(job: ScanJob, ad_hoc: bool) -> None:
                     ad_hoc=ad_hoc,
                 )
                 target.state = result.state
-                if result.insight is not None:
-                    target.insight_id = result.insight.id
+                target.insight_count = len(result.insights)
 
             except Exception as e:
                 logger.error(f"Scan failed for '{target.topic}' ({target.kind}): {e}", exc_info=True)

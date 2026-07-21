@@ -315,7 +315,9 @@ const Insights: React.FC = () => {
                   className={`font-mono text-[11.5px] ${TARGET_STATE_COLORS[target.state] ?? 'text-muted'}`}
                   title={target.error ?? undefined}
                 >
-                  {TARGET_STATE_LABELS[target.state] ?? target.state}
+                  {target.state === 'stored'
+                    ? `${target.insight_count} new insight${target.insight_count === 1 ? '' : 's'}`
+                    : TARGET_STATE_LABELS[target.state] ?? target.state}
                 </span>
               </div>
             ))}

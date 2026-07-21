@@ -11,7 +11,7 @@ from openai import (
     RateLimitError,
 )
 
-from src.core.token_usage_manager import get_token_usage_manager
+from src.core.token_usage_manager import get_token_usage_manager, summarize_last_message
 
 from .base import LLMProvider
 from .types import LLMResponse, LLMRetryableError, StreamChunk, ToolCall, ToolCallDelta, Usage
@@ -41,11 +41,13 @@ class OpenAIProvider(LLMProvider):
         # A local OpenAI-compatible server is reached via base_url; the hosted API isn't.
         self.provider_label = "local" if base_url else "openai"
 
-    def _record_usage(self, usage: Optional[Usage]) -> None:
+    def _record_usage(self, usage: Optional[Usage], messages: Optional[List[Dict]] = None) -> None:
         if usage is not None:
+            prompt_role, prompt_preview = summarize_last_message(messages)
             get_token_usage_manager().record(
                 provider=self.provider_label, model=self.model,
                 prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens,
+                prompt_role=prompt_role, prompt_preview=prompt_preview,
             )
 
     @property
@@ -70,7 +72,7 @@ class OpenAIProvider(LLMProvider):
             raise LLMRetryableError(str(e)) from e
         message = response.choices[0].message
         usage = _usage_from_response(response)
-        self._record_usage(usage)
+        self._record_usage(usage, messages)
         return LLMResponse(
             content=message.content or "",
             stop_reason=response.choices[0].finish_reason or "stop",
@@ -96,7 +98,7 @@ class OpenAIProvider(LLMProvider):
             for tc in (message.tool_calls or [])
         ]
         usage = _usage_from_response(response)
-        self._record_usage(usage)
+        self._record_usage(usage, messages)
         return LLMResponse(
             content=message.content,
             tool_calls=tool_calls,
@@ -123,7 +125,7 @@ class OpenAIProvider(LLMProvider):
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta is None:
                         # The final chunk with `include_usage` has no choices, just usage.
-                        self._record_usage(_usage_from_response(chunk))
+                        self._record_usage(_usage_from_response(chunk), messages)
                         continue
                     tool_call_deltas = []
                     if delta.tool_calls:
@@ -159,5 +161,5 @@ class OpenAIProvider(LLMProvider):
             )
         except _RETRYABLE_ERRORS as e:
             raise LLMRetryableError(str(e)) from e
-        self._record_usage(_usage_from_response(response))
+        self._record_usage(_usage_from_response(response), [{"role": "user", "content": prompt}])
         return response.choices[0].message.content or ""

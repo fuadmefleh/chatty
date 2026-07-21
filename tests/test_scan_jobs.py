@@ -108,12 +108,12 @@ def test_eviction_is_scoped_per_user(registry):
 def test_to_dict_is_json_safe(registry):
     job = registry.create("u1", "adhoc", [("TSLA", "stock")])
     job.targets[0].state = "stored"
-    job.targets[0].insight_id = "abc-123"
+    job.targets[0].insight_count = 3
 
     payload = job.to_dict()
 
     assert payload["status"] == "pending"
     assert payload["mode"] == "adhoc"
     assert payload["targets"] == [
-        {"topic": "TSLA", "kind": "stock", "state": "stored", "insight_id": "abc-123", "error": None}
+        {"topic": "TSLA", "kind": "stock", "state": "stored", "insight_count": 3, "error": None}
     ]

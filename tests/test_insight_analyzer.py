@@ -10,17 +10,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.managers import insight_analyzer
 from src.managers.insight_analyzer import Analysis
 
-VALID_JSON = """{
+ONE_INSIGHT = """{
   "headline": "Widget makers consolidate",
   "what_happened": "Two of the three largest makers merged.",
   "why_it_matters": "Pricing power shifts to a single supplier.",
   "what_to_watch": ["Regulatory response", "Price changes"],
   "entities": ["AcmeCorp", "WidgetCo"],
   "significance": 4,
+  "source_urls": ["https://a.example"],
   "connection": null
 }"""
 
-ITEMS = [{"title": "Merger announced", "snippet": "details", "link": "https://a.example"}]
+VALID_JSON = '{"insights": [%s]}' % ONE_INSIGHT
+
+ITEMS = [
+    {"title": "Merger announced", "snippet": "details", "link": "https://a.example"},
+    {"title": "Factory opens", "snippet": "unrelated story", "link": "https://b.example"},
+]
 
 
 def mock_llm(content):
@@ -43,7 +49,7 @@ def mock_llm(content):
 @pytest.mark.asyncio
 async def test_parses_well_formed_json():
     with mock_llm(VALID_JSON):
-        analysis = await insight_analyzer.analyze("news", "widgets", ITEMS)
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS)
 
     assert analysis.headline == "Widget makers consolidate"
     assert analysis.why_it_matters.startswith("Pricing power")
@@ -56,7 +62,7 @@ async def test_parses_well_formed_json():
 @pytest.mark.asyncio
 async def test_parses_json_wrapped_in_code_fences():
     with mock_llm(f"Here you go:\n```json\n{VALID_JSON}\n```"):
-        analysis = await insight_analyzer.analyze("news", "widgets", ITEMS)
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS)
 
     assert analysis.headline == "Widget makers consolidate"
 
@@ -65,9 +71,8 @@ async def test_parses_json_wrapped_in_code_fences():
 async def test_malformed_json_degrades_rather_than_dropping():
     """An unparseable response must still yield a storable, unpushed insight."""
     with mock_llm("The widget market consolidated this week and prices rose."):
-        analysis = await insight_analyzer.analyze("news", "widgets", ITEMS)
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS)
 
-    assert analysis is not None
     assert "widget market consolidated" in analysis.what_happened
     assert analysis.significance == insight_analyzer.FALLBACK_SIGNIFICANCE
 
@@ -75,7 +80,7 @@ async def test_malformed_json_degrades_rather_than_dropping():
 @pytest.mark.asyncio
 async def test_missing_optional_fields_default_cleanly():
     with mock_llm('{"what_happened": "A thing happened.", "significance": 3}'):
-        analysis = await insight_analyzer.analyze("news", "widgets", ITEMS)
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS)
 
     assert analysis.what_happened == "A thing happened."
     assert analysis.headline == "A thing happened."  # falls back to what_happened
@@ -87,7 +92,7 @@ async def test_missing_optional_fields_default_cleanly():
 @pytest.mark.asyncio
 async def test_significance_is_clamped_to_range():
     with mock_llm('{"headline": "h", "what_happened": "w", "significance": 99}'):
-        analysis = await insight_analyzer.analyze("news", "widgets", ITEMS)
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS)
 
     assert analysis.significance == 5
 
@@ -95,7 +100,7 @@ async def test_significance_is_clamped_to_range():
 @pytest.mark.asyncio
 async def test_non_numeric_significance_falls_back():
     with mock_llm('{"headline": "h", "what_happened": "w", "significance": "very high"}'):
-        analysis = await insight_analyzer.analyze("news", "widgets", ITEMS)
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS)
 
     assert analysis.significance == insight_analyzer.FALLBACK_SIGNIFICANCE
 
@@ -108,7 +113,7 @@ async def test_connection_to_known_prior_is_kept():
         ' "connection": {"prior_insight_id": "prior-1", "relation": "contradicts", "note": "Reverses it."}}'
     )
     with mock_llm(body):
-        analysis = await insight_analyzer.analyze("news", "widgets", ITEMS, prior)
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS, prior)
 
     assert analysis.connection == {
         "prior_insight_id": "prior-1",
@@ -126,7 +131,7 @@ async def test_connection_to_unknown_prior_is_dropped():
         ' "connection": {"prior_insight_id": "made-up", "relation": "follows_up", "note": "n"}}'
     )
     with mock_llm(body):
-        analysis = await insight_analyzer.analyze("news", "widgets", ITEMS, prior)
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS, prior)
 
     assert analysis.connection is None
 
@@ -139,34 +144,29 @@ async def test_unknown_relation_falls_back_to_follows_up():
         ' "connection": {"prior_insight_id": "prior-1", "relation": "invents_a_relation", "note": "n"}}'
     )
     with mock_llm(body):
-        analysis = await insight_analyzer.analyze("news", "widgets", ITEMS, prior)
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS, prior)
 
     assert analysis.connection["relation"] == "follows_up"
 
 
 @pytest.mark.asyncio
 async def test_no_items_short_circuits_without_llm_call():
-    analysis = await insight_analyzer.analyze("news", "widgets", [])
-    assert analysis is None
+    assert await insight_analyzer.analyze("news", "widgets", []) == []
 
 
 @pytest.mark.asyncio
-async def test_llm_failure_returns_none():
+async def test_llm_failure_returns_empty():
     mock_openai = MagicMock()
     mock_openai.AsyncOpenAI = MagicMock(side_effect=RuntimeError("no api key"))
 
     with patch.dict(sys.modules, {"openai": mock_openai}):
-        analysis = await insight_analyzer.analyze("news", "widgets", ITEMS)
-
-    assert analysis is None
+        assert await insight_analyzer.analyze("news", "widgets", ITEMS) == []
 
 
 @pytest.mark.asyncio
-async def test_empty_response_returns_none():
+async def test_empty_response_returns_empty():
     with mock_llm(""):
-        analysis = await insight_analyzer.analyze("news", "widgets", ITEMS)
-
-    assert analysis is None
+        assert await insight_analyzer.analyze("news", "widgets", ITEMS) == []
 
 
 @pytest.mark.asyncio
@@ -201,3 +201,92 @@ def test_to_summary_omits_empty_sections():
     summary = Analysis(headline="H", what_happened="W", significance=2).to_summary()
 
     assert summary == "H\n\nW"
+
+
+# ── Clustering into storylines ───────────────────────────────────────────────
+
+MULTI_JSON = """{"insights": [
+  {"headline": "Merger", "what_happened": "Two makers merged.", "significance": 4,
+   "source_urls": ["https://a.example"]},
+  {"headline": "Factory", "what_happened": "A plant opened.", "significance": 2,
+   "source_urls": ["https://b.example"]}
+]}"""
+
+
+@pytest.mark.asyncio
+async def test_multiple_storylines_become_multiple_analyses():
+    """The whole point: one scan's findings yield one card per distinct story."""
+    with mock_llm(MULTI_JSON):
+        analyses = await insight_analyzer.analyze("news", "widgets", ITEMS)
+
+    assert [a.headline for a in analyses] == ["Merger", "Factory"]
+    assert [a.significance for a in analyses] == [4, 2]
+
+
+@pytest.mark.asyncio
+async def test_each_storyline_keeps_only_its_own_sources():
+    with mock_llm(MULTI_JSON):
+        merger, factory = await insight_analyzer.analyze("news", "widgets", ITEMS)
+
+    assert merger.source_urls == ["https://a.example"]
+    assert factory.source_urls == ["https://b.example"]
+
+
+@pytest.mark.asyncio
+async def test_invented_source_urls_are_dropped():
+    """A URL that wasn't in the findings would render as a dead link."""
+    body = ('{"insights": [{"headline": "h", "what_happened": "w", "significance": 3,'
+            ' "source_urls": ["https://a.example", "https://invented.example"]}]}')
+    with mock_llm(body):
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS)
+
+    assert analysis.source_urls == ["https://a.example"]
+
+
+@pytest.mark.asyncio
+async def test_bare_list_response_is_accepted():
+    """Models routinely answer a list-shaped request with a bare list."""
+    with mock_llm('[{"headline": "h", "what_happened": "w", "significance": 3}]'):
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS)
+
+    assert analysis.headline == "h"
+
+
+@pytest.mark.asyncio
+async def test_unwrapped_single_object_is_accepted():
+    """Back-compat with a model that ignores the "insights" wrapper."""
+    with mock_llm(ONE_INSIGHT):
+        (analysis,) = await insight_analyzer.analyze("news", "widgets", ITEMS)
+
+    assert analysis.headline == "Widget makers consolidate"
+
+
+@pytest.mark.asyncio
+async def test_storyline_count_is_capped():
+    many = ",".join(
+        '{"headline": "h%d", "what_happened": "w", "significance": 3}' % n for n in range(20)
+    )
+    with mock_llm('{"insights": [%s]}' % many):
+        analyses = await insight_analyzer.analyze("news", "widgets", ITEMS)
+
+    from src.core import config
+    assert len(analyses) == config.INSIGHT_MAX_PER_SCAN
+
+
+@pytest.mark.asyncio
+async def test_empty_storylines_are_discarded():
+    """An entry with no content at all would render as a blank card."""
+    body = ('{"insights": [{"headline": "real", "what_happened": "w", "significance": 3},'
+            ' {"headline": "", "what_happened": "", "significance": 3}]}')
+    with mock_llm(body):
+        analyses = await insight_analyzer.analyze("news", "widgets", ITEMS)
+
+    assert [a.headline for a in analyses] == ["real"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_asks_for_distinct_storylines():
+    prompt = insight_analyzer._build_prompt("news", "widgets", ITEMS, [])
+
+    assert "DISTINCT STORYLINES" in prompt
+    assert str(insight_analyzer.config.INSIGHT_MAX_PER_SCAN) in prompt

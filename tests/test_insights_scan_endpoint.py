@@ -50,7 +50,7 @@ def patch_scan(result_state="stored"):
         "src.managers.world_watch.scan_topic",
         new_callable=AsyncMock,
         return_value=ScanResult(state=result_state, topic="ai", kind="news",
-                                insight=MagicMock(id="ins-1")),
+                                insights=[MagicMock(id="ins-1"), MagicMock(id="ins-2")]),
     )
 
 
@@ -207,7 +207,7 @@ def test_job_status_reports_per_target_progress(client, fresh_registry):
     assert body["targets"][0]["topic"] == "ai"
 
 
-def test_completed_job_records_the_stored_insight_id(client, fresh_registry):
+def test_completed_job_records_how_many_insights_were_stored(client, fresh_registry):
     with patch_topics([make_topic()]), patch_scan():
         job_id = client.post(
             "/api/chatty/insights/scan", json={"mode": "all"}, headers=_headers()
@@ -217,7 +217,8 @@ def test_completed_job_records_the_stored_insight_id(client, fresh_registry):
 
     assert body["status"] == "done"
     assert body["targets"][0]["state"] == "stored"
-    assert body["targets"][0]["insight_id"] == "ins-1"
+    # One scan clusters its findings into several storylines.
+    assert body["targets"][0]["insight_count"] == 2
 
 
 def test_a_failing_target_is_recorded_without_failing_the_job(client, fresh_registry):
