@@ -114,6 +114,11 @@ INSIGHT_PRIOR_CONTEXT_COUNT = int(os.getenv("INSIGHT_PRIOR_CONTEXT_COUNT", "5"))
 # clusters them into storylines and writes one insight per storyline. Without
 # this a broad topic ("ai") produced a single vague card per scan.
 INSIGHT_MAX_PER_SCAN = int(os.getenv("INSIGHT_MAX_PER_SCAN", "5"))
+# Each storyline gets its own LLM call; this is how many run at once.
+# Defaults to 2 to match the local llama.cpp server's slot count - queueing
+# more than the server has slots for buys nothing. Raise it alongside the
+# server's --parallel if the model moves to hardware that batches well.
+INSIGHT_ANALYSIS_CONCURRENCY = int(os.getenv("INSIGHT_ANALYSIS_CONCURRENCY", "2"))
 # How many news results feed one scan. Raising this is what gives the
 # clustering step enough distinct stories to actually find.
 WORLD_WATCH_NEWS_RESULTS = int(os.getenv("WORLD_WATCH_NEWS_RESULTS", "25"))
