@@ -1,7 +1,7 @@
 # Webcams
 
 ## Description
-Tracks a list of live public webcam sources (traffic cams, city/tourism live views, etc.) that the user has manually added or approved from an auto-discovered suggestion, and can actually pull one up so the user watches it live. Every source is fetched and checked (see `verify_status`) before it's trusted as playable - both when it's added/approved and on an ongoing daily recheck - so only links Chatty has confirmed actually work are offered for viewing.
+Tracks a list of live public webcam sources (traffic cams, city/tourism live views, etc.) that the user has manually added or approved from an auto-discovered suggestion, and can actually pull one up so the user watches it live. Every source is fetched and checked (see `verify_status`) before it's trusted as playable - both when it's added/approved and on an ongoing daily recheck - so only links Atlas has confirmed actually work are offered for viewing.
 
 New sources are managed from the dashboard's Webcams page: added manually, or discovered by a periodic background search (via SearXNG) that curates candidate webcams, verifies each one is actually playable, and only then lists it for the user to approve or dismiss.
 

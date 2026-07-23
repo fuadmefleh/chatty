@@ -1,7 +1,7 @@
 # Frontend Editor
 
 ## Description
-Tools for reading, writing, and rebuilding the Chatty Vite/React frontend application.
+Tools for reading, writing, and rebuilding the Atlas Vite/React frontend application.
 The agent can use these tools to modify the dashboard UI (pages, components, styles,
 routing) and rebuild so changes take effect.
 

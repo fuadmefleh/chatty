@@ -1,4 +1,4 @@
-"""Tests for AnthropicProvider's translation between chatty's OpenAI-shaped
+"""Tests for AnthropicProvider's translation between atlas's OpenAI-shaped
 messages/tools and Anthropic's Messages API. This is the highest-risk piece
 of the provider abstraction (system-prompt extraction, tool_result batching,
 prompt-engineered JSON mode, streaming event parsing) so it gets the most

@@ -302,7 +302,7 @@ const Transcriptions: React.FC = () => {
       />
 
       <p className="-mt-2 mb-5 text-sm leading-relaxed text-muted">
-        Raw transcriptions submitted from the iOS app. Chatty automatically mines each one into
+        Raw transcriptions submitted from the iOS app. Atlas automatically mines each one into
         long-term memory during its heartbeat, then archives it. Recordings with diarized speakers
         can be expanded to label who's who — labels apply immediately and carry over to future recordings
         of the same voice.

@@ -1,5 +1,5 @@
 """Webcams skill tools - listing known live webcam sources, and handing back
-ready-to-embed markdown so Chatty can actually pull a stream up for the user
+ready-to-embed markdown so Atlas can actually pull a stream up for the user
 instead of just describing it.
 
 Reads from the same WebcamSourcesManager/JSON file the dashboard's /webcams
@@ -25,7 +25,7 @@ class ListWebcamSourcesTool(SkillTool):
     name = "list_webcam_sources"
     description = (
         "List the user's approved/manually-added live webcam sources (name, location, kind, "
-        "url, verify_status). verify_status is 'ok' (Chatty has confirmed it's actually playable), "
+        "url, verify_status). verify_status is 'ok' (Atlas has confirmed it's actually playable), "
         "'broken' (last check failed), or 'unchecked'. Use when the user asks what webcams/live "
         "cams are available, optionally about a place. To actually show a stream to the user, "
         "use open_webcam_stream instead of building the embed yourself."
@@ -79,7 +79,7 @@ class OpenWebcamStreamTool(SkillTool):
         "describing it. Matches by name or location substring against the user's known webcam "
         "sources and returns a 'markdown' field - paste that markdown verbatim into your reply "
         "(don't rewrite it, don't wrap the link text) and it will render as a live inline player "
-        "for the user. Only offers sources Chatty has confirmed actually work "
+        "for the user. Only offers sources Atlas has confirmed actually work "
         "(verify_status == 'ok'); if none match or the match is broken/unverified, say so instead "
         "of guessing. Use when the user asks to see/watch/pull up/show a specific cam."
     )
@@ -115,7 +115,7 @@ class OpenWebcamStreamTool(SkillTool):
                 return json.dumps({
                     "success": False,
                     "error": (
-                        f"'{match.name}' is known but Chatty hasn't confirmed it's currently "
+                        f"'{match.name}' is known but Atlas hasn't confirmed it's currently "
                         f"playable (verify_status: {match.verify_status})."
                     ),
                     "url": match.url,

@@ -1,4 +1,4 @@
-"""Chatty Web Server - entrypoint that assembles the FastAPI app from
+"""Atlas Web Server - entrypoint that assembles the FastAPI app from
 src/web/ and runs it.
 
 Port: 8016

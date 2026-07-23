@@ -1,4 +1,4 @@
-"""Core modules for the chatty bot."""
+"""Core modules for the atlas bot."""
 from . import config
 from .memory import MemoryManager
 from .memory_tools import MemoryTools

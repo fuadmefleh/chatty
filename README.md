@@ -1,4 +1,4 @@
-# Chatty
+# Atlas
 
 A personal AI assistant built on a **Staged ReACT (Reasoning and Acting) agent** with dynamically loaded **skills**. It runs as a Telegram bot (and/or web chat) with persistent per-user memory, background "heartbeat" tasks, and pluggable integrations (Gmail, Amazon/Walmart order tracking, budgeting via Plaid/RocketMoney, notes, reminders, weather, web search, and more) — plus a web dashboard for browsing all of it.
 
@@ -27,7 +27,7 @@ flowchart LR
     TG <--> BOT
     WEB <-->|REST + WebSocket| WS
 
-    subgraph core [Chatty core]
+    subgraph core [Atlas core]
         BOT["chatty-bot\nsrc/main.py"]
         WS["chatty-web-server\nchatty_web_server.py"]
         AGENT["StagedReACTAgent\n(7-stage ReACT pipeline)"]

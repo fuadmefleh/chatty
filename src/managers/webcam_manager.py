@@ -3,7 +3,7 @@ cams, city/tourism live views, etc.) plus a queue of auto-discovered
 candidates awaiting review.
 
 Two related stores live here because approving a suggestion writes to both:
-- WebcamSourcesManager - the actual list Chatty knows about (data/webcam_sources/sources.json).
+- WebcamSourcesManager - the actual list Atlas knows about (data/webcam_sources/sources.json).
 - WebcamSuggestionsManager - candidates found by src/managers/webcam_discovery.py's
   SearXNG-driven scan, reviewed via the dashboard's /webcams page
   (data/webcam_sources/suggestions.json).
@@ -31,7 +31,7 @@ VERIFY_STATUSES = ("ok", "broken", "unchecked")
 
 
 class WebcamSource:
-    """A single webcam Chatty knows about."""
+    """A single webcam Atlas knows about."""
 
     def __init__(
         self,

@@ -248,12 +248,12 @@ const Webcams: React.FC = () => {
         }
       />
       <p className="-mt-4 mb-6 text-sm text-muted">
-        Add live webcam sources yourself, or let Chatty search Reddit, forums, and the web (via
+        Add live webcam sources yourself, or let Atlas search Reddit, forums, and the web (via
         SearXNG) for promising ones every few hours - nothing is added automatically, review and{' '}
         <strong>Approve</strong> suggestions below. Every link is fetched and checked before it's
         saved (see the <strong>ok / broken / unchecked</strong> badge), and a background recheck
         keeps that status current. Click <strong>Watch</strong> on a verified source to view it
-        live, or ask Chatty to pull one up in chat.
+        live, or ask Atlas to pull one up in chat.
       </p>
 
       <h2 className="mb-3 font-display text-lg">My Sources</h2>

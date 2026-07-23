@@ -1,6 +1,6 @@
 """Queue manager for VS Code bridge requests.
 
-Manages a JSON file queue that both the Chatty bot and VS Code extension
+Manages a JSON file queue that both the Atlas bot and VS Code extension
 read/write to coordinate code change requests.
 """
 import json
@@ -15,7 +15,7 @@ QUEUE_FILE = Path(__file__).parent.parent.parent / "data" / "vscode_requests.jso
 
 
 class VSCodeRequestQueue:
-    """File-based queue for code change requests between Chatty and VS Code."""
+    """File-based queue for code change requests between Atlas and VS Code."""
 
     def __init__(self, queue_file: Path = QUEUE_FILE):
         self.queue_file = queue_file

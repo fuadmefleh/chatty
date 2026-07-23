@@ -37,9 +37,9 @@ def _normalize_segments(result: TranscriptionResult) -> Optional[List[dict]]:
 
 
 # ── Assistant mode (wake-word push over the chat WebSocket) ─────────────────
-_WAKE_WORD_RE = re.compile(r"\bchatty\b", re.IGNORECASE)
+_WAKE_WORD_RE = re.compile(r"\batlas\b", re.IGNORECASE)
 _ASSISTANT_FALLBACK_PROMPT = (
-    "The user just said your name (\"Chatty\") in this audio chunk with nothing "
+    "The user just said your name (\"Atlas\") in this audio chunk with nothing "
     "obvious following it. Check recent conversation context for what they might "
     "want; if nothing fits, just give a brief, natural acknowledgment like "
     "\"Yeah?\" or \"What's up?\" inviting them to continue."
@@ -47,9 +47,9 @@ _ASSISTANT_FALLBACK_PROMPT = (
 
 
 def _extract_assistant_query(transcript: str) -> Optional[str]:
-    """Return the text after the first "chatty" mention (trimmed), or None if
-    "chatty" doesn't appear at all. An empty string (as opposed to None) means
-    "chatty" was said with nothing following it - callers should treat that as
+    """Return the text after the first "atlas" mention (trimmed), or None if
+    "atlas" doesn't appear at all. An empty string (as opposed to None) means
+    "atlas" was said with nothing following it - callers should treat that as
     a contentless wake word, not "no wake word", and fall back accordingly."""
     match = _WAKE_WORD_RE.search(transcript)
     if not match:

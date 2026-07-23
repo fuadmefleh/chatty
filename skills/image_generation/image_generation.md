@@ -2,7 +2,7 @@
 
 ## Description
 Generates images from text prompts using OpenAI's `gpt-image-1` model. Use whenever the user
-asks Chatty to create, draw, generate, or make a picture/image/illustration/photo of something.
+asks Atlas to create, draw, generate, or make a picture/image/illustration/photo of something.
 
 ## Usage
 Call `generate_image` with a detailed prompt. It returns a URL to the generated image - embed it

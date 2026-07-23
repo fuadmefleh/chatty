@@ -151,8 +151,8 @@ const Requests: React.FC = () => {
       />
       <p className="-mt-4 mb-6 text-sm text-muted">
         Describe a feature or fix. It's routed to the local Pi coding agent (qwen3.6-27b),
-        which edits the Chatty codebase directly. Entries marked 🤖 self-upgrade were proposed by
-        Chatty's own heartbeat - those run in an isolated branch, must pass the test suite, and
+        which edits the Atlas codebase directly. Entries marked 🤖 self-upgrade were proposed by
+        Atlas's own heartbeat - those run in an isolated branch, must pass the test suite, and
         only then auto-merge and restart the affected services on their own.
       </p>
 

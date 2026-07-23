@@ -139,7 +139,7 @@ HOME_LOCATION = os.getenv("HOME_LOCATION", "")
 # for standing up a dedicated instance if you don't have one.
 SEARXNG_BASE_URL = os.getenv("SEARXNG_BASE_URL", "http://localhost:8081")
 
-# Self-Upgrade Configuration: Chatty periodically thinks of improvements to
+# Self-Upgrade Configuration: Atlas periodically thinks of improvements to
 # make to its own codebase (see src/managers/self_upgrade_manager.py). Each
 # idea is implemented in an isolated git worktree/branch, tested, and only
 # merged into main + auto-restarted if the test gate passes and main has no
@@ -167,7 +167,7 @@ WHATSAPP_AUTO_REPLY_DAILY_LIMIT = int(os.getenv("WHATSAPP_AUTO_REPLY_DAILY_LIMIT
 # container. Outside Docker this directory is effectively unused.
 RESTART_REQUESTS_DIR = Path(os.getenv("RESTART_REQUESTS_DIR", str(BASE_DIR / "restart_requests")))
 
-# Trending Suggestions Configuration: Chatty periodically scans GitHub's
+# Trending Suggestions Configuration: Atlas periodically scans GitHub's
 # trending repos (see src/managers/trending_manager.py) and curates a short
 # list of ideas worth considering. Unlike self-upgrade, nothing here is ever
 # implemented automatically - it's just a menu on the dashboard the user picks
@@ -178,7 +178,7 @@ TRENDING_SCAN_INTERVAL_HOURS = int(os.getenv("TRENDING_SCAN_INTERVAL_HOURS", "6"
 TRENDING_REPOS_PER_LANGUAGE = int(os.getenv("TRENDING_REPOS_PER_LANGUAGE", "10"))
 TRENDING_MAX_SUGGESTIONS_PER_SCAN = int(os.getenv("TRENDING_MAX_SUGGESTIONS_PER_SCAN", "4"))
 
-# Webcam Discovery Configuration: Chatty periodically searches (via the
+# Webcam Discovery Configuration: Atlas periodically searches (via the
 # SearXNG integration above) for promising public live-webcam pages/threads
 # and asks an LLM to curate best-effort suggestions (name/url/kind/location
 # guessed from search snippets) - see src/managers/webcam_discovery.py.

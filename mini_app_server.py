@@ -1,7 +1,5 @@
 """Unified Flask web server for all Mini Apps."""
-import os
 import sys
-import json
 import logging
 from pathlib import Path
 
@@ -41,7 +39,7 @@ def index():
             {'name': 'Notes', 'path': '/notes'},
             # Add more mini apps here as they're developed
         ],
-        'message': 'Chatty Mini Apps Server'
+        'message': 'Atlas Mini Apps Server'
     })
 
 

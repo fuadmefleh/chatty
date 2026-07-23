@@ -1,4 +1,4 @@
-"""Web Chat Agent - a simplified agent for the Chatty web dashboard.
+"""Web Chat Agent - a simplified agent for the Atlas web dashboard.
 
 Unlike StagedReACTAgent (which has 7 stages and Telegram-specific code),
 this agent uses a direct function-calling loop:
@@ -22,7 +22,7 @@ from src.core.skills_manager import SkillsManager
 
 MAX_TOOL_ITERATIONS = 8
 MAX_HISTORY = 20  # messages kept in sliding window
-SYSTEM_PROMPT = """You are Chatty, a helpful AI assistant accessible via a web dashboard. \
+SYSTEM_PROMPT = """You are Atlas, a helpful AI assistant accessible via a web dashboard. \
 You have access to skills and tools to help the user with notes, orders, budget, reminders, \
 web search, and more. Be concise, friendly, and helpful. \
 When using tools, act on the results and provide a clear, direct answer."""

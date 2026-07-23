@@ -1,1 +1,1 @@
-"""Tests for the chatty bot."""
+"""Tests for the atlas bot."""

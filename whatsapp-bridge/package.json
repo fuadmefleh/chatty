@@ -2,7 +2,7 @@
   "name": "whatsapp-bridge",
   "version": "1.0.0",
   "private": true,
-  "description": "Local HTTP bridge exposing a Baileys WhatsApp Web session to the Chatty Python backend.",
+  "description": "Local HTTP bridge exposing a Baileys WhatsApp Web session to the Atlas Python backend.",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {

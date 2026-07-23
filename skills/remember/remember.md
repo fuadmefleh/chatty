@@ -11,5 +11,5 @@ To use: "Remember: [important information]"
 ## Examples
 - "Remember: User's birthday is March 15th"
 - "Remember: User prefers Python over JavaScript"
-- "Remember: User is working on a project called Chatty"
+- "Remember: User is working on a project called Atlas"
 - "Remember: User's favorite color is blue"

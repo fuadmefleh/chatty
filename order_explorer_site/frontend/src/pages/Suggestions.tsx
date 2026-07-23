@@ -129,7 +129,7 @@ const Suggestions: React.FC = () => {
         }
       />
       <p className="-mt-4 mb-6 text-sm text-muted">
-        Every few hours, Chatty scans GitHub's trending Python, TypeScript, and JavaScript
+        Every few hours, Atlas scans GitHub's trending Python, TypeScript, and JavaScript
         repos and curates a short list of ideas worth considering. Nothing is built
         automatically - pick <strong>Implement</strong> to route an idea through the same
         Pi coding-agent pipeline as a feature request, or <strong>Dismiss</strong> to hide it.

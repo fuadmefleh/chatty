@@ -1,4 +1,4 @@
-# Chatty Bot - AI Telegram Assistant
+# Atlas Bot - AI Telegram Assistant
 
 ## Project Overview
 

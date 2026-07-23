@@ -1,9 +1,9 @@
 {
   "name": "chatty-bridge",
-  "displayName": "Chatty Bridge",
-  "description": "Bridge between Chatty Telegram bot and VS Code Copilot agent. Receives code change requests from Telegram and sends them to Copilot.",
+  "displayName": "Atlas Bridge",
+  "description": "Bridge between Atlas Telegram bot and VS Code Copilot agent. Receives code change requests from Telegram and sends them to Copilot.",
   "version": "1.0.0",
-  "publisher": "chatty",
+  "publisher": "atlas",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -16,32 +16,32 @@
     "commands": [
       {
         "command": "chatty-bridge.checkNow",
-        "title": "Chatty Bridge: Check for Requests"
+        "title": "Atlas Bridge: Check for Requests"
       },
       {
         "command": "chatty-bridge.completeRequest",
-        "title": "Chatty Bridge: Mark Current Request Completed"
+        "title": "Atlas Bridge: Mark Current Request Completed"
       },
       {
         "command": "chatty-bridge.failRequest",
-        "title": "Chatty Bridge: Mark Current Request Failed"
+        "title": "Atlas Bridge: Mark Current Request Failed"
       },
       {
         "command": "chatty-bridge.togglePolling",
-        "title": "Chatty Bridge: Toggle Auto-Polling"
+        "title": "Atlas Bridge: Toggle Auto-Polling"
       },
       {
         "command": "chatty-bridge.showQueue",
-        "title": "Chatty Bridge: Show Request Queue"
+        "title": "Atlas Bridge: Show Request Queue"
       }
     ],
     "configuration": {
-      "title": "Chatty Bridge",
+      "title": "Atlas Bridge",
       "properties": {
         "chattyBridge.apiUrl": {
           "type": "string",
           "default": "http://localhost:5001",
-          "description": "URL of the Chatty mini app server"
+          "description": "URL of the Atlas mini app server"
         },
         "chattyBridge.pollInterval": {
           "type": "number",

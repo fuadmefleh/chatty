@@ -1,4 +1,4 @@
-"""Self-upgrade pipeline: Chatty thinks up improvements to its own codebase
+"""Self-upgrade pipeline: Atlas thinks up improvements to its own codebase
 and implements them autonomously, with safety rails.
 
 Flow, driven by HeartbeatManager._process_self_upgrade_ideas():
@@ -371,7 +371,7 @@ async def generate_self_upgrade_idea(skills_manager, memory_manager, feature_req
         except Exception:
             pass
 
-        prompt = f"""You are Chatty, a personal AI assistant, reflecting on your own capabilities as
+        prompt = f"""You are Atlas, a personal AI assistant, reflecting on your own capabilities as
 part of your autonomous heartbeat. Come up with ONE concrete, scoped improvement you could make to
 your own codebase - a new skill, a bug fix, or a UX improvement. It must be small enough for a
 single coding-agent session to implement and test in one sitting (not a multi-day project), and

@@ -1,6 +1,6 @@
-# Chatty API Reference (for the iOS App)
+# Atlas API Reference (for the iOS App)
 
-This document describes the Chatty backend API contract for building a native iOS
+This document describes the Atlas backend API contract for building a native iOS
 client. It covers the REST endpoints, authentication, and the WebSocket chat
 protocol, with Swift examples to get an iOS client started quickly.
 
@@ -136,7 +136,7 @@ WebSocket chat connection described below (chat) or fire-and-forget upload
 
 Transcriptions are a separate resource from notes, purpose-built for the iOS
 app: submit raw transcribed text (e.g. from a voice memo, dictated via
-`SFSpeechRecognizer`) via `POST /api/chatty/transcriptions`, and chatty's
+`SFSpeechRecognizer`) via `POST /api/chatty/transcriptions`, and atlas's
 heartbeat automatically mines every pending transcription on its next cycle,
 extracting anything long-term-memory-worthy (preferences, facts, goals,
 relationships, recurring topics, insights) into long-term memory. Once mined,
@@ -148,7 +148,7 @@ staging area, not an editable note.
 There are two ways a transcription ends up in that queue: the app transcribes
 locally (e.g. `SFSpeechRecognizer`) and posts the text directly to
 `POST /api/chatty/transcriptions`, or the app uploads raw audio chunks to
-`POST /api/chatty/audio` (below) and chatty transcribes them server-side.
+`POST /api/chatty/audio` (below) and atlas transcribes them server-side.
 Either way, everything downstream (heartbeat mining, archiving) is identical.
 
 ### Audio ingestion
@@ -207,13 +207,13 @@ X-Mode: assistant
 ```
 
 The server still runs STT on the chunk as usual, then checks whether the
-transcript mentions "chatty" (case-insensitive):
+transcript mentions "atlas" (case-insensitive):
 
 - **No mention:** identical to a non-assistant chunk — transcribed and queued
   for the heartbeat's memory mining, nothing pushed.
-- **Mentioned:** the text after the first "chatty" becomes the query (or, if
+- **Mentioned:** the text after the first "atlas" becomes the query (or, if
   nothing follows, the server falls back to recent context/a short
-  acknowledgment). Chatty answers it using the same agent/memory context as
+  acknowledgment). Atlas answers it using the same agent/memory context as
   the chat WebSocket, and streams the answer over that device's **open**
   `/api/chatty/chat` connection unprompted — the app never sends a
   `{"message": ...}` frame to trigger it. This chunk is *not* added to the

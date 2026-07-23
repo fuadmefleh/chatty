@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Add project root to path (go up 3 levels: link_account.py -> plaid -> skills -> chatty)
+# Add project root to path (go up 3 levels: link_account.py -> plaid -> skills -> atlas)
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 

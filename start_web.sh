@@ -1,5 +1,5 @@
 #!/bin/bash
-# start_web.sh — Start the Chatty web stack
+# start_web.sh — Start the Atlas web stack
 #   - chatty-web-server  (FastAPI, port 8016)
 #   - order-explorer-backend (FastAPI/uvicorn, port 8015)
 #   - order-explorer-frontend (Vite dev server, port 5173)
@@ -114,10 +114,10 @@ done
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════${NC}"
-echo -e "${GREEN}  Chatty Web Stack running!${NC}"
+echo -e "${GREEN}  Atlas Web Stack running!${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════${NC}"
 echo -e "  Dashboard:    ${CYAN}http://localhost:5173${NC}"
-echo -e "  Chatty API:   ${CYAN}http://localhost:8016${NC}"
+echo -e "  Atlas API:   ${CYAN}http://localhost:8016${NC}"
 echo -e "  Orders API:   ${CYAN}http://localhost:8015${NC}"
 echo ""
 echo -e "  Logs:         ${YELLOW}tail -f logs/chatty-web-out.log${NC}"

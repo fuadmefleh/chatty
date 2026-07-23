@@ -12,7 +12,7 @@ interface AuthGateProps {
 const GROUP_BLURB: Record<string, string> = {
   ledger: 'Household spending, orders, budgets and recurring charges, tracked automatically.',
   training: 'Workouts, exercises and progress, logged and charted over time.',
-  assistant: "Chat, notes, transcriptions, memory and reminders — Chatty's own brain.",
+  assistant: "Chat, notes, transcriptions, memory and reminders — Atlas's own brain.",
 };
 
 type HealthState = 'checking' | 'online' | 'offline';
@@ -69,7 +69,7 @@ const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
         setApiKey(inputKey);
       }
     } catch {
-      setError('Cannot reach the Chatty API server. Make sure it is running on port 8016.');
+      setError('Cannot reach the Atlas API server. Make sure it is running on port 8016.');
     } finally {
       setLoading(false);
     }
@@ -87,7 +87,7 @@ const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
           <span className="h-0.5 bg-signal" />
           <span className="h-0.5 w-3/5 bg-alert-red" />
         </div>
-        <h1 className="mb-1.5 font-display text-[26px] font-bold tracking-wide text-ink">Chatty</h1>
+        <h1 className="mb-1.5 font-display text-[26px] font-bold tracking-wide text-ink">Atlas</h1>
         <p className="max-w-md font-mono text-xs uppercase tracking-wider text-muted">
           Personal assistant &amp; household dashboard
         </p>

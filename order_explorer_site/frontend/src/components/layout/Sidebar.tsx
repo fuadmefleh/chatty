@@ -47,7 +47,7 @@ const Sidebar: React.FC = () => {
           <span className="font-semibold text-signal">C</span>
         ) : (
           <>
-            CHATTY <span className="ml-1 text-muted">/ ops</span>
+            ATLAS <span className="ml-1 text-muted">/ ops</span>
           </>
         )}
       </div>

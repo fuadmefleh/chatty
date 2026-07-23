@@ -1,6 +1,6 @@
 # Security Policy
 
-Chatty is a personal AI assistant that integrates with sensitive accounts
+Atlas is a personal AI assistant that integrates with sensitive accounts
 and data (email, banking/Plaid, order history, messages, memory storage).
 If you find a security vulnerability, please report it privately rather
 than opening a public issue.
@@ -29,7 +29,7 @@ for a fix before any public disclosure.
 
 ## Docker deployment: the `restarter` sidecar and the Docker socket
 
-The self-upgrade feature (`src/managers/self_upgrade_manager.py`) lets Chatty
+The self-upgrade feature (`src/managers/self_upgrade_manager.py`) lets Atlas
 propose and merge code changes to itself, then needs to restart whichever
 services were affected. Under Docker (see `docker-compose.yml`), this is
 handled by a small `restarter` sidecar container that is **the only

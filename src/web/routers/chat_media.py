@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/chatty", tags=["chat_media"])
 
 # ── Interactive chat media ───────────────────────────────────────────────────
 # Images/videos the user attaches to a live chat message (see chat_ws.py), and
-# images Chatty generates (skills/image_generation/). Distinct from the
+# images Atlas generates (skills/image_generation/). Distinct from the
 # passive ingestion endpoint (routers/media.py): these are part of a live turn
 # and get served straight back to the browser rather than mined into memory.
 _CHAT_MEDIA_FILENAME_RE = config.CHAT_MEDIA_FILENAME_RE

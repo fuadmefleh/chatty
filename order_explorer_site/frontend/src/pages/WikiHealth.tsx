@@ -46,7 +46,7 @@ const ContradictionCard: React.FC<{
       {response && (
         <div className="mb-3 rounded-lg border border-line bg-surface-dim px-3 py-2.5 text-sm text-ink">
           <p className="mb-1 flex items-center justify-between gap-2 font-mono text-[11px] font-semibold uppercase tracking-wider text-signal">
-            Chatty
+            Atlas
             <button type="button" onClick={onDismiss} className="normal-case text-muted hover:text-ink">
               Dismiss
             </button>
@@ -59,7 +59,7 @@ const ContradictionCard: React.FC<{
         <textarea
           value={guidance}
           onChange={(e) => setGuidance(e.target.value)}
-          placeholder="Tell Chatty how to resolve this, e.g. &quot;There are only 2 children - fix Important Facts&quot;…"
+          placeholder="Tell Atlas how to resolve this, e.g. &quot;There are only 2 children - fix Important Facts&quot;…"
           rows={2}
           disabled={resolving}
           className="w-full flex-1 resize-vertical rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-signal disabled:opacity-60"
@@ -70,7 +70,7 @@ const ContradictionCard: React.FC<{
           disabled={resolving || !guidance.trim()}
           className="h-9 shrink-0 self-start rounded-lg bg-signal px-4 text-sm font-bold text-white disabled:opacity-60 sm:self-end"
         >
-          {resolving ? 'Sending…' : 'Send to Chatty'}
+          {resolving ? 'Sending…' : 'Send to Atlas'}
         </button>
       </div>
       {resolving && <p className="mt-2 text-xs text-muted">This can take a couple of minutes to process.</p>}

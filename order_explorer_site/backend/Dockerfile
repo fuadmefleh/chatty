@@ -1,4 +1,4 @@
-# Lightweight image for order-explorer-backend - pure Python, reads chatty's
+# Lightweight image for order-explorer-backend - pure Python, reads atlas's
 # SQLite files directly via stdlib sqlite3, no compiler toolchain or Node
 # needed at all.
 FROM python:3.12-slim

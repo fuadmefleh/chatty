@@ -78,7 +78,7 @@ const Speakers: React.FC = () => {
       <PageHeader eyebrow="Assistant / Speakers" eyebrowColor="var(--signal)" title="Speakers" />
 
       <p className="-mt-2 mb-5 text-sm leading-relaxed text-muted">
-        Named voices Chatty recognizes across recordings — like tagging faces in photos. New people are
+        Named voices Atlas recognizes across recordings — like tagging faces in photos. New people are
         added from the Transcriptions page by labeling a speaker in a recording; once added, their voice
         is recognized automatically in future recordings.
       </p>

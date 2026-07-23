@@ -1,4 +1,4 @@
-"""Frontend editor tools for the Chatty Vite/React dashboard."""
+"""Frontend editor tools for the Atlas Vite/React dashboard."""
 import asyncio
 import json
 import logging

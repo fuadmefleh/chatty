@@ -1,4 +1,4 @@
-"""Webcam discovery: Chatty searches (via the already-integrated SearXNG
+"""Webcam discovery: Atlas searches (via the already-integrated SearXNG
 instance) for pages likely to mention or link a live public webcam - Reddit
 threads, forum posts, city/DOT traffic-camera portals - and asks an LLM to
 curate a short list of best-effort suggestions worth a human's review.
@@ -103,7 +103,7 @@ async def _curate_suggestions(candidates: List[Dict], max_suggestions: int) -> L
             for c in candidates
         )
 
-        prompt = f"""You are Chatty, a personal AI assistant, looking for live public webcams (traffic
+        prompt = f"""You are Atlas, a personal AI assistant, looking for live public webcams (traffic
 cams, city/tourism live views, etc.) to add to a watch list, as part of your autonomous heartbeat.
 Below are web search results from queries targeting Reddit threads, forums, and general web pages
 that might mention or link to one.

@@ -65,7 +65,7 @@ const Reminders: React.FC = () => {
         }
       />
       <p className="-mt-4 mb-6 text-sm text-muted">
-        Set reminders by asking Chatty in the chat.
+        Set reminders by asking Atlas in the chat.
       </p>
 
       {error && <p className="mb-4 text-sm text-alert-red">{error}</p>}

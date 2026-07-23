@@ -1,4 +1,4 @@
-"""Trending-repo suggestions: Chatty scans GitHub's trending Python/TypeScript/
+"""Trending-repo suggestions: Atlas scans GitHub's trending Python/TypeScript/
 JavaScript repos, asks an LLM to curate a short list of ideas worth considering
 for its own codebase, and stores them as a menu for a human to review.
 
@@ -293,7 +293,7 @@ def _extract_json_array(text: str) -> Optional[list]:
 
 async def _curate_ideas(repos: List[Dict], skills_manager) -> List[Dict]:
     """Ask the LLM to pick a handful of scanned repos worth integrating into
-    Chatty, each with a rationale and a ready-to-use coding-agent prompt."""
+    Atlas, each with a rationale and a ready-to-use coding-agent prompt."""
     if not repos:
         return []
 
@@ -313,7 +313,7 @@ async def _curate_ideas(repos: List[Dict], skills_manager) -> List[Dict]:
 
         max_ideas = config.TRENDING_MAX_SUGGESTIONS_PER_SCAN
 
-        prompt = f"""You are Chatty, a personal AI assistant, looking outward for ideas as part of
+        prompt = f"""You are Atlas, a personal AI assistant, looking outward for ideas as part of
 your autonomous heartbeat. Below is a list of repositories currently trending on GitHub (past
 week) across Python, TypeScript, and JavaScript, each with a README excerpt where one was found.
 
@@ -328,7 +328,7 @@ your own codebase - not every trending repo is relevant, and it's fine to pick f
 {max_ideas} or none at all.
 
 Each idea MUST be a whole feature with both backend and frontend integration, not just a bare
-`skills/` tool exposed only through chat. Chatty's web dashboard (order_explorer_site/frontend/)
+`skills/` tool exposed only through chat. Atlas's web dashboard (order_explorer_site/frontend/)
 already has plenty of precedent for this shape - a dedicated page wired through chattyApi.ts and
 added to the nav, backed by REST endpoints in chatty_web_server.py (or a skill's own module): the
 Webcams page, the Video Production page (skills/video_production/ + its job-history UI), the

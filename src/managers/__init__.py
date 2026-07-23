@@ -1,4 +1,4 @@
-"""Manager modules for the chatty bot."""
+"""Manager modules for the atlas bot."""
 from .heartbeat_manager import HeartbeatManager
 from .reminder_manager import ReminderManager
 

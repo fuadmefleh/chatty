@@ -60,7 +60,7 @@ const CodeBlock: React.FC<{ className?: string; children?: React.ReactNode; stre
 const WIKI_LINK_RE = /^pages\/(entities|concepts)\/([^/]+)\.md$/;
 const TYPE_FROM_DIR: Record<string, string> = { entities: 'entity', concepts: 'concept' };
 
-// Chatty's webcam skill emits links of this exact shape (see
+// Atlas's webcam skill emits links of this exact shape (see
 // skills/webcams/tools.py's open_webcam_stream) when it wants to show a live
 // stream inline rather than just link out to it - intercept them the same
 // way wiki links are intercepted above, and render an actual embedded player

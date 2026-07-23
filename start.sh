@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Chatty Bot Startup Script
+# Atlas Bot Startup Script
 
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}Starting Chatty Bot...${NC}"
+echo -e "${GREEN}Starting Atlas Bot...${NC}"
 
 # Check if virtual environment exists
 if [ -d "venv" ]; then

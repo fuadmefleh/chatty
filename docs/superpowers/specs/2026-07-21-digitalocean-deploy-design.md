@@ -6,17 +6,17 @@
 ## Goal
 
 Let a stranger go from a fresh DigitalOcean droplet to a working, HTTPS-secured
-Chatty instance with one command, without reading the source to figure out which
+Atlas instance with one command, without reading the source to figure out which
 of the ~60 environment variables actually matter.
 
-Chatty already has a competent `docker-compose.yml` — six services, nginx
+Atlas already has a competent `docker-compose.yml` — six services, nginx
 routing, healthcheck-gated startup. The gap is not orchestration. It is that the
 documented happy path produces an **insecure** instance, and that several
 defaults point at services a fresh droplet does not run.
 
 ## Non-goals
 
-- **Multi-tenancy.** Chatty is single-user by design (`WEB_USER_ID` is one global
+- **Multi-tenancy.** Atlas is single-user by design (`WEB_USER_ID` is one global
   string; there is no user table). Nothing here changes that.
 - **DigitalOcean App Platform.** Architecturally incompatible: self-upgrade needs
   a live bind-mounted git repo, the restarter sidecar needs the Docker socket,

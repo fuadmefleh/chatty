@@ -39,13 +39,13 @@ const WORKSPACE_ROOT = '/home/edgeworks-server/chatty';
  * @param {vscode.ExtensionContext} context
  */
 function activate(context) {
-    outputChannel = vscode.window.createOutputChannel('Chatty Bridge');
-    log('Chatty Bridge extension activated');
+    outputChannel = vscode.window.createOutputChannel('Atlas Bridge');
+    log('Atlas Bridge extension activated');
 
     // Status bar
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     statusBarItem.command = 'chatty-bridge.showQueue';
-    statusBarItem.tooltip = 'Chatty Bridge - Click to show queue';
+    statusBarItem.tooltip = 'Atlas Bridge - Click to show queue';
     updateStatusBar('idle');
     statusBarItem.show();
 
@@ -104,10 +104,10 @@ function stopPolling() {
 function togglePolling() {
     if (pollTimer) {
         stopPolling();
-        vscode.window.showInformationMessage('Chatty Bridge: Polling stopped');
+        vscode.window.showInformationMessage('Atlas Bridge: Polling stopped');
     } else {
         startPolling();
-        vscode.window.showInformationMessage('Chatty Bridge: Polling started');
+        vscode.window.showInformationMessage('Atlas Bridge: Polling started');
     }
 }
 
@@ -138,7 +138,7 @@ async function checkForRequests() {
             await processRequest(request);
         } else {
             const action = await vscode.window.showInformationMessage(
-                `Chatty code request: ${request.message.substring(0, 100)}${request.message.length > 100 ? '...' : ''}`,
+                `Atlas code request: ${request.message.substring(0, 100)}${request.message.length > 100 ? '...' : ''}`,
                 'Send to Copilot',
                 'Dismiss'
             );
@@ -307,7 +307,7 @@ async function autoCompleteRequest(requestId) {
     currentRequestId = undefined;
     updateStatusBar('polling');
     log(`Request ${requestId.substring(0, 8)}... auto-completed`);
-    vscode.window.showInformationMessage(`Chatty request auto-completed. ${changedFiles.size} file(s) changed.`);
+    vscode.window.showInformationMessage(`Atlas request auto-completed. ${changedFiles.size} file(s) changed.`);
 }
 
 async function generateChangeSummary() {
@@ -399,7 +399,7 @@ async function triggerRestart(services) {
 
 function buildCopilotPrompt(request) {
     return [
-        `The following is a code change request from the Chatty bot user (sent via Telegram).`,
+        `The following is a code change request from the Atlas bot user (sent via Telegram).`,
         `Please implement the requested changes in the workspace.`,
         ``,
         `## Request`,
@@ -408,7 +408,7 @@ function buildCopilotPrompt(request) {
         `## Context`,
         `- Request ID: ${request.id}`,
         `- Workspace: /home/edgeworks-server/chatty`,
-        `- This is the Chatty bot codebase (Telegram bot with ReACT agent, skills system, memory system)`,
+        `- This is the Atlas bot codebase (Telegram bot with ReACT agent, skills system, memory system)`,
         ``,
         `After making changes, provide a brief summary of what was changed.`
     ].join('\n');
@@ -480,7 +480,7 @@ async function showQueue() {
         const data = await apiGet('/api/vscode/requests');
 
         if (!data.success || !data.requests || data.requests.length === 0) {
-            vscode.window.showInformationMessage('Chatty Bridge: No requests in queue');
+            vscode.window.showInformationMessage('Atlas Bridge: No requests in queue');
             return;
         }
 
@@ -493,7 +493,7 @@ async function showQueue() {
 
         const selected = await vscode.window.showQuickPick(items, {
             placeHolder: 'VS Code Bridge Request Queue',
-            title: 'Chatty Code Requests'
+            title: 'Atlas Code Requests'
         });
 
         if (selected) {
@@ -525,19 +525,19 @@ function statusIcon(status) {
 function updateStatusBar(state) {
     switch (state) {
         case 'polling':
-            statusBarItem.text = '$(radio-tower) Chatty';
+            statusBarItem.text = '$(radio-tower) Atlas';
             statusBarItem.backgroundColor = undefined;
             break;
         case 'processing':
-            statusBarItem.text = '$(sync~spin) Chatty';
+            statusBarItem.text = '$(sync~spin) Atlas';
             statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
             break;
         case 'stopped':
-            statusBarItem.text = '$(circle-slash) Chatty';
+            statusBarItem.text = '$(circle-slash) Atlas';
             statusBarItem.backgroundColor = undefined;
             break;
         case 'idle':
-            statusBarItem.text = '$(radio-tower) Chatty';
+            statusBarItem.text = '$(radio-tower) Atlas';
             statusBarItem.backgroundColor = undefined;
             break;
     }

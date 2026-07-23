@@ -159,7 +159,7 @@ const WikiReorganize: React.FC = () => {
 
       <p className="mb-5 max-w-[65ch] text-sm text-ink-dim">
         Splits lumped pages (e.g. a single "Relationships" page) into dedicated pages per person, child,
-        or place. Chatty drafts the new pages from your existing content - nothing is deleted, so you can
+        or place. Atlas drafts the new pages from your existing content - nothing is deleted, so you can
         compare old and new and remove the stale lumped pages yourself once you're satisfied. Both steps
         run in the background - feel free to leave this page and check back later.
       </p>
@@ -182,11 +182,11 @@ const WikiReorganize: React.FC = () => {
       ) : targetPages === null ? (
         <EmptyState
           title="No proposal yet"
-          description="Click &quot;Propose reorganization&quot; to have Chatty suggest a more granular page structure."
+          description="Click &quot;Propose reorganization&quot; to have Atlas suggest a more granular page structure."
           action={proposeButton}
         />
       ) : targetPages.length === 0 ? (
-        <EmptyState title="Already well-structured" description="Chatty didn't find any lumped pages worth splitting." />
+        <EmptyState title="Already well-structured" description="Atlas didn't find any lumped pages worth splitting." />
       ) : (
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2.5">

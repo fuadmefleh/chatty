@@ -1,4 +1,4 @@
-"""OpenCode skill tools for Chatty bot.
+"""OpenCode skill tools for Atlas bot.
 
 Allows the bot to run the OpenCode AI coding agent to make
 code changes directly via subprocess.

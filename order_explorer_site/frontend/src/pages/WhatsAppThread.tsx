@@ -84,7 +84,7 @@ const WhatsAppThread: React.FC = () => {
     setSavingManaged(true);
     try {
       await setWhatsAppChatManaged(jid, chat?.name ?? null, instructionsDraft.trim());
-      showToast('Chatty will now auto-reply in this chat', 'green');
+      showToast('Atlas will now auto-reply in this chat', 'green');
       setManaging(false);
       setInstructionsDraft('');
       refreshChats();
@@ -130,7 +130,7 @@ const WhatsAppThread: React.FC = () => {
             onClick={() => setManaging((v) => !v)}
             className="rounded-md bg-signal px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
           >
-            Manage with Chatty
+            Manage with Atlas
           </button>
         )}
       </Card>
@@ -138,7 +138,7 @@ const WhatsAppThread: React.FC = () => {
       {managing && !chat?.managed && (
         <Card padding="14px 18px" className="flex shrink-0 flex-col gap-2">
           <p className="text-xs leading-snug text-muted">
-            Chatty will read and reply in this chat on its own during heartbeat runs, with no approval per
+            Atlas will read and reply in this chat on its own during heartbeat runs, with no approval per
             message{isGroup ? ' — and everyone in this group will see what it sends, not just one person' : ''}.
             Optionally tell it how to handle this chat:
           </p>

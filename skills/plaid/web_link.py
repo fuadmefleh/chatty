@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Add project root to path (go up 3 levels: web_link.py -> plaid -> skills -> chatty)
+# Add project root to path (go up 3 levels: web_link.py -> plaid -> skills -> atlas)
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
@@ -20,7 +20,7 @@ HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Link Bank Account - Chatty Bot</title>
+    <title>Link Bank Account - Atlas Bot</title>
     <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
     <style>
         body {

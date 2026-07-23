@@ -89,7 +89,7 @@ class PlaidIntegration:
         try:
             request = LinkTokenCreateRequest(
                 products=[Products("transactions"), Products("auth")],
-                client_name="Chatty Bot",
+                client_name="Atlas Bot",
                 country_codes=[CountryCode('US')],
                 language='en',
                 user=LinkTokenCreateRequestUser(

@@ -1,4 +1,4 @@
-"""VS Code Bridge skill tools for Chatty bot.
+"""VS Code Bridge skill tools for Atlas bot.
 
 Allows the bot to queue code change requests that are picked up
 by the VS Code Copilot agent extension.

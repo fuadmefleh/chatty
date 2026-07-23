@@ -1,4 +1,4 @@
-"""Persistent store of WhatsApp chats Chatty is allowed to auto-reply in.
+"""Persistent store of WhatsApp chats Atlas is allowed to auto-reply in.
 
 Single JSON file keyed by JID (this app is single-user, same convention as
 gmail_token.json rather than watchlist's per-user files). Consumed by

@@ -1,6 +1,6 @@
 """Anthropic Claude provider.
 
-All the translation between chatty's OpenAI-shaped messages/tools/responses
+All the translation between atlas's OpenAI-shaped messages/tools/responses
 and Anthropic's Messages API lives here - callers (StagedReACTAgent,
 WebChatAgent) never branch on backend.
 

@@ -691,7 +691,7 @@ const Chat: React.FC = () => {
         {messages.length === 0 ? (
           <div className="mt-16">
             <EmptyState
-              title="Start a conversation with Chatty"
+              title="Start a conversation with Atlas"
               description="Press Enter to send · Shift+Enter for new line"
             />
           </div>
@@ -776,7 +776,7 @@ const Chat: React.FC = () => {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             onFocus={handleInputFocus}
-            placeholder={activeSessionId !== null ? 'Continue the conversation…' : 'Message Chatty…'}
+            placeholder={activeSessionId !== null ? 'Continue the conversation…' : 'Message Atlas…'}
             disabled={!connected}
             rows={1}
             className="min-h-[46px] max-h-40 flex-1 resize-none rounded-lg border border-line bg-bg px-4 py-2.5 text-[14.5px] text-ink outline-none focus:border-signal disabled:opacity-60"

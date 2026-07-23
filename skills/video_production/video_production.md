@@ -2,7 +2,7 @@
 
 ## Description
 Generates short video clips from text prompts using OpenMontage's AI video production
-pipeline. Use whenever the user asks Chatty to create, generate, or make a video,
+pipeline. Use whenever the user asks Atlas to create, generate, or make a video,
 clip, short film, or animation from a text description.
 
 ## Usage

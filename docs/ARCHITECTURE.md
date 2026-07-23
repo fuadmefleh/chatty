@@ -1,4 +1,4 @@
-# Chatty Bot Architecture
+# Atlas Bot Architecture
 
 ## Overview
 

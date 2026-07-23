@@ -111,7 +111,7 @@ The heartbeat system allows the AI to perform periodic checks and autonomous act
 - At most once per `SELF_UPGRADE_INTERVAL_HOURS` (default: weekly), reflect on: current
   skills/tool coverage, recent error logs, past self-upgrade attempts (to avoid repeating
   ideas), and recent conversation history (to catch frustrations or unmet requests)
-- Propose ONE small, concrete improvement to Chatty's own codebase - or nothing, if there
+- Propose ONE small, concrete improvement to Atlas's own codebase - or nothing, if there
   isn't a genuinely good idea
 - Implement it end-to-end via `src/managers/self_upgrade_manager.py`:
   - Create an isolated git worktree on a new branch off `main` (never edits the live checkout)

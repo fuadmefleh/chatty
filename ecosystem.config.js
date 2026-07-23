@@ -22,7 +22,7 @@ module.exports = {
       listen_timeout: 10000
     },
     {
-      // Chatty Web API - REST + WebSocket backend for the dashboard
+      // Atlas Web API - REST + WebSocket backend for the dashboard
       name: 'chatty-web-server',
       script: './venv/bin/python',
       args: 'chatty_web_server.py',
