@@ -96,6 +96,11 @@ export const NAV_GROUPS: NavGroup[] = [
         ],
       },
       {
+        id: 'writing',
+        caption: 'Writing',
+        entries: [{ to: '/chatty-blog', label: 'Notes by Atlas' }],
+      },
+      {
         id: 'channels',
         caption: 'Channels',
         entries: [
@@ -118,6 +123,7 @@ export const NAV_GROUPS: NavGroup[] = [
         entries: [
           { to: '/video-production', label: 'Video Production' },
           { to: '/webcams', label: 'Webcams' },
+          { to: '/png-stamp', label: 'PNG Owner Stamp' },
         ],
       },
       {

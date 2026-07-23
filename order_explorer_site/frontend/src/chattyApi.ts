@@ -1,6 +1,6 @@
 /**
  * chattyApi.ts
- * Axios instance for the Chatty Web API (port 8016).
+ * Axios instance for the Atlas Web API (port 8016).
  * Automatically attaches the X-API-Key header from localStorage.
  */
 import axios from 'axios';
@@ -1280,6 +1280,91 @@ export const applyTasteFixes = async (body: TasteFixRequest): Promise<TasteFixSt
 export const getTasteFixStatus = async (): Promise<TasteFixState> => {
   const res = await chattyApi.get<TasteFixState>('/api/chatty/taste-audit/fix/status');
   return res.data;
+};
+
+// ── PNG owner stamping ─────────────────────────────────────────────────────
+// Uploads one PNG, gets back the same image re-encoded with Infineray LLC
+// Copyright/Author metadata chunks. Returns the stamped bytes as a Blob plus
+// the server's suggested download filename (from Content-Disposition).
+export interface StampedPng {
+  blob: Blob;
+  filename: string;
+}
+
+export const stampPngOwner = async (file: File): Promise<StampedPng> => {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await chattyApi.post('/api/chatty/png-stamp', form, { responseType: 'blob' });
+
+  const disposition = res.headers['content-disposition'] ?? '';
+  const match = /filename="?([^"]+)"?/.exec(disposition);
+  const fallback = file.name.replace(/\.png$/i, '') + '_owned.png';
+  return { blob: res.data as Blob, filename: match?.[1] ?? fallback };
+};
+
+// ── Atlas Blog ("Notes by Atlas") ──────────────────────────────────────────
+export interface ChattyBlogPost {
+  id: string;
+  title: string;
+  slug: string;
+  status: 'draft' | 'published';
+  url: string;
+  excerpt: string;
+  feature_image: string | null;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+  published_at: string | null;
+  html?: string; // present on single-post fetches
+}
+
+export interface BlogGenerationStatus {
+  generating: boolean;
+  error: string | null;
+  configured: boolean;
+  last_run_at: string | null;
+  next_due_at: string | null;
+}
+
+export const fetchBlogPosts = async (status: 'all' | 'draft' | 'published' = 'all'): Promise<ChattyBlogPost[]> => {
+  const res = await chattyApi.get<ChattyBlogPost[]>('/api/chatty/blog/posts', { params: { status } });
+  return res.data;
+};
+
+export const fetchBlogPost = async (id: string): Promise<ChattyBlogPost> => {
+  const res = await chattyApi.get<ChattyBlogPost>(`/api/chatty/blog/posts/${id}`);
+  return res.data;
+};
+
+export const fetchBlogStatus = async (): Promise<BlogGenerationStatus> => {
+  const res = await chattyApi.get<BlogGenerationStatus>('/api/chatty/blog/status');
+  return res.data;
+};
+
+export const generateBlogDraft = async (): Promise<void> => {
+  await chattyApi.post('/api/chatty/blog/generate');
+};
+
+export const updateBlogPost = async (
+  id: string,
+  body: { title?: string; markdown?: string; excerpt?: string },
+): Promise<ChattyBlogPost> => {
+  const res = await chattyApi.put<ChattyBlogPost>(`/api/chatty/blog/posts/${id}`, body);
+  return res.data;
+};
+
+export const publishBlogPost = async (id: string): Promise<ChattyBlogPost> => {
+  const res = await chattyApi.post<ChattyBlogPost>(`/api/chatty/blog/posts/${id}/publish`);
+  return res.data;
+};
+
+export const unpublishBlogPost = async (id: string): Promise<ChattyBlogPost> => {
+  const res = await chattyApi.post<ChattyBlogPost>(`/api/chatty/blog/posts/${id}/unpublish`);
+  return res.data;
+};
+
+export const deleteBlogPost = async (id: string): Promise<void> => {
+  await chattyApi.delete(`/api/chatty/blog/posts/${id}`);
 };
 
 export default chattyApi;

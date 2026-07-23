@@ -47,6 +47,8 @@ import CodeBrowser from './pages/CodeBrowser';
 import ServerHealth from './pages/ServerHealth';
 import TokenUsage from './pages/TokenUsage';
 import TasteAudit from './pages/TasteAudit';
+import PngStamp from './pages/PngStamp';
+import ChattyBlog from './pages/ChattyBlog';
 
 function RoutedApp() {
   const { pathname } = useLocation();
@@ -76,7 +78,7 @@ function RoutedApp() {
           <Route path="/exercise/workout/:id" element={<WorkoutDetail />} />
           <Route path="/exercise/progress" element={<ProgressTracker />} />
 
-          {/* Chatty Routes */}
+          {/* Atlas Routes */}
           <Route path="/chat" element={<Chat />} />
           <Route path="/notes" element={<Notes />} />
           <Route path="/transcriptions" element={<Transcriptions />} />
@@ -105,6 +107,8 @@ function RoutedApp() {
           <Route path="/token-usage" element={<TokenUsage />} />
           <Route path="/code" element={<CodeBrowser />} />
           <Route path="/taste-audit" element={<TasteAudit />} />
+          <Route path="/png-stamp" element={<PngStamp />} />
+          <Route path="/chatty-blog" element={<ChattyBlog />} />
         </Routes>
       </ErrorBoundary>
     </AppShell>

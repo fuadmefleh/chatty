@@ -1,4 +1,4 @@
-"""Env-derived constants for the Chatty web API.
+"""Env-derived constants for the Atlas web API.
 
 Deliberately separate from src/core/config.py, which is the Telegram bot's
 own config module - the web server has always read its own env vars
@@ -18,6 +18,15 @@ WEB_USER_ID = os.getenv("WEB_USER_ID", "")
 REMINDERS_DIR = PROJECT_ROOT / "reminders"
 MEMORY_DIR = PROJECT_ROOT / "memory"
 PORT = int(os.getenv("CHATTY_WEB_PORT", "8016"))
+
+# ── Atlas blog ("Notes by Atlas") ───────────────────────────────────────────
+# The chatty-notes-api sidecar (Docker, localhost) hard-scopes the agent to its
+# own publication. The scheduled writer only ever creates drafts; nothing here
+# publishes without a human approve action.
+BLOG_API_URL = os.getenv("BLOG_API_URL", "http://127.0.0.1:3210")
+BLOG_API_TOKEN = os.getenv("AGENT_API_TOKEN", "")
+BLOG_WRITE_INTERVAL_HOURS = int(os.getenv("BLOG_WRITE_INTERVAL_HOURS", "72"))  # ~every 3 days
+BLOG_STATE_FILE = PROJECT_ROOT / "data" / "blog_state.json"
 
 # ── Code browser ──────────────────────────────────────────────────────────────
 CODE_EXCLUDE_DIRS = {
